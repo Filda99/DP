@@ -1,0 +1,20 @@
+# Virtuální prostředí
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Editor
+.vscode/
+
+# OS soubory
+.DS_Store
+Thumbs.db
+
+# Logy a dočasné věci
+*.log
+
+# Soukromé proměnné
+.env
