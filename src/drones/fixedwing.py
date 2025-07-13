@@ -1,6 +1,7 @@
 from typing import List, Union, Tuple
 from .base_drone import BaseDrone
 import math
+import numpy as np
 
 class FixedWing(BaseDrone):
     """Fixed-wing drone implementation with forward flight characteristics.
@@ -95,6 +96,34 @@ class FixedWing(BaseDrone):
         collision_width = 4.0  # Should consider wingspan + safety margins
         
         return (self.position, front, collision_width)
+
+    def compute_action(self, goal, avoid=False, other_drones=None):
+        """
+        Fixed-wing aircraft steering strategy.
+        
+        Args:
+            goal: Target position coordinates as numpy array
+            avoid: If True, performs collision avoidance behavior
+            other_drones: List of other drones to avoid (currently not used for fixed-wing)
+            
+        Returns:
+            Steering angle in degrees (positive = right turn, negative = left turn)
+        """
+        if avoid:
+            return -15  # Sharp left turn when avoiding collision
+        
+        # Calculate desired heading to goal
+        pos = np.array(self.position)
+        vec = np.array(goal) - pos
+        target_angle = math.degrees(math.atan2(vec[1], vec[0]))
+        
+        # Calculate angular difference between current heading and target
+        delta = (target_angle - self.heading + 360) % 360
+        if delta > 180:
+            delta -= 360
+        
+        # Limit steering angle to realistic aircraft constraints
+        return max(min(delta, 15), -15)
 
     def info(self) -> str:
         """Get current aircraft status information.

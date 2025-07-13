@@ -40,6 +40,57 @@ class Quadcopter(BaseDrone):
         self.position[1] += vy * self.dt
         self.flight_time += self.dt
 
+    def compute_action(self, goal, avoid=False, other_drones=None):
+        """
+        Intelligent quadcopter movement strategy with collision avoidance.
+        
+        Args:
+            goal: Target position coordinates as numpy array
+            avoid: If True, performs collision avoidance behavior
+            other_drones: List of other drones to avoid
+            
+        Returns:
+            List of [x_velocity, y_velocity] for movement
+        """
+        # Calculate direction vector from current position to goal
+        vec = np.array(goal) - np.array(self.position)
+        norm = np.linalg.norm(vec)
+        
+        # If very close to goal, stop moving
+        if norm < 1.0:
+            return [0, 0]
+        
+        goal_direction = vec / norm
+        
+        # If avoiding collision, compute intelligent avoidance
+        if avoid and other_drones:
+            avoidance_vec = np.zeros(2)
+            
+            # Sum repulsion forces from all other drones
+            for other_drone in other_drones:
+                repulsion = np.array(self.position) - np.array(other_drone.position)
+                dist = np.linalg.norm(repulsion)
+                if dist > 0:
+                    # Stronger repulsion when closer
+                    strength = 1.0 / max(dist, 0.1)  # Avoid division by zero
+                    avoidance_vec += strength * (repulsion / dist)
+            
+            avoidance_norm = np.linalg.norm(avoidance_vec)
+            if avoidance_norm > 0:
+                avoidance_direction = avoidance_vec / avoidance_norm
+                
+                # Combine goal-seeking with collision avoidance
+                avoidance_weight = 2.0
+                goal_weight = 0.5
+                
+                combined_vec = goal_weight * goal_direction + avoidance_weight * avoidance_direction
+                combined_norm = np.linalg.norm(combined_vec)
+                
+                if combined_norm > 0:
+                    return (combined_vec / combined_norm).tolist()
+        
+        return goal_direction.tolist()
+
     def get_collision_zone(self):
         '''Return the collision zone as a circle with the drone's position and collision radius.'''
         return (self.position, self.collision_radius)

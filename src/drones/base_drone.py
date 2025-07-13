@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import List, Union, Tuple
+import numpy as np
 
 class BaseDrone(ABC):
     '''Base class for all drones. Provides basic properties and methods.'''
@@ -36,6 +37,23 @@ class BaseDrone(ABC):
             Collision zone definition - format depends on drone type:
             - For circular zones: [center_point, radius] where center_point is [x, y]
             - For rectangular zones: [point1, point2, width] where points are [x, y] coordinates
+        """
+        pass
+
+    @abstractmethod
+    def compute_action(self, goal: np.ndarray, avoid: bool = False, 
+                      other_drones: List['BaseDrone'] = None) -> Union[List[float], float]:
+        """Compute the action for this drone based on its goal and environment.
+        
+        Args:
+            goal: Target position coordinates as numpy array
+            avoid: If True, performs collision avoidance behavior
+            other_drones: List of other drones to avoid (for collision avoidance)
+            
+        Returns:
+            Action command - format depends on drone type:
+            - For quadcopters: [x_velocity, y_velocity] 
+            - For fixed-wing: steering_angle (float)
         """
         pass
 
