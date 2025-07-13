@@ -21,12 +21,12 @@ class Quadcopter(BaseDrone):
             return collision_radius
         
         super().__init__(position, heading)
-        self.mass = 0.496,                 # kg
-        self.max_speed = 14.7,             # m/s
+        self.mass = 0.496                  # kg
+        self.max_speed = 14.7              # m/s
         self.ascent_speed = 4.0            # m/s
         self.descent_speed = 4.0           # m/s
-        self.wind_resistance = 14.7,       # m/s
-        self.max_flight_time = 1920,       # s
+        self.wind_resistance = 14.7        # m/s
+        self.max_flight_time = 1920        # s
         self.collision_radius = calculate_collision_radius(0.373, 0.282)  # m
 
     def move(self, action):

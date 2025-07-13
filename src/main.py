@@ -1,3 +1,5 @@
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend before importing pyplot
 import matplotlib.animation as animation
 import numpy as np
 import matplotlib.pyplot as plt
@@ -10,8 +12,6 @@ drones = [
     create_drone("quadcopter", [10., 0.], 0.)
     # create_drone("fixedwing", [50., 0.], 90.)
 ]
-for d in drones:
-    d.dt = 0.5
 
 goals = {
     0: np.array([40., 40.]),
@@ -23,7 +23,7 @@ collisions = []
 avoidance_mode = [False for _ in drones]
 
 # === Akční strategie ===
-def quad_action(drone: BaseDrone, goal: np.ndarray, avoid: bool = False) -> list:
+def quad_action(drone: BaseDrone, goal: np.ndarray, avoid: bool = False, other_drone: BaseDrone = None) -> list:
     """
     Computes movement action for a quadcopter drone.
     
@@ -31,24 +31,57 @@ def quad_action(drone: BaseDrone, goal: np.ndarray, avoid: bool = False) -> list
         drone: The drone object with current position
         goal: Target position coordinates 
         avoid: If True, performs evasive maneuver
+        other_drone: The other drone to avoid (needed for intelligent avoidance)
     
     Returns:
         List of [x_velocity, y_velocity] for movement
     """
-    # If avoiding collision, move diagonally left-up
-    if avoid:
-        return [-1.0, 1.0]
-    
     # Calculate direction vector from current position to goal
     vec = np.array(goal) - np.array(drone.position)
+    # Calculate the norm (length) of the vector
     norm = np.linalg.norm(vec)
     
     # If very close to goal (within 1 unit), stop moving
     if norm < 1.0:
         return [0, 0]
     
-    # Return normalized direction vector (unit vector pointing toward goal)
-    return (vec / norm).tolist()
+    # Get normalized direction vector toward goal
+    goal_direction = vec / norm
+    
+    # If avoiding collision, compute intelligent avoidance vector
+    if avoid and other_drone is not None:
+        # Vector from other drone to this drone (repulsion direction because we want to move away)
+        # This is the vector pointing from the other drone to this drone
+        avoidance_vec = np.array(drone.position) - np.array(other_drone.position)
+        avoidance_norm = np.linalg.norm(avoidance_vec)
+        
+        if avoidance_norm > 0:
+            # Normalize the avoidance vector
+            avoidance_direction = avoidance_vec / avoidance_norm
+            
+            # Combine goal-seeking with collision avoidance
+            # Higher weight on avoidance when very close to other drone
+            avoidance_weight = 2.0  # Strong avoidance
+            goal_weight = 0.5       # Reduced goal-seeking during avoidance
+            
+            combined_vec = goal_weight * goal_direction + avoidance_weight * avoidance_direction
+            # Normalize the combined vector
+            # This ensures we maintain the direction but scale it to unit length
+            # This prevents the drone from moving too fast when avoiding
+            combined_norm = np.linalg.norm(combined_vec)
+            
+            if combined_norm > 0:
+                return (combined_vec / combined_norm).tolist()
+        
+        # Fallback: move perpendicular to the line connecting the two drones
+        if avoidance_norm > 0:
+            perp_vec = np.array([-avoidance_vec[1], avoidance_vec[0]])  # Rotate 90 degrees
+            perp_norm = np.linalg.norm(perp_vec)
+            if perp_norm > 0:
+                return (perp_vec / perp_norm).tolist()
+    
+    # Normal goal-seeking behavior
+    return goal_direction.tolist()
 
 def fixedwing_action(drone: BaseDrone, goal: np.ndarray, avoid: bool = False) -> float:
     """
@@ -143,8 +176,8 @@ for step in range(60):
         avoidance_mode = [False, False]
 
     acts = [
-        quad_action(drones[0], goals[0], avoidance_mode[0]),
-        fixedwing_action(drones[1], goals[1], avoidance_mode[1])
+        quad_action(drones[0], goals[0], avoidance_mode[0], drones[1]),  # Pass other drone for avoidance
+        quad_action(drones[1], goals[1], avoidance_mode[1], drones[0])   # Both are quadcopters now
     ]
 
     for i, drone in enumerate(drones):
@@ -155,7 +188,7 @@ for step in range(60):
 # === ANIMACE ===
 fig, ax = plt.subplots()
 colors = ["blue", "red"]
-labels = ["Quad", "FixedWing"]
+labels = ["Quad1", "Quad2"]
 scatters = [ax.plot([], [], color=colors[i], label=labels[i])[0] for i in range(len(drones))]
 goal_marks = [ax.scatter(*goals[i], c='green', marker='x', s=100) for i in range(len(drones))]
 
