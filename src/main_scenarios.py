@@ -5,13 +5,28 @@ def create_basic_scenario():
     """Create a basic two-drone crossing scenario."""
     sim = Simulation(
         name="Basic Quadcopter Crossing",
-        duration=60,
+        duration=30,
         plot_bounds=(-10, 60, -10, 100)
     )
     
     # Add two quadcopters
     sim.add_drone("quadcopter", [0., 0.], 0., [40., 40.])
-    sim.add_drone("quadcopter", [10., 0.], 0., [0., 50.])
+    sim.add_drone("quadcopter", [40., 0.], 0., [0., 40.])
+    
+    return sim
+
+
+def create_linear_scenario():
+    """Create a basic two-drone crossing scenario."""
+    sim = Simulation(
+        name="Basic Quadcopter Crossing",
+        duration=60,
+        plot_bounds=(-10, 60, -10, 100)
+    )
+    
+    # Add two quadcopters
+    sim.add_drone("quadcopter", [0., 0.], 0., [0., 40.])
+    sim.add_drone("quadcopter", [5., 0.], 0., [5., 40.])
     
     return sim
 
@@ -79,19 +94,21 @@ def main():
     
     # Scenario 1: Basic crossing
     results1 = run_scenario(create_basic_scenario, "basic_crossing.gif")
+    # results1 = run_scenario(create_linear_scenario, "basic_crossing.gif")
     
     # Scenario 2: Multi-drone
-    results2 = run_scenario(create_multi_drone_scenario, "multi_drone.gif")
+    # results2 = run_scenario(create_multi_drone_scenario, "multi_drone.gif")
     
     # Scenario 3: Mixed aircraft types
-    results3 = run_scenario(create_mixed_scenario, "mixed_aircraft.gif")
+    # results3 = run_scenario(create_mixed_scenario, "mixed_aircraft.gif")
     
     # Print summary
     print(f"\n{'='*50}")
     print("SIMULATION SUMMARY")
     print(f"{'='*50}")
     
-    scenarios = [results1, results2, results3]
+    # scenarios = [results1, results2, results3]
+    scenarios = [results1]
     for i, result in enumerate(scenarios, 1):
         print(f"Scenario {i}: {result['name']}")
         print(f"  - Drones: {result['drones']}")

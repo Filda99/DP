@@ -6,7 +6,8 @@ class BaseDrone(ABC):
     '''Base class for all drones. Provides basic properties and methods.'''
 
     def __init__(self, position: List[float], heading: float) -> None:
-        '''Initialize the drone with position and heading.
+        '''
+        Initialize the drone with position and heading.
         
         Args:
             position: List containing [x, y] coordinates of the drone
@@ -20,7 +21,8 @@ class BaseDrone(ABC):
 
     @abstractmethod
     def move(self, action: Union[List[float], float]) -> None:
-        """Execute movement based on the given action.
+        """
+        Execute movement based on the given action.
         
         Args:
             action: Movement command - format depends on drone type:
@@ -31,7 +33,8 @@ class BaseDrone(ABC):
 
     @abstractmethod
     def get_collision_zone(self) -> Union[List[Union[List[float], float]], List[List[float]]]:
-        """Get the collision detection zone for this drone.
+        """
+        Get the collision detection zone for this drone.
         
         Returns: 
             Collision zone definition - format depends on drone type:
@@ -43,7 +46,8 @@ class BaseDrone(ABC):
     @abstractmethod
     def compute_action(self, goal: np.ndarray, avoid: bool = False, 
                       other_drones: List['BaseDrone'] = None) -> Union[List[float], float]:
-        """Compute the action for this drone based on its goal and environment.
+        """
+        Compute the action for this drone based on its goal and environment.
         
         Args:
             goal: Target position coordinates as numpy array
@@ -59,7 +63,8 @@ class BaseDrone(ABC):
 
     @abstractmethod
     def info(self) -> str:
-        """Get information string about the drone's current state.
+        """
+        Get information string about the drone's current state.
         
         Returns:
             String containing drone type, position, heading, and other relevant information

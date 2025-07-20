@@ -16,8 +16,8 @@ class Simulation:
     
     def __init__(self, 
                  name: str = "Drone Simulation",
-                 duration: int = 60,
-                 time_step: float = 0.5,
+                 duration: int = 20,
+                 time_step: float = 0.1,
                  plot_bounds: Tuple[float, float, float, float] = (-10, 60, -10, 100)):
         """
         Initialize the simulation.
@@ -73,13 +73,17 @@ class Simulation:
         
         return drone_index
     
-    def check_collision(self, drone_i: BaseDrone, drone_j: BaseDrone) -> bool:
+    def remove_drone(self, drone_index):
+        self.drones.remove(drone_index)
+
+    def check_collision(self, drone_i: BaseDrone, drone_j: BaseDrone, expanded: int = 0) -> bool:
         """
         Check if two drones are colliding based on their collision zones.
         
         Args:
             drone_i: First drone
             drone_j: Second drone
+            expanded: Expanded collision zone 
             
         Returns:
             bool: True if drones are colliding
@@ -90,7 +94,8 @@ class Simulation:
         # Check circular collision zone (quadcopters)
         if len(zi) == 2:
             center, radius = zi
-            return np.linalg.norm(np.array(center) - np.array(zj)) <= radius
+            distance = np.linalg.norm(np.array(center) - np.array(zj))
+            return distance <= (radius + expanded)
         
         # Check rectangular collision zone (fixed-wing)
         elif len(zi) == 3:
@@ -102,13 +107,16 @@ class Simulation:
             closest = a + proj * ab
             dist = np.linalg.norm(closest - p)
             
-            return 0 <= proj <= 1 and dist <= width / 2
+            return 0 <= proj <= 1 and dist <= (width / 2 + expanded)
         
         return False
     
-    def detect_collisions(self) -> List[Tuple[int, int]]:
+    def detect_collisions(self, expanded: int = 0) -> List[Tuple[int, int]]:
         """
         Detect all current collisions between drones.
+        
+        Args:
+            expanded: Expanded collision zone 
         
         Returns:
             List of tuples (i, j) representing colliding drone pairs
@@ -119,7 +127,7 @@ class Simulation:
             (i, j)
             for i in range(len(self.drones))
             for j in range(i + 1, len(self.drones))
-            if self.check_collision(self.drones[i], self.drones[j])
+            if self.check_collision(self.drones[i], self.drones[j], expanded)
         ]
     
     def get_other_drones(self, drone_index: int) -> List[BaseDrone]:
@@ -138,22 +146,37 @@ class Simulation:
         """
         Execute one simulation step.
         
+        The method detects actual collisions (expanded=0) for recording and 
+        potential collisions (expanded=6) for avoidance behavior.
+        
+        Uses a priority-based avoidance system: when two drones are on collision
+        course, the drone with lower index continues on its path while the drone
+        with higher index performs evasive maneuvers.
+        
         Returns:
             bool: True if simulation should continue, False if finished
         """
         if self.step_count >= self.duration:
             return False
         
-        # Detect collisions
-        colliding_pairs = self.detect_collisions()
-        if colliding_pairs:
+        # Detect actual collisions (expanded = 0)
+        actual_collisions = self.detect_collisions(0)
+        if actual_collisions:
             self.collisions.append(self.step_count)
         
-        # Create avoidance mode mapping
+        # Detect potential collisions for avoidance (expanded = 6)
+        potential_collisions = self.detect_collisions(10)
+        
+        # Create avoidance mode mapping with priority system
+        # Only one drone per collision pair should avoid, the other continues
         avoidance_mode = {i: False for i in range(len(self.drones))}
-        for i, j in colliding_pairs:
-            avoidance_mode[i] = True
-            avoidance_mode[j] = True
+        for i, j in potential_collisions:
+            # Priority system: lower index has priority and continues straight
+            # Higher index drone performs avoidance maneuver
+            if i < j:
+                avoidance_mode[j] = True  # j avoids, i continues
+            else:
+                avoidance_mode[i] = True  # i avoids, j continues
         
         # Compute actions for each drone
         actions = []
