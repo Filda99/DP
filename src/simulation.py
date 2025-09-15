@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from typing import List, Dict, Tuple, Optional
 from drone_factory import create_drone
 from drones.base_drone import BaseDrone
+from environment import Environment, TerrainType
 
 
 class Simulation:
@@ -18,7 +19,8 @@ class Simulation:
                  name: str = "Drone Simulation",
                  duration: int = 20,
                  time_step: float = 0.1,
-                 plot_bounds: Tuple[float, float, float, float] = (-10, 60, -10, 100)):
+                 plot_bounds: Tuple[float, float, float, float] = (-10, 60, -10, 100),
+                 environment: Optional[Environment] = None):
         """
         Initialize the simulation.
         
@@ -27,11 +29,18 @@ class Simulation:
             duration: Number of simulation steps
             time_step: Time step between simulation frames
             plot_bounds: (x_min, x_max, y_min, y_max) for the plot area
+            environment: Environment object with terrain features (optional)
         """
         self.name = name
         self.duration = duration
         self.time_step = time_step
         self.plot_bounds = plot_bounds
+        
+        # Environment setup
+        if environment is None:
+            self.environment = Environment(plot_bounds, f"{name} Environment")
+        else:
+            self.environment = environment
         
         # Simulation state
         self.drones: List[BaseDrone] = []
@@ -64,6 +73,14 @@ class Simulation:
         Returns:
             int: Index of the added drone
         """
+        # Check if starting position is safe
+        if not self.environment.is_position_safe(position[0], position[1]):
+            print(f"⚠️ Warning: Starting position {position} may not be safe for flight!")
+        
+        # Check if goal position is safe
+        if not self.environment.is_position_safe(goal[0], goal[1]):
+            print(f"⚠️ Warning: Goal position {goal} may not be safe for flight!")
+        
         drone = create_drone(drone_type, position, heading)
         drone_index = len(self.drones)
         
@@ -147,7 +164,7 @@ class Simulation:
         Execute one simulation step.
         
         The method detects actual collisions (expanded=0) for recording and 
-        potential collisions (expanded=6) for avoidance behavior.
+        potential collisions (expanded > 0) for avoidance behavior.
         
         Uses a priority-based avoidance system: when two drones are on collision
         course, the drone with lower index continues on its path while the drone
@@ -164,7 +181,7 @@ class Simulation:
         if actual_collisions:
             self.collisions.append(self.step_count)
         
-        # Detect potential collisions for avoidance (expanded = 6)
+        # Detect potential collisions for avoidance
         potential_collisions = self.detect_collisions(10)
         
         # Create avoidance mode mapping with priority system
@@ -184,12 +201,29 @@ class Simulation:
             # Get other drones for collision avoidance
             other_drones = self.get_other_drones(i)
             
+            # Get terrain effects at current position
+            constraints = self.environment.get_flight_constraints_at_position(
+                drone.position[0], drone.position[1]
+            )
+            weather_effects = self.environment.get_weather_effects()
+            
             # Call the drone's own compute_action method
             action = drone.compute_action(
                 goal=self.goals[i],
                 avoid=avoidance_mode[i],
                 other_drones=other_drones
             )
+            
+            # Apply terrain speed modifiers
+            if hasattr(drone, 'max_speed') and isinstance(action, list):
+                # For quadcopters with velocity commands
+                speed_mod = constraints['speed_modifier'] * weather_effects['speed_modifier']
+                action = [action[0] * speed_mod, action[1] * speed_mod]
+            elif isinstance(action, (int, float)):
+                # For fixed-wing with steering angles - terrain affects turn rate
+                if constraints['speed_modifier'] < 1.0:
+                    action *= constraints['speed_modifier']
+            
             actions.append(action)
         
         # Move all drones
@@ -241,7 +275,10 @@ class Simulation:
             print("❌ No simulation data available. Run simulation first.")
             return
         
-        fig, ax = plt.subplots(figsize=(10, 8))
+        fig, ax = plt.subplots(figsize=(12, 10))
+        
+        # Draw terrain first (background)
+        self.environment.visualize_terrain(ax)
         
         # Create line plots for trajectories
         lines = []
@@ -261,17 +298,33 @@ class Simulation:
         ax.set_ylim(self.plot_bounds[2], self.plot_bounds[3])
         ax.set_aspect('equal')
         ax.grid(True, alpha=0.3)
-        ax.legend()
-        ax.set_xlabel('X Position')
-        ax.set_ylabel('Y Position')
+        ax.legend(loc='upper right')
+        ax.set_xlabel('X Position (meters)')
+        ax.set_ylabel('Y Position (meters)')
+        
+        # Add environment info to title
+        env_info = f" | Terrain Zones: {len(self.environment.terrain_zones)}"
+        weather = self.environment.weather_conditions
+        if weather['wind_speed'] > 0:
+            env_info += f" | Wind: {weather['wind_speed']:.1f}m/s"
         
         def update(frame: int):
-            # Update title with collision warning
+            # Update title with collision warning and environment info
             collision_warning = '⚠️ COLLISION!' if frame in self.collisions else ''
-            ax.set_title(f"{self.name} - Step {frame} {collision_warning}")
+            ax.set_title(f"{self.name} - Step {frame} {collision_warning}{env_info}")
             
-            # Remove previous collision zone patches
-            for patch in reversed(ax.patches):
+            # Redraw terrain (in case it gets overwritten)
+            # Remove old terrain patches first
+            terrain_patches = [p for p in ax.patches if hasattr(p, '_terrain_zone')]
+            for patch in terrain_patches:
+                patch.remove()
+            
+            # Redraw terrain
+            self.environment.visualize_terrain(ax)
+            
+            # Remove previous collision zone patches (but keep terrain)
+            collision_patches = [p for p in reversed(ax.patches) if not hasattr(p, '_terrain_zone')]
+            for patch in collision_patches:
                 patch.remove()
             
             # Update trajectory lines

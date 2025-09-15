@@ -30,9 +30,14 @@ class Quadcopter(BaseDrone):
         self.collision_radius = calculate_collision_radius(0.373, 0.282)  # m
 
     def move(self, action):
-        '''Move the drone based on the action vector.
-        The action is a vector with x and y components, each in the range [-1, 1].
-        The drone's speed is scaled by its maximum speed.'''
+        '''Execute one time step of linear movement based on normalized velocity commands.
+        
+        Args:
+            action: Normalized velocity vector [vx, vy] where each component is in [-1, 1]
+                   representing percentage of maximum speed in each direction.
+                   
+        The drone moves smoothly by applying constant velocity over the time step duration,
+        updating its position linearly rather than teleporting instantly.'''
         dx, dy = np.clip(action, -1, 1) # Ensure action is within [-1, 1]
         vx = dx * self.max_speed
         vy = dy * self.max_speed
