@@ -210,6 +210,69 @@ class Environment:
             avoidance_priority=3
         ))
     
+    def generate_3d_environment(self):
+        """Generate a 3D environment with layered altitude restrictions and obstacles."""
+        x_min, x_max, y_min, y_max = self.bounds
+        width = x_max - x_min
+        height = y_max - y_min
+        
+        # Clear existing terrain
+        self.terrain_zones.clear()
+        
+        # Ground level obstacles (0-20m altitude)
+        # Forest with low tree canopy
+        self.add_terrain_zone(TerrainZone(
+            TerrainType.FOREST,
+            (x_min + width * 0.1, x_min + width * 0.4, y_min + height * 0.2, y_min + height * 0.6),
+            altitude_restriction=(15.0, 1000.0),  # Must fly above trees
+            speed_modifier=0.8,
+            avoidance_priority=3
+        ))
+        
+        # Urban area with buildings (0-40m altitude)
+        self.add_terrain_zone(TerrainZone(
+            TerrainType.URBAN,
+            (x_min + width * 0.5, x_min + width * 0.8, y_min + height * 0.1, y_min + height * 0.5),
+            altitude_restriction=(40.0, 1000.0),  # Must fly above buildings
+            speed_modifier=0.7,
+            avoidance_priority=5
+        ))
+        
+        # Mid-level obstacles (20-100m altitude)
+        # Communication tower zone
+        self.add_terrain_zone(TerrainZone(
+            TerrainType.NO_FLY_ZONE,
+            (x_min + width * 0.7, x_min + width * 0.75, y_min + height * 0.6, y_min + height * 0.65),
+            altitude_restriction=(0.0, 150.0),  # Tower extends to 150m
+            avoidance_priority=1000
+        ))
+        
+        # High altitude restrictions (100m+ altitude)
+        # Controlled airspace zone
+        self.add_terrain_zone(TerrainZone(
+            TerrainType.NO_FLY_ZONE,
+            (x_min + width * 0.3, x_min + width * 0.6, y_min + height * 0.7, y_min + height * 0.9),
+            altitude_restriction=(200.0, 1000.0),  # High altitude restricted zone
+            avoidance_priority=800
+        ))
+        
+        # Mountain range with varying altitude requirements
+        self.add_terrain_zone(TerrainZone(
+            TerrainType.MOUNTAIN,
+            (x_min + width * 0.05, x_min + width * 0.25, y_min + height * 0.8, y_min + height * 0.95),
+            altitude_restriction=(80.0, 1000.0),  # High mountain peaks
+            speed_modifier=0.6,
+            avoidance_priority=4
+        ))
+        
+        # Safe corridor (low altitude flight allowed)
+        self.add_terrain_zone(TerrainZone(
+            TerrainType.OPEN_FIELD,
+            (x_min + width * 0.8, x_min + width * 0.95, y_min + height * 0.3, y_min + height * 0.7),
+            altitude_restriction=(2.0, 1000.0),  # Safe low-level corridor
+            speed_modifier=1.2
+        ))
+    
     def generate_urban_environment(self):
         """Generate an urban environment with buildings and restricted zones."""
         x_min, x_max, y_min, y_max = self.bounds
@@ -247,34 +310,123 @@ class Environment:
             speed_modifier=1.0
         ))
     
-    def get_terrain_at_position(self, x: float, y: float) -> Optional[TerrainZone]:
-        """Get the terrain type at a specific position."""
+    def get_terrain_at_position(self, x: float, y: float, z: float = None) -> Optional[TerrainZone]:
+        """Get the terrain type at a specific position.
+        
+        Args:
+            x: X coordinate
+            y: Y coordinate  
+            z: Z coordinate (altitude) - if provided, altitude constraints are checked
+        """
         # Return the terrain with highest avoidance priority if multiple overlap
         matching_zones = [zone for zone in self.terrain_zones if zone.contains_point(x, y)]
         if matching_zones:
-            return max(matching_zones, key=lambda z: z.avoidance_priority)
+            best_zone = max(matching_zones, key=lambda z: z.avoidance_priority)
+            
+            # If altitude is provided, check if it's within allowed range
+            if z is not None and best_zone.altitude_restriction:
+                min_alt, max_alt = best_zone.altitude_restriction
+                if not (min_alt <= z <= max_alt):
+                    # Altitude violation - this could be treated as a constraint violation
+                    pass
+            
+            return best_zone
         return None
     
-    def get_flight_constraints_at_position(self, x: float, y: float) -> Dict:
-        """Get flight constraints at a specific position."""
-        terrain = self.get_terrain_at_position(x, y)
+    def get_flight_constraints_at_position(self, x: float, y: float, z: float = None) -> Dict:
+        """Get flight constraints at a specific position.
+        
+        Args:
+            x: X coordinate
+            y: Y coordinate
+            z: Z coordinate (altitude) - if provided, more detailed constraints are returned
+        """
+        terrain = self.get_terrain_at_position(x, y, z)
         if terrain:
-            return terrain.get_flight_constraints()
+            constraints = terrain.get_flight_constraints()
+            
+            # Add 3D-specific constraint information if altitude is provided
+            if z is not None:
+                constraints['current_altitude'] = z
+                constraints['altitude_violation'] = not (
+                    constraints['min_altitude'] <= z <= constraints['max_altitude']
+                )
+                
+                # Add altitude-based speed modifiers
+                if z < constraints['min_altitude'] + 5.0:  # Close to minimum altitude
+                    constraints['speed_modifier'] *= 0.8  # Slower near ground/obstacles
+                elif z > constraints['max_altitude'] - 10.0:  # Close to ceiling
+                    constraints['speed_modifier'] *= 0.9  # Slower near altitude limits
+            
+            return constraints
         else:
             # Default open airspace
-            return {
+            constraints = {
                 'can_fly': True,
                 'min_altitude': 0.0,
                 'max_altitude': 1000.0,
                 'speed_modifier': 1.0,
                 'avoidance_cost': 0
             }
+            
+            if z is not None:
+                constraints['current_altitude'] = z
+                constraints['altitude_violation'] = z < 0.0  # Below ground level
+            
+            return constraints
     
     def is_position_safe(self, x: float, y: float, altitude: float = 50.0) -> bool:
-        """Check if a position is safe for flight."""
-        constraints = self.get_flight_constraints_at_position(x, y)
+        """Check if a position is safe for flight.
+        
+        Args:
+            x: X coordinate
+            y: Y coordinate  
+            altitude: Z coordinate (altitude) in meters
+        """
+        constraints = self.get_flight_constraints_at_position(x, y, altitude)
         return (constraints['can_fly'] and 
-                constraints['min_altitude'] <= altitude <= constraints['max_altitude'])
+                constraints['min_altitude'] <= altitude <= constraints['max_altitude'] and
+                not constraints.get('altitude_violation', False))
+    
+    def is_path_safe_3d(self, start: List[float], end: List[float], num_points: int = 10) -> bool:
+        """Check if a 3D path between two points is safe for flight.
+        
+        Args:
+            start: Starting position [x, y, z]
+            end: Ending position [x, y, z]
+            num_points: Number of intermediate points to check along the path
+            
+        Returns:
+            True if the entire path is safe for flight
+        """
+        if len(start) != 3 or len(end) != 3:
+            raise ValueError("Start and end positions must be 3D: [x, y, z]")
+        
+        # Check points along the path
+        for i in range(num_points + 1):
+            t = i / num_points
+            # Linear interpolation between start and end
+            x = start[0] + t * (end[0] - start[0])
+            y = start[1] + t * (end[1] - start[1])  
+            z = start[2] + t * (end[2] - start[2])
+            
+            if not self.is_position_safe(x, y, z):
+                return False
+        
+        return True
+    
+    def get_safe_altitude_range(self, x: float, y: float) -> Tuple[float, float]:
+        """Get the safe altitude range at a specific horizontal position.
+        
+        Args:
+            x: X coordinate
+            y: Y coordinate
+            
+        Returns:
+            Tuple of (min_safe_altitude, max_safe_altitude)
+        """
+        constraints = self.get_flight_constraints_at_position(x, y)
+        return (constraints['min_altitude'], constraints['max_altitude'])
     
     def visualize_terrain(self, ax):
         """Add terrain visualization to a matplotlib axis."""
