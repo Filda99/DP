@@ -1,4 +1,4 @@
-from typing import List, Union, Tuple
+from typing import List, Tuple
 from .base_drone import BaseDrone
 import math
 import numpy as np
@@ -18,15 +18,14 @@ class FixedWing(BaseDrone):
     # - If drone flies at v = 14.7 m/s with reaction time of 0.5s: reaction_distance = v * 0.5 
     # - Consider wind effects and maneuverability constraints
 
-    def __init__(self, position: List[float], heading: float, altitude: float = 100.0) -> None:
+    def __init__(self, position: List[float], heading: float) -> None:
         """Initialize fixed-wing drone with flight-specific parameters.
         
         Args:
-            position: List containing [x, y] coordinates (2D) or [x, y, z] coordinates (3D) for initial position
+            position: List containing [x, y, z] coordinates for initial position
             heading: Initial heading angle in degrees
-            altitude: Initial altitude (used only if position is 2D, default: 100m)
         """
-        super().__init__(position, heading, altitude)
+        super().__init__(position, heading)
         # TBD: These values should be calibrated based on actual aircraft specifications
         self.speed = 10.0            # Constant forward speed in units/second
         self.min_turn_radius = 30.0  # Minimum turning radius constraint (currently unused)
@@ -38,34 +37,26 @@ class FixedWing(BaseDrone):
         self.min_altitude = 10.0     # Minimum safe altitude (higher than quadcopters)
         self.max_altitude = 2000.0   # Higher operational ceiling
 
-    def move(self, action: Union[float, List[float]]) -> None:
+    def move(self, action: List[float]) -> None:
         """Execute movement based on steering and climb input.
         
         Fixed-wing aircraft must maintain forward motion and can change direction
         through steering adjustments and altitude through climb/descent rates.
         
         Args:
-            action: Can be:
-                   - float: steering_angle in degrees (2D compatibility, no altitude change)
-                   - [steering_angle, climb_rate]: steering in degrees, climb rate in [-1, 1]
+            action: [steering_angle, climb_rate] - steering in degrees, climb rate in [-1, 1]
                    
         TBD: 
         - Implement minimum turn radius constraint using self.min_turn_radius
         - Add realistic acceleration/deceleration curves
         - Consider stall speed limitations
         """
-        # Handle both 2D and 3D action inputs for backward compatibility
-        if isinstance(action, (int, float)):
-            # 2D action: just steering angle, no altitude change
-            delta_heading = max(min(action, 30), -30)
-            climb_input = 0.0
-        elif isinstance(action, list) and len(action) == 2:
-            # 3D action: [steering_angle, climb_rate]
-            steering_angle, climb_rate = action
-            delta_heading = max(min(steering_angle, 30), -30)
-            climb_input = max(min(climb_rate, 1.0), -1.0)  # Normalize climb input
-        else:
-            raise ValueError("Action must be float (steering) or [steering, climb_rate]")
+        if len(action) != 2:
+            raise ValueError("Action must be [steering_angle, climb_rate]")
+        
+        steering_angle, climb_rate = action
+        delta_heading = max(min(steering_angle, 30), -30)
+        climb_input = max(min(climb_rate, 1.0), -1.0)  # Normalize climb input
         
         # Update heading based on steering input
         self.heading += delta_heading
@@ -133,32 +124,22 @@ class FixedWing(BaseDrone):
         Fixed-wing aircraft 3D steering and climb strategy.
         
         Args:
-            goal: Target position coordinates as numpy array (2D or 3D)
+            goal: Target position coordinates as numpy array [x, y, z]
             avoid: If True, performs collision avoidance behavior
             other_drones: List of other drones to avoid
             
         Returns:
-            For 2D compatibility: steering_angle (float)
-            For 3D operation: [steering_angle, climb_rate] (list)
+            [steering_angle, climb_rate] (list)
         """
-        # Handle both 2D and 3D goals for backward compatibility
-        if len(goal) == 2:
-            # 2D goal: [x, y] - maintain current altitude
+        # Convert goal to 3D
+        goal_3d = np.array(goal)
+        if len(goal_3d) == 2:
+            # If 2D goal provided, maintain current altitude
             goal_3d = np.array([goal[0], goal[1], self.position[2]])
-            is_2d_goal = True
-        elif len(goal) == 3:
-            # 3D goal: [x, y, z]
-            goal_3d = np.array(goal)
-            is_2d_goal = False
-        else:
-            raise ValueError("Goal must be either [x, y] or [x, y, z]")
         
         if avoid:
-            # Basic avoidance maneuver - could be enhanced for 3D
-            if is_2d_goal:
-                return -15  # Sharp left turn when avoiding collision (2D)
-            else:
-                return [-15, 0.5]  # Sharp left turn and climb (3D)
+            # Basic avoidance maneuver
+            return [-15, 0.5]  # Sharp left turn and climb
         
         # Calculate desired heading to goal (horizontal component)
         pos = np.array(self.position)
@@ -174,19 +155,16 @@ class FixedWing(BaseDrone):
         steering = max(min(delta, 15), -15)
         
         # Calculate desired climb rate for 3D operation
-        if not is_2d_goal:
-            altitude_diff = goal_3d[2] - pos[2]
-            # Simple climb rate calculation
-            if abs(altitude_diff) < 2.0:  # Close to target altitude
-                climb_rate = 0.0
-            elif altitude_diff > 0:  # Need to climb
-                climb_rate = min(altitude_diff / 20.0, 1.0)  # Gradual climb
-            else:  # Need to descend
-                climb_rate = max(altitude_diff / 20.0, -1.0)  # Gradual descent
-            
-            return [steering, climb_rate]
-        else:
-            return steering  # 2D compatibility
+        altitude_diff = goal_3d[2] - pos[2]
+        # Simple climb rate calculation
+        if abs(altitude_diff) < 2.0:  # Close to target altitude
+            climb_rate = 0.0
+        elif altitude_diff > 0:  # Need to climb
+            climb_rate = min(altitude_diff / 20.0, 1.0)  # Gradual climb
+        else:  # Need to descend
+            climb_rate = max(altitude_diff / 20.0, -1.0)  # Gradual descent
+        
+        return [steering, climb_rate]
 
     def info(self) -> str:
         """Get current aircraft status information.

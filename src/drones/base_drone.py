@@ -5,26 +5,18 @@ import numpy as np
 class BaseDrone(ABC):
     '''Base class for all drones. Provides basic properties and methods.'''
 
-    def __init__(self, position: List[float], heading: float, altitude: float = 50.0) -> None:
+    def __init__(self, position: List[float], heading: float) -> None:
         '''
-        Initialize the drone with position, heading, and altitude.
+        Initialize the drone with 3D position and heading.
         
         Args:
-            position: List containing [x, y] coordinates of the drone (for backward compatibility)
-                     or [x, y, z] coordinates for 3D operation
+            position: List containing [x, y, z] coordinates of the drone
             heading: Initial heading angle in degrees (will be normalized to 0-360 range)
-            altitude: Initial altitude in meters (default: 50.0m) - used if position is 2D
         '''
-        # Handle both 2D and 3D position inputs for backward compatibility
-        if len(position) == 2:
-            # 2D input: [x, y] - add default altitude
-            self.position = [position[0], position[1], altitude]
-        elif len(position) == 3:
-            # 3D input: [x, y, z] - use as provided
-            self.position = list(position)
-        else:
-            raise ValueError("Position must be either [x, y] or [x, y, z]")
+        if len(position) != 3:
+            raise ValueError("Position must be [x, y, z] - 3D coordinates required")
             
+        self.position = list(position)
         self.heading = heading % 360   # Normalize heading to [0, 360), works even if heading < 0
         self.pitch = 0.0               # Pitch angle in degrees (nose up/down)
         self.roll = 0.0                # Roll angle in degrees (wing tilt)
@@ -43,8 +35,8 @@ class BaseDrone(ABC):
         
         Args:
             action: Movement command - format depends on drone type:
-                   - For quadcopters: [x_velocity, y_velocity] (2D) or [x_velocity, y_velocity, z_velocity] (3D)
-                   - For fixed-wing: steering_angle (float) or [steering_angle, climb_rate] (3D)
+                   - For quadcopters: [x_velocity, y_velocity, z_velocity] (3D)
+                   - For fixed-wing: [steering_angle, climb_rate] (3D)
         """
         pass
 
@@ -55,10 +47,8 @@ class BaseDrone(ABC):
         
         Returns: 
             Collision zone definition - format depends on drone type:
-            - For circular zones (2D): [center_point, radius] where center_point is [x, y]
-            - For spherical zones (3D): [center_point, radius] where center_point is [x, y, z]
-            - For rectangular zones (2D): [point1, point2, width] where points are [x, y] coordinates
-            - For box zones (3D): [point1, point2, width, height] where points are [x, y, z] coordinates
+            - For spherical zones: [center_point, radius] where center_point is [x, y, z]
+            - For box zones: [point1, point2, width, height] where points are [x, y, z] coordinates
         """
         pass
 
@@ -69,29 +59,20 @@ class BaseDrone(ABC):
         Compute the action for this drone based on its goal and environment.
         
         Args:
-            goal: Target position coordinates as numpy array (2D or 3D)
+            goal: Target position coordinates as numpy array [x, y, z]
             avoid: If True, performs collision avoidance behavior
             other_drones: List of other drones to avoid (for collision avoidance)
             
         Returns:
             Action command - format depends on drone type:
-            - For quadcopters: [x_velocity, y_velocity] (2D) or [x_velocity, y_velocity, z_velocity] (3D)
-            - For fixed-wing: steering_angle (float) or [steering_angle, climb_rate] (3D)
+            - For quadcopters: [x_velocity, y_velocity, z_velocity] (3D)
+            - For fixed-wing: [steering_angle, climb_rate] (3D)
         """
         pass
     
-    def get_2d_position(self) -> List[float]:
+    def get_position(self) -> List[float]:
         """
-        Get the 2D position for backward compatibility.
-        
-        Returns:
-            List containing [x, y] coordinates
-        """
-        return [self.position[0], self.position[1]]
-    
-    def get_3d_position(self) -> List[float]:
-        """
-        Get the full 3D position.
+        Get the current 3D position.
         
         Returns:
             List containing [x, y, z] coordinates

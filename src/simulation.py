@@ -59,56 +59,33 @@ class Simulation:
                   drone_type: str, 
                   position: List[float], 
                   heading: float, 
-                  goal: List[float],
-                  label: Optional[str] = None,
-                  altitude: Optional[float] = None) -> int:
+                  goal: List[float]) -> int:
         """
         Add a drone to the simulation.
         
         Args:
             drone_type: Type of drone ("quadcopter", "fixedwing")
-            position: Initial position - [x, y] (2D) or [x, y, z] (3D)
+            position: Initial position [x, y, z]
             heading: Initial heading in degrees
-            goal: Target position - [x, y] (2D) or [x, y, z] (3D)
-            label: Optional custom label for the drone
-            altitude: Optional altitude override (used if position/goal are 2D)
+            goal: Target position [x, y, z]
             
         Returns:
             int: Index of the added drone
         """
-        # Handle both 2D and 3D inputs
-        if len(position) == 2 and altitude is not None:
-            start_pos = [position[0], position[1], altitude]
-        else:
-            start_pos = position  # Let drone factory handle default altitude
         
-        if len(goal) == 2 and altitude is not None:
-            goal_pos = [goal[0], goal[1], altitude]
-            goal_pos = goal
-        else:
-            goal_pos = goal  # Will be handled by drone's compute_action method
+        # Check if starting position is safe
+        if not self.environment.is_position_safe(position[0], position[1], position[2]):
+            print(f"⚠️ Warning: Starting position {position} may not be safe for flight!")
         
-        # Check if starting position is safe (3D-aware)
-        if len(start_pos) >= 3:
-            if not self.environment.is_position_safe(start_pos[0], start_pos[1], start_pos[2]):
-                print(f"⚠️ Warning: Starting position {start_pos} may not be safe for flight!")
-        else:
-            if not self.environment.is_position_safe(start_pos[0], start_pos[1]):
-                print(f"⚠️ Warning: Starting position {start_pos} may not be safe for flight!")
+        # Check if goal position is safe
+        if not self.environment.is_position_safe(goal[0], goal[1], goal[2]):
+            print(f"⚠️ Warning: Goal position {goal} may not be safe for flight!")
         
-        # Check if goal position is safe (3D-aware)
-        if len(goal_pos) >= 3:
-            if not self.environment.is_position_safe(goal_pos[0], goal_pos[1], goal_pos[2]):
-                print(f"⚠️ Warning: Goal position {goal_pos} may not be safe for flight!")
-        else:
-            if not self.environment.is_position_safe(goal_pos[0], goal_pos[1]):
-                print(f"⚠️ Warning: Goal position {goal_pos} may not be safe for flight!")
-        
-        drone = create_drone(drone_type, start_pos, heading, altitude)
+        drone = create_drone(drone_type, position, heading)
         drone_index = len(self.drones)
         
         self.drones.append(drone)
-        self.goals[drone_index] = np.array(goal_pos)
+        self.goals[drone_index] = np.array(goal)
         self.positions[drone_index] = []
         
         return drone_index
@@ -118,7 +95,7 @@ class Simulation:
 
     def check_collision(self, drone_i: BaseDrone, drone_j: BaseDrone, expanded: int = 0) -> bool:
         """
-        Check if two drones are colliding based on their collision zones (3D-aware).
+        Check if two drones are colliding based on their 3D collision zones.
         
         Args:
             drone_i: First drone
@@ -129,48 +106,22 @@ class Simulation:
             bool: True if drones are colliding
         """
         zi = drone_i.get_collision_zone()
-        zj = drone_j.position
-        
-        # Ensure both positions are in 3D format for consistent comparison
-        pos_i = np.array(drone_i.position)
         pos_j = np.array(drone_j.position)
         
         # Handle different collision zone types
         if len(zi) == 2:
-            # Circular/Spherical collision zone (quadcopters)
+            # Spherical collision zone (quadcopters)
             center, radius = zi
             center_array = np.array(center)
             
-            # Calculate 3D distance if both positions are 3D
-            if len(center_array) >= 3 and len(pos_j) >= 3:
-                distance = np.linalg.norm(center_array - pos_j)
-            else:
-                # Fall back to 2D distance for backward compatibility
-                distance = np.linalg.norm(center_array[:2] - pos_j[:2])
-            
+            # Calculate 3D distance
+            distance = np.linalg.norm(center_array - pos_j)
             return distance <= (radius + expanded)
         
-        elif len(zi) == 3:
-            # Rectangular collision zone (fixed-wing, 2D legacy)
-            p1, p2, width = zi
-            a, b, p = np.array(p1), np.array(p2), np.array(zj)
-            
-            # Use only x, y coordinates for 2D rectangular collision
-            ab, ap = b[:2] - a[:2], p[:2] - a[:2]
-            ab_dot = np.dot(ab, ab)
-            if ab_dot == 0:
-                return False
-            
-            proj = np.dot(ap, ab) / ab_dot
-            closest = a[:2] + proj * ab
-            dist = np.linalg.norm(closest - p[:2])
-            
-            return 0 <= proj <= 1 and dist <= (width / 2 + expanded)
-        
         elif len(zi) == 4:
-            # 3D Box collision zone (fixed-wing, 3D)
+            # 3D Box collision zone (fixed-wing)
             p1, p2, width, height = zi
-            a, b, p = np.array(p1), np.array(p2), np.array(zj)
+            a, b, p = np.array(p1), np.array(p2), np.array(pos_j)
             
             # Check if point is within the 3D box defined by the line segment
             ab = b - a
@@ -191,7 +142,6 @@ class Simulation:
             dist_vec = p - closest_on_line
             
             # Check if within width and height constraints
-            # This is a simplified 3D box check - could be improved with proper orientation
             horizontal_dist = np.linalg.norm(dist_vec[:2])  # x, y distance
             vertical_dist = abs(dist_vec[2]) if len(dist_vec) > 2 else 0  # z distance
             
@@ -273,18 +223,11 @@ class Simulation:
             # Get other drones for collision avoidance
             other_drones = self.get_other_drones(i)
             
-            # Get terrain effects at current position (3D-aware)
+            # Get terrain effects at current position (3D)
             drone_pos = drone.position
-            if len(drone_pos) >= 3:
-                # 3D position available
-                constraints = self.environment.get_flight_constraints_at_position(
-                    drone_pos[0], drone_pos[1], drone_pos[2]
-                )
-            else:
-                # Fall back to 2D for backward compatibility
-                constraints = self.environment.get_flight_constraints_at_position(
-                    drone_pos[0], drone_pos[1]
-                )
+            constraints = self.environment.get_flight_constraints_at_position(
+                drone_pos[0], drone_pos[1], drone_pos[2]
+            )
             weather_effects = self.environment.get_weather_effects()
             
             # Call the drone's own compute_action method
@@ -294,16 +237,12 @@ class Simulation:
                 other_drones=other_drones
             )
             
-            # Apply terrain speed modifiers (3D-aware)
+            # Apply terrain speed modifiers (3D)
             if hasattr(drone, 'max_speed') and isinstance(action, list):
-                # For quadcopters with velocity commands
+                # For quadcopters with 3D velocity commands [vx, vy, vz]
                 speed_mod = constraints['speed_modifier'] * weather_effects['speed_modifier']
-                
-                if len(action) == 2:
-                    # 2D action: [vx, vy]
-                    action = [action[0] * speed_mod, action[1] * speed_mod]
-                elif len(action) == 3:
-                    # 3D action: [vx, vy, vz] - apply speed modifier to horizontal components only
+                if len(action) == 3:
+                    # Apply speed modifier to horizontal components only
                     action = [action[0] * speed_mod, action[1] * speed_mod, action[2]]
                     
             elif isinstance(action, list) and len(action) == 2:
@@ -312,11 +251,6 @@ class Simulation:
                 if constraints['speed_modifier'] < 1.0:
                     steering *= constraints['speed_modifier']
                 action = [steering, climb_rate]
-                
-            elif isinstance(action, (int, float)):
-                # For fixed-wing with steering angles - terrain affects turn rate
-                if constraints['speed_modifier'] < 1.0:
-                    action *= constraints['speed_modifier']
             
             actions.append(action)
         
@@ -369,12 +303,6 @@ class Simulation:
             print("❌ No simulation data available. Run simulation first.")
             return
         
-        # Check if we actually have 3D data
-        has_3d_data = any(len(self.positions[i][0]) >= 3 for i in self.positions if len(self.positions[i]) > 0)
-        if not has_3d_data:
-            print("⚠️ No 3D position data found. Using create_animation() for 2D visualization.")
-            return self.create_animation(output_file, interval)
-        
         fig = plt.figure(figsize=(14, 10))
         ax = fig.add_subplot(111, projection='3d')
         
@@ -390,7 +318,7 @@ class Simulation:
             if len(goal) >= 3:
                 ax.scatter(*goal, c='green', marker='x', s=100, label=f'Goal {i}')
             else:
-                # 2D goal, use default altitude
+                # If 2D goal provided, use default altitude
                 ax.scatter(goal[0], goal[1], 50.0, c='green', marker='x', s=100, label=f'Goal {i}')
         
         # Set up 3D plot bounds
@@ -440,19 +368,18 @@ class Simulation:
                     if len(traj) > 0:
                         if traj.shape[1] >= 3:  # 3D positions
                             line.set_data_3d(traj[:, 0], traj[:, 1], traj[:, 2])
-                        else:  # 2D positions, add default altitude
+                        else:  # Handle legacy 2D positions by adding default altitude
                             default_alt = np.full(len(traj), 50.0)
                             line.set_data_3d(traj[:, 0], traj[:, 1], default_alt)
             
             # Add current drone positions as points
-            current_points = []
             for i, drone in enumerate(self.drones):
                 if frame < len(self.positions[i]):
                     current_pos = self.positions[i][frame]
                     if len(current_pos) >= 3:
                         ax.scatter(current_pos[0], current_pos[1], current_pos[2], 
                                  c=self.colors[i % len(self.colors)], s=50, alpha=0.8)
-                    else:
+                    else:  # Handle legacy 2D positions
                         ax.scatter(current_pos[0], current_pos[1], 50.0,
                                  c=self.colors[i % len(self.colors)], s=50, alpha=0.8)
         
@@ -466,43 +393,9 @@ class Simulation:
         print(f"📹 3D Animation saved as {output_file}")
         plt.close()
     
-    def create_smart_animation(self, output_file: str = None, interval: int = 100):
+    def create_animation(self, output_file: str = "simulation_3d.gif", interval: int = 100):
         """
-        Create an animated visualization, automatically choosing 2D or 3D based on data.
-        
-        Args:
-            output_file: Path to save the animation (auto-generated if None)
-            interval: Time between frames in milliseconds
-        """
-        if not self.positions:
-            print("❌ No simulation data available. Run simulation first.")
-            return
-        
-        # Check if we have meaningful 3D movement (altitude changes > 5m)
-        has_meaningful_3d = False
-        for drone_positions in self.positions.values():
-            if len(drone_positions) > 1:
-                altitudes = [pos[2] for pos in drone_positions if len(pos) >= 3]
-                if len(altitudes) > 1:
-                    altitude_range = max(altitudes) - min(altitudes)
-                    if altitude_range > 5.0:  # More than 5m altitude variation
-                        has_meaningful_3d = True
-                        break
-        
-        if has_meaningful_3d:
-            print("🎬 Creating 3D visualization (detected significant altitude changes)")
-            if output_file is None:
-                output_file = "simulation_3d.gif"
-            self.create_3d_animation(output_file, interval)
-        else:
-            print("🎬 Creating 2D visualization (minimal altitude changes)")
-            if output_file is None:
-                output_file = "simulation_2d.gif"
-            self.create_animation(output_file, interval)
-    
-    def create_animation(self, output_file: str = "simulation.gif", interval: int = 100):
-        """
-        Create an animated visualization of the simulation.
+        Create a 3D animated visualization of the drone simulation.
         
         Args:
             output_file: Path to save the animation
@@ -512,97 +405,6 @@ class Simulation:
             print("❌ No simulation data available. Run simulation first.")
             return
         
-        fig, ax = plt.subplots(figsize=(12, 10))
-        
-        # Draw terrain first (background)
-        self.environment.visualize_terrain(ax)
-        
-        # Create line plots for trajectories
-        lines = []
-        for i in range(len(self.drones)):
-            line, = ax.plot([], [], color=self.colors[i % len(self.colors)], 
-                           label=f"Drone {i}", linewidth=2)
-            lines.append(line)
-        
-        # Add goal markers
-        for i, goal in self.goals.items():
-            ax.scatter(*goal, c='green', marker='x', s=100, zorder=10)
-            ax.annotate(f'Goal {i}', goal, xytext=(5, 5), 
-                       textcoords='offset points', fontsize=8)
-        
-        # Set up plot
-        ax.set_xlim(self.plot_bounds[0], self.plot_bounds[1])
-        ax.set_ylim(self.plot_bounds[2], self.plot_bounds[3])
-        ax.set_aspect('equal')
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc='upper right')
-        ax.set_xlabel('X Position (meters)')
-        ax.set_ylabel('Y Position (meters)')
-        
-        # Add environment info to title
-        env_info = f" | Terrain Zones: {len(self.environment.terrain_zones)}"
-        weather = self.environment.weather_conditions
-        if weather['wind_speed'] > 0:
-            env_info += f" | Wind: {weather['wind_speed']:.1f}m/s"
-        
-        def update(frame: int):
-            # Update title with collision warning and environment info
-            collision_warning = '⚠️ COLLISION!' if frame in self.collisions else ''
-            ax.set_title(f"{self.name} - Step {frame} {collision_warning}{env_info}")
-            
-            # Redraw terrain (in case it gets overwritten)
-            # Remove old terrain patches first
-            terrain_patches = [p for p in ax.patches if hasattr(p, '_terrain_zone')]
-            for patch in terrain_patches:
-                patch.remove()
-            
-            # Redraw terrain
-            self.environment.visualize_terrain(ax)
-            
-            # Remove previous collision zone patches (but keep terrain)
-            collision_patches = [p for p in reversed(ax.patches) if not hasattr(p, '_terrain_zone')]
-            for patch in collision_patches:
-                patch.remove()
-            
-            # Update trajectory lines
-            for i, line in enumerate(lines):
-                if i < len(self.positions) and frame < len(self.positions[i]):
-                    traj = np.array(self.positions[i][:frame+1])
-                    if len(traj) > 0:
-                        line.set_data(traj[:, 0], traj[:, 1])
-            
-            # Draw collision zones at current positions
-            for i, drone in enumerate(self.drones):
-                if frame < len(self.positions[i]):
-                    # Update drone position for collision zone calculation
-                    current_pos = self.positions[i][frame]
-                    drone.position = current_pos
-                    
-                    zone = drone.get_collision_zone()
-                    color = self.colors[i % len(self.colors)]
-                    
-                    # Handle circular collision zone
-                    if len(zone) == 2:
-                        center, radius = zone
-                        circ = plt.Circle(center, radius, color=color, alpha=0.2)
-                        ax.add_patch(circ)
-                    
-                    # Handle rectangular collision zone
-                    elif len(zone) == 3:
-                        p1, p2, w = zone
-                        dx, dy = np.array(p2) - np.array(p1)
-                        length = np.linalg.norm([dx, dy])
-                        angle = np.arctan2(dy, dx) * 180 / np.pi
-                        rect = plt.Rectangle(p1, length, w, angle=angle, 
-                                           color=color, alpha=0.2)
-                        ax.add_patch(rect)
-        
-        # Create animation
-        total_frames = max(len(pos) for pos in self.positions.values()) if self.positions else 1
-        ani = animation.FuncAnimation(fig, update, frames=total_frames, 
-                                    interval=interval, repeat=True)
-        
-        # Save animation
-        ani.save(output_file, writer="pillow")
-        print(f"📹 Animation saved as {output_file}")
-        plt.close()
+        print("🎬 Creating 3D visualization")
+        self.create_3d_animation(output_file, interval)
+

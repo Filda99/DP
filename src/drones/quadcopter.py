@@ -6,10 +6,9 @@ import numpy as np
 class Quadcopter(BaseDrone):
     '''Quadcopter drone class with basic movement and collision detection.'''
     
-    def __init__(self, position, heading, altitude=50.0):
-        '''Initialize the drone with position, heading, and altitude.
-        The position can be [x, y] (2D) or [x, y, z] (3D), heading is in degrees.
-        If position is 2D, altitude parameter will be used for the z-coordinate.'''
+    def __init__(self, position, heading):
+        '''Initialize the drone with 3D position and heading.
+        The position must be [x, y, z] and heading is in degrees.'''
 
         def calculate_collision_radius(width, length):
             '''Calculate the collision radius based on the drone's dimensions.
@@ -21,7 +20,7 @@ class Quadcopter(BaseDrone):
             collision_radius = radius + safety_margin
             return collision_radius
         
-        super().__init__(position, heading, altitude)
+        super().__init__(position, heading)
         self.mass = 0.496                  # kg
         self.max_speed = 14.7              # m/s (horizontal)
         self.ascent_speed = 4.0            # m/s (vertical up)
@@ -36,27 +35,19 @@ class Quadcopter(BaseDrone):
         self.max_altitude = 500.0          # Maximum operational altitude for this model
 
     def move(self, action):
-        '''Execute one time step of movement based on velocity commands.
+        '''Execute one time step of 3D movement based on velocity commands.
         
         Args:
-            action: Velocity vector - can be:
-                   - [vx, vy] for 2D movement (backward compatibility)
-                   - [vx, vy, vz] for 3D movement
-                   Each component should be in [-1, 1] representing percentage of maximum speed.
+            action: 3D velocity vector [vx, vy, vz] where each component is in [-1, 1]
+                   representing percentage of maximum speed in each direction.
                    
         The drone moves smoothly by applying constant velocity over the time step duration,
-        updating its position linearly rather than teleporting instantly.'''
+        updating its 3D position linearly.'''
         
-        # Handle both 2D and 3D action inputs for backward compatibility
-        if len(action) == 2:
-            # 2D action: [vx, vy] - no altitude change
-            dx, dy = np.clip(action, -1, 1)
-            dz = 0.0
-        elif len(action) == 3:
-            # 3D action: [vx, vy, vz]
-            dx, dy, dz = np.clip(action, -1, 1)
-        else:
-            raise ValueError("Action must be either [vx, vy] or [vx, vy, vz]")
+        if len(action) != 3:
+            raise ValueError("Action must be [vx, vy, vz] - 3D velocity vector required")
+        
+        dx, dy, dz = np.clip(action, -1, 1)
         
         # Calculate velocities based on action and maximum speeds
         vx = dx * self.max_speed
@@ -78,22 +69,18 @@ class Quadcopter(BaseDrone):
         Intelligent quadcopter movement strategy with 3D collision avoidance.
         
         Args:
-            goal: Target position coordinates as numpy array (2D or 3D)
+            goal: Target position coordinates as numpy array [x, y, z]
             avoid: If True, performs collision avoidance behavior
             other_drones: List of other drones to avoid
             
         Returns:
-            List of [x_velocity, y_velocity] (2D) or [x_velocity, y_velocity, z_velocity] (3D)
+            List of [x_velocity, y_velocity, z_velocity]
         """
-        # Handle both 2D and 3D goals for backward compatibility
-        if len(goal) == 2:
-            # 2D goal: [x, y] - maintain current altitude
+        # Convert goal to 3D numpy array
+        goal_3d = np.array(goal)
+        if len(goal_3d) == 2:
+            # If 2D goal provided, maintain current altitude
             goal_3d = np.array([goal[0], goal[1], self.position[2]])
-        elif len(goal) == 3:
-            # 3D goal: [x, y, z]
-            goal_3d = np.array(goal)
-        else:
-            raise ValueError("Goal must be either [x, y] or [x, y, z]")
         
         # Calculate direction vector from current position to goal
         vec = goal_3d - np.array(self.position)
@@ -101,10 +88,7 @@ class Quadcopter(BaseDrone):
         
         # If very close to goal, stop moving
         if norm < 1.0:
-            if len(goal) == 2:
-                return [0, 0]  # 2D output for backward compatibility
-            else:
-                return [0, 0, 0]  # 3D output
+            return [0, 0, 0]
         
         goal_direction = vec / norm
         
@@ -144,23 +128,17 @@ class Quadcopter(BaseDrone):
                 
                 if combined_norm > 0:
                     result = (combined_vec / combined_norm)
-                    if len(goal) == 2:
-                        return result[:2].tolist()  # Return only x, y for 2D compatibility
-                    else:
-                        return result.tolist()      # Return full 3D vector
+                    return result.tolist()      # Return full 3D vector
         
         # Normal goal-seeking behavior
-        if len(goal) == 2:
-            return goal_direction[:2].tolist()  # Return only x, y for 2D compatibility
-        else:
-            return goal_direction.tolist()      # Return full 3D vector
+        return goal_direction.tolist()      # Return full 3D vector
 
     def get_collision_zone(self):
-        '''Return the collision zone as a circle/sphere with the drone's position and collision radius.
+        '''Return the collision zone as a sphere with the drone's position and collision radius.
         
         Returns:
             Tuple of (center_position, radius) where:
-            - center_position is [x, y, z] for 3D or [x, y] for backward compatibility
+            - center_position is [x, y, z] 3D position
             - radius is the collision detection radius
         '''
         return (self.position.copy(), self.collision_radius)
