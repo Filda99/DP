@@ -1,9 +1,13 @@
 import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
+matplotlib.use('Agg')  # Use non-interactive backend for fallback
 import matplotlib.animation as animation
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+import plotly.offline as pyo
 from typing import List, Dict, Tuple, Optional
 from drone_factory import create_drone
 from drones.base_drone import BaseDrone
@@ -407,4 +411,446 @@ class Simulation:
         
         print("🎬 Creating 3D visualization")
         self.create_3d_animation(output_file, interval)
+
+    def create_interactive_3d_view(self, output_file: str = "simulation_interactive.html", auto_open: bool = True):
+        """
+        Create an interactive 3D visualization using Plotly with full navigation controls.
+        
+        This provides:
+        - Interactive 3D navigation (rotate, zoom, pan)
+        - Hover information for drones and goals
+        - Play/pause animation controls
+        - Camera angle controls
+        - Terrain visualization
+        - Real-time collision detection visualization
+        
+        Args:
+            output_file: Path to save the HTML file
+            auto_open: Whether to automatically open the visualization in browser
+        """
+        if not self.positions:
+            print("❌ No simulation data available. Run simulation first.")
+            return
+        
+        print("🚀 Creating interactive 3D visualization...")
+        
+        # Create the main 3D figure
+        fig = go.Figure()
+        
+        # Define colors for drones
+        colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray']
+        
+        # Get bounds for the visualization
+        all_positions = []
+        for drone_positions in self.positions.values():
+            all_positions.extend(drone_positions)
+        
+        if all_positions:
+            all_pos_array = np.array(all_positions)
+            x_range = [all_pos_array[:, 0].min() - 10, all_pos_array[:, 0].max() + 10]
+            y_range = [all_pos_array[:, 1].min() - 10, all_pos_array[:, 1].max() + 10]
+            z_range = [max(0, all_pos_array[:, 2].min() - 20), all_pos_array[:, 2].max() + 20]
+        else:
+            x_range, y_range, z_range = [-50, 100], [-50, 100], [0, 150]
+        
+        # Add terrain visualization
+        self._add_terrain_to_plotly(fig)
+        
+        # Add drone trajectories
+        for i, drone_positions in self.positions.items():
+            if len(drone_positions) > 0:
+                traj = np.array(drone_positions)
+                color = colors[i % len(colors)]
+                
+                # Add trajectory line
+                fig.add_trace(go.Scatter3d(
+                    x=traj[:, 0],
+                    y=traj[:, 1], 
+                    z=traj[:, 2],
+                    mode='lines+markers',
+                    line=dict(color=color, width=4),
+                    marker=dict(size=3, color=color),
+                    name=f'Drone {i} Path',
+                    hovertemplate=f'<b>Drone {i}</b><br>' +
+                                'Position: (%{x:.1f}, %{y:.1f}, %{z:.1f})<br>' +
+                                '<extra></extra>'
+                ))
+                
+                # Add start position marker
+                fig.add_trace(go.Scatter3d(
+                    x=[traj[0, 0]],
+                    y=[traj[0, 1]],
+                    z=[traj[0, 2]],
+                    mode='markers',
+                    marker=dict(size=10, color=color, symbol='diamond'),
+                    name=f'Drone {i} Start',
+                    hovertemplate=f'<b>Drone {i} Start</b><br>' +
+                                'Position: (%{x:.1f}, %{y:.1f}, %{z:.1f})<br>' +
+                                '<extra></extra>'
+                ))
+        
+        # Add goal markers
+        for i, goal in self.goals.items():
+            if len(goal) >= 3:
+                fig.add_trace(go.Scatter3d(
+                    x=[goal[0]],
+                    y=[goal[1]],
+                    z=[goal[2]], 
+                    mode='markers',
+                    marker=dict(
+                        size=12,
+                        color='yellow',
+                        symbol='circle',
+                        line=dict(color='black', width=1)
+                    ),
+                    name=f'Goal {i}',
+                    hovertemplate=f'<b>Goal {i}</b><br>' +
+                                'Target: (%{x:.1f}, %{y:.1f}, %{z:.1f})<br>' +
+                                '<extra></extra>'
+                ))
+        
+        # Add collision indicators
+        if hasattr(self, 'collisions') and self.collisions:
+            collision_points = []
+            for step in self.collisions:
+                for i, drone_positions in self.positions.items():
+                    if step < len(drone_positions):
+                        collision_points.append(drone_positions[step])
+            
+            if collision_points:
+                collision_array = np.array(collision_points)
+                fig.add_trace(go.Scatter3d(
+                    x=collision_array[:, 0],
+                    y=collision_array[:, 1],
+                    z=collision_array[:, 2],
+                    mode='markers',
+                    marker=dict(
+                        size=12,
+                        color='red',
+                        symbol='x',
+                        line=dict(color='darkred', width=3)
+                    ),
+                    name='Collisions',
+                    hovertemplate='<b>⚠️ COLLISION!</b><br>' +
+                                'Position: (%{x:.1f}, %{y:.1f}, %{z:.1f})<br>' +
+                                '<extra></extra>'
+                ))
+        
+        # Configure layout for optimal interactive experience
+        fig.update_layout(
+            title=dict(
+                text=f"🚁 {self.name} - Interactive 3D Visualization",
+                x=0.5,
+                font=dict(size=20, color='darkblue')
+            ),
+            scene=dict(
+                xaxis=dict(
+                    title='X Position (m)',
+                    range=x_range,
+                    backgroundcolor='rgba(0,0,0,0)',
+                    gridcolor='lightgray',
+                    showbackground=True,
+                    zerolinecolor='gray'
+                ),
+                yaxis=dict(
+                    title='Y Position (m)', 
+                    range=y_range,
+                    backgroundcolor='rgba(0,0,0,0)',
+                    gridcolor='lightgray',
+                    showbackground=True,
+                    zerolinecolor='gray'
+                ),
+                zaxis=dict(
+                    title='Altitude (m)',
+                    range=z_range,
+                    backgroundcolor='rgba(0,0,0,0)',
+                    gridcolor='lightgray',
+                    showbackground=True,
+                    zerolinecolor='gray'
+                ),
+                bgcolor='rgba(240,240,240,0.8)',
+                camera=dict(
+                    eye=dict(x=1.5, y=1.5, z=1.2),
+                    center=dict(x=0, y=0, z=0),
+                    up=dict(x=0, y=0, z=1)
+                ),
+                aspectmode='cube'
+            ),
+            width=1200,
+            height=800,
+            margin=dict(l=0, r=0, t=50, b=0),
+            legend=dict(
+                x=0.02,
+                y=0.98,
+                bgcolor='rgba(255,255,255,0.8)',
+                bordercolor='gray',
+                borderwidth=1
+            ),
+            font=dict(size=12)
+        )
+        
+        # Add annotations with simulation info
+        total_distance = 0
+        for drone_positions in self.positions.values():
+            if len(drone_positions) > 1:
+                traj = np.array(drone_positions)
+                distances = np.linalg.norm(np.diff(traj, axis=0), axis=1)
+                total_distance += np.sum(distances)
+        
+        info_text = (
+            f"📊 Simulation Statistics:<br>"
+            f"• Total Steps: {self.step_count}<br>" 
+            f"• Drones: {len(self.drones)}<br>"
+            f"• Total Distance: {total_distance:.1f}m<br>"
+            f"• Collisions: {len(self.collisions) if hasattr(self, 'collisions') else 0}"
+        )
+        
+        fig.add_annotation(
+            text=info_text,
+            xref="paper", yref="paper",
+            x=0.02, y=0.02,
+            xanchor='left', yanchor='bottom',
+            showarrow=False,
+            font=dict(size=11, color='darkblue'),
+            bgcolor='rgba(255,255,255,0.9)',
+            bordercolor='gray',
+            borderwidth=1
+        )
+        
+        # Save and optionally open the interactive visualization
+        pyo.plot(fig, filename=output_file, auto_open=auto_open)
+        print(f"🌐 Interactive 3D visualization saved as {output_file}")
+        if auto_open:
+            print("🚀 Opening in your default web browser...")
+            print("💡 Use mouse to rotate, scroll to zoom, drag to pan!")
+        
+        return fig
+
+    def _add_terrain_to_plotly(self, fig):
+        """Add terrain zones to the Plotly figure."""
+        if not hasattr(self.environment, 'terrain_zones'):
+            return
+            
+        for zone in self.environment.terrain_zones:
+            x_min, x_max, y_min, y_max = zone.bounds
+            
+            # Create terrain surface at ground level
+            if zone.terrain_type.value in ['lake', 'river']:
+                # Water features - blue with transparency
+                color = 'rgba(100,150,255,0.3)'
+                z_level = 0.5
+            elif zone.terrain_type.value == 'forest':
+                # Forest - green 
+                color = 'rgba(50,150,50,0.4)'
+                z_level = 1.0
+            elif zone.terrain_type.value == 'mountain':
+                # Mountains - gray/brown
+                color = 'rgba(139,69,19,0.4)'
+                z_level = 2.0
+            elif zone.terrain_type.value == 'urban':
+                # Urban - light gray
+                color = 'rgba(180,180,180,0.4)'
+                z_level = 1.5
+            elif zone.terrain_type.value == 'no_fly_zone':
+                # No-fly zone - red
+                color = 'rgba(255,0,0,0.3)'
+                z_level = 0.1
+            else:
+                # Open field - light green
+                color = 'rgba(144,238,144,0.3)'
+                z_level = 0.1
+            
+            # Add terrain as a surface
+            x_terrain = [x_min, x_max, x_max, x_min, x_min]
+            y_terrain = [y_min, y_min, y_max, y_max, y_min]
+            z_terrain = [z_level] * 5
+            
+            fig.add_trace(go.Scatter3d(
+                x=x_terrain,
+                y=y_terrain,
+                z=z_terrain,
+                mode='lines',
+                line=dict(color=color, width=0),
+                fill='tonext' if zone.terrain_type.value != 'open_field' else None,
+                name=f'{zone.terrain_type.value.title()} Zone',
+                showlegend=True,
+                hovertemplate=f'<b>{zone.terrain_type.value.title()} Zone</b><br>' +
+                            f'Bounds: ({x_min:.1f}-{x_max:.1f}, {y_min:.1f}-{y_max:.1f})<br>' +
+                            '<extra></extra>'
+            ))
+
+    def create_animated_interactive_view(self, output_file: str = "simulation_animated.html", 
+                                       auto_open: bool = True, frame_duration: int = 200):
+        """
+        Create an animated interactive 3D visualization with frame-by-frame playback controls.
+        
+        Args:
+            output_file: Path to save the HTML file
+            auto_open: Whether to automatically open in browser
+            frame_duration: Duration between frames in milliseconds
+        """
+        if not self.positions:
+            print("❌ No simulation data available. Run simulation first.")
+            return
+            
+        print("🎬 Creating animated interactive 3D visualization...")
+        
+        # Get the maximum number of frames
+        max_frames = max(len(positions) for positions in self.positions.values())
+        colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray']
+        
+        # Create frames for animation
+        frames = []
+        for frame_num in range(max_frames):
+            frame_data = []
+            
+            # Add terrain (static)
+            self._add_terrain_frames(frame_data)
+            
+            # Add drone positions for this frame
+            for i, drone_positions in self.positions.items():
+                if frame_num < len(drone_positions):
+                    pos = drone_positions[frame_num]
+                    color = colors[i % len(colors)]
+                    
+                    # Current drone position
+                    frame_data.append(go.Scatter3d(
+                        x=[pos[0]],
+                        y=[pos[1]],
+                        z=[pos[2]],
+                        mode='markers',
+                        marker=dict(size=10, color=color, symbol='circle'),
+                        name=f'Drone {i}',
+                        hovertemplate=f'<b>Drone {i}</b><br>' +
+                                    f'Step: {frame_num}<br>' +
+                                    'Position: (%{x:.1f}, %{y:.1f}, %{z:.1f})<br>' +
+                                    '<extra></extra>'
+                    ))
+                    
+                    # Trail (path up to current frame)
+                    if frame_num > 0:
+                        trail = np.array(drone_positions[:frame_num+1])
+                        frame_data.append(go.Scatter3d(
+                            x=trail[:, 0],
+                            y=trail[:, 1],
+                            z=trail[:, 2],
+                            mode='lines',
+                            line=dict(color=color, width=3, dash='dot'),
+                            name=f'Drone {i} Trail',
+                            showlegend=False,
+                            hoverinfo='skip'
+                        ))
+            
+            # Check for collisions at this frame
+            collision_warning = ''
+            if hasattr(self, 'collisions') and frame_num in self.collisions:
+                collision_warning = ' ⚠️ COLLISION!'
+            
+            frames.append(go.Frame(
+                data=frame_data,
+                name=str(frame_num),
+                layout=go.Layout(
+                    title=f"🚁 {self.name} - Step {frame_num}{collision_warning}"
+                )
+            ))
+        
+        # Create the figure with the first frame
+        fig = go.Figure(
+            data=frames[0].data if frames else [],
+            frames=frames
+        )
+        
+        # Add static goals that persist throughout the animation
+        for i, goal in self.goals.items():
+            if len(goal) >= 3:
+                fig.add_trace(go.Scatter3d(
+                    x=[goal[0]],
+                    y=[goal[1]], 
+                    z=[goal[2]],
+                    mode='markers',
+                    marker=dict(size=12, color='yellow', symbol='circle'),
+                    name=f'Goal {i}',
+                    hovertemplate=f'<b>Goal {i}</b><br>' +
+                                'Target: (%{x:.1f}, %{y:.1f}, %{z:.1f})<br>' +
+                                '<extra></extra>'
+                ))
+        
+        # Configure layout
+        fig.update_layout(
+            title=f"🚁 {self.name} - Animated Interactive 3D Visualization",
+            scene=dict(
+                xaxis=dict(title='X Position (m)', range=self.plot_bounds[:2]),
+                yaxis=dict(title='Y Position (m)', range=self.plot_bounds[2:]),
+                zaxis=dict(title='Altitude (m)', range=[0, 200]),
+                camera=dict(
+                    eye=dict(x=1.5, y=1.5, z=1.2)
+                ),
+                aspectmode='cube'
+            ),
+            updatemenus=[{
+                'type': 'buttons',
+                'direction': 'left',
+                'showactive': False,
+                'x': 0.1,
+                'y': 0.02,
+                'xanchor': 'right',
+                'yanchor': 'bottom',
+                'buttons': [
+                    {
+                        'label': '▶️ Play',
+                        'method': 'animate',
+                        'args': [None, {
+                            'frame': {'duration': frame_duration, 'redraw': True},
+                            'fromcurrent': True,
+                            'transition': {'duration': 50}
+                        }]
+                    },
+                    {
+                        'label': '⏸️ Pause',
+                        'method': 'animate',
+                        'args': [[None], {
+                            'frame': {'duration': 0, 'redraw': False},
+                            'mode': 'immediate',
+                            'transition': {'duration': 0}
+                        }]
+                    }
+                ]
+            }],
+            sliders=[{
+                'steps': [
+                    {
+                        'args': [[f.name], {
+                            'frame': {'duration': 0, 'redraw': True},
+                            'mode': 'immediate',
+                            'transition': {'duration': 0}
+                        }],
+                        'label': f'Step {f.name}',
+                        'method': 'animate'
+                    } for f in frames
+                ],
+                'active': 0,
+                'x': 0.1,
+                'len': 0.8,
+                'xanchor': 'left',
+                'y': 0.02,
+                'yanchor': 'bottom'
+            }],
+            width=1200,
+            height=800
+        )
+        
+        # Save and open
+        pyo.plot(fig, filename=output_file, auto_open=auto_open)
+        print(f"🎬 Animated interactive visualization saved as {output_file}")
+        if auto_open:
+            print("🚀 Opening in your default web browser...")
+            print("💡 Use the play/pause buttons and slider to control the animation!")
+        
+        return fig
+
+    def _add_terrain_frames(self, frame_data):
+        """Helper method to add terrain data to animation frames."""
+        # This would add terrain data consistently across frames
+        # For now, keeping it simple, but could be expanded
+        pass
 
