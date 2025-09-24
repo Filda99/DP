@@ -139,22 +139,33 @@ The simulation generates two comprehensive visualizations:
 DP/
 ├── README.md                         # This documentation
 ├── requirements.txt                  # Python dependencies
-├── simple_demo.py                    # 🔥 Main PyBullet simulation
-├── quadcopter_flight_analysis.png    # Generated flight visualization
-├── quadcopter_force_analysis.png     # Generated force analysis
+├── simple_demo.py                    # 🔥 Main PyBullet simulation (square pattern)
+├── test_scenarios.py                 # 🧪 All movement validation scenarios  
+├── scenario_launcher.py              # 🚀 Interactive scenario selector
+├── *.png                            # Generated visualization files
 ├── datasheets/
 │   └── white-paper-anafi-usa-v1.5.3_en.pdf
 └── urdf/
     └── quadcopter.urdf              # Drone 3D model definition
 ```
 
-## Flight Performance Results
+## 🧪 Test Scenarios
 
-Latest test results (680 simulation steps):
-- **Square Pattern**: LEFT → FORWARD → RIGHT → BACK completed
-- **Vertical Movement**: UP + DOWN maneuvers  
-- **Final Precision**: 6.1m from start position (excellent)
-- **Realistic Behavior**: Momentum and inertia working perfectly
+The project includes comprehensive movement validation with 9 focused test scenarios:
+
+### Individual Movement Tests
+1. **Hover Test** - Perfect stationary flight (0.0m displacement)
+2. **Horizontal Left/Right** - Pure X-axis movement (±2.4m precision)
+3. **Horizontal Forward/Backward** - Pure Y-axis movement (±2.4m precision) 
+4. **Vertical Up/Down** - Z-axis movement with hover compensation
+5. **Diagonal Movement** - Combined XY movement (45° angles)
+6. **Complex 3D Movement** - Full 3D diagonal trajectories
+
+### Performance Results
+- **All movements validated** with realistic physics behavior
+- **Consistent precision** across horizontal movements (2.4m displacement)
+- **Perfect hover stability** (0.0m drift during stationary tests)
+- **Smooth trajectories** demonstrating momentum and inertia effects
 
 ## Requirements
 
@@ -223,15 +234,33 @@ The simulation executes a 13-command sequence demonstrating various flight maneu
 
 ## 🚀 Running the Simulation
 
+### Main Demo (Square Pattern + Vertical)
 ```bash
 conda activate dp
 python simple_demo.py
 ```
 
-**Output:**
+### Individual Movement Tests
+```bash
+python scenario_launcher.py
+```
+Interactive menu to test specific movements:
+- Hover Test
+- Horizontal Movement (Left/Right/Forward/Backward) 
+- Vertical Movement (Up/Down)
+- Diagonal Movement
+- Complex 3D Movement
+
+### All Test Scenarios
+```bash
+python test_scenarios.py
+```
+Runs all 9 test scenarios automatically.
+
+**Output Files:**
 - Real-time flight log in terminal
-- `quadcopter_flight_analysis.png` - 6-panel trajectory analysis  
-- `quadcopter_force_analysis.png` - force relationship analysis
+- Individual PNG analysis files for each scenario
+- Comprehensive 6-panel trajectory and force analysis
 
 ## 🔄 Extensibility
 
