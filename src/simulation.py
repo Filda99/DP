@@ -200,6 +200,86 @@ class Simulation:
         """Get status of all drones."""
         return {name: self.get_drone_status(name) for name in self.drones.keys()}
     
+    def _draw_3d_building(self, ax, pos, size):
+        """Draw a 3D rectangular building."""
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        
+        # Building dimensions
+        x, y, z = pos[0], pos[1], 0  # Ground level
+        dx, dy, dz = size[0], size[1], size[2]
+        
+        # Define the 8 vertices of the rectangular prism
+        vertices = [
+            [x-dx/2, y-dy/2, z],      # Bottom face
+            [x+dx/2, y-dy/2, z],
+            [x+dx/2, y+dy/2, z],
+            [x-dx/2, y+dy/2, z],
+            [x-dx/2, y-dy/2, z+dz],   # Top face
+            [x+dx/2, y-dy/2, z+dz],
+            [x+dx/2, y+dy/2, z+dz],
+            [x-dx/2, y+dy/2, z+dz]
+        ]
+        
+        # Define the 6 faces of the cube
+        faces = [
+            [vertices[0], vertices[1], vertices[2], vertices[3]],  # Bottom
+            [vertices[4], vertices[5], vertices[6], vertices[7]],  # Top
+            [vertices[0], vertices[1], vertices[5], vertices[4]],  # Front
+            [vertices[2], vertices[3], vertices[7], vertices[6]],  # Back
+            [vertices[1], vertices[2], vertices[6], vertices[5]],  # Right
+            [vertices[4], vertices[7], vertices[3], vertices[0]]   # Left
+        ]
+        
+        # Create and add the 3D building
+        building = Poly3DCollection(faces, alpha=0.4, facecolor='lightgray', edgecolor='darkgray')
+        ax.add_collection3d(building)
+    
+    def _draw_3d_forest(self, ax, center, radius):
+        """Draw a 3D forest as cylindrical canopy."""
+        # Create multiple cylinder levels for tree canopy
+        heights = [5, 10, 15]  # Different tree heights
+        
+        for i, height in enumerate(heights):
+            # Create cylinder at each height level
+            theta = np.linspace(0, 2*np.pi, 20)
+            z_cyl = np.linspace(0, height, 10)
+            
+            # Cylinder surface
+            for j in range(len(theta)-1):
+                for k in range(len(z_cyl)-1):
+                    # Create quad faces for cylinder
+                    x1 = center[0] + radius * np.cos(theta[j]) * (0.8 + 0.2 * k/len(z_cyl))
+                    y1 = center[1] + radius * np.sin(theta[j]) * (0.8 + 0.2 * k/len(z_cyl))
+                    x2 = center[0] + radius * np.cos(theta[j+1]) * (0.8 + 0.2 * k/len(z_cyl))
+                    y2 = center[1] + radius * np.sin(theta[j+1]) * (0.8 + 0.2 * k/len(z_cyl))
+                    
+            # Simplified: just draw the canopy outline at different heights
+            for height in heights:
+                x_circle = center[0] + radius * 0.9 * np.cos(theta)
+                y_circle = center[1] + radius * 0.9 * np.sin(theta)
+                z_circle = np.full_like(x_circle, height)
+                ax.plot(x_circle, y_circle, z_circle, color='green', alpha=0.6, linewidth=2)
+    
+    def _draw_3d_lake(self, ax, center, radius):
+        """Draw a 3D lake as a flat disc."""
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        
+        # Create circular disc at ground level
+        theta = np.linspace(0, 2*np.pi, 30)
+        x = center[0] + radius * np.cos(theta)
+        y = center[1] + radius * np.sin(theta)
+        z = np.zeros_like(x)  # Ground level
+        
+        # Create vertices for the disc
+        vertices = list(zip(x, y, z))
+        
+        # Create the flat disc surface
+        lake_surface = Poly3DCollection([vertices], alpha=0.6, facecolor='lightblue', edgecolor='blue')
+        ax.add_collection3d(lake_surface)
+        
+        # Add a circular outline for clarity
+        ax.plot(x, y, z, color='blue', alpha=0.8, linewidth=2)
+    
     def create_visualization(self, drone_name=None, title="Simulation Analysis"):
         """Create comprehensive visualization of simulation results."""
         if drone_name is None:
@@ -234,12 +314,27 @@ class Simulation:
         ax1.scatter(positions[0, 0], positions[0, 1], positions[0, 2], color='green', s=100, label='Start')
         ax1.scatter(positions[-1, 0], positions[-1, 1], positions[-1, 2], color='red', s=100, label='End')
         
-        # Add obstacle visualization
+        # Add 3D buildings as proper rectangular prisms
         for obstacle in self.environment.obstacles:
             pos = obstacle['position']
             size = obstacle['size']
-            # Simple obstacle representation
-            ax1.scatter(pos[0], pos[1], size[2]/2, color='gray', s=200, alpha=0.5, marker='s')
+            
+            # Create a 3D rectangular building
+            self._draw_3d_building(ax1, pos, size)
+        
+        # Add 3D forests and lakes
+        for zone in self.environment.terrain_zones:
+            if zone['type'] == 'forest':
+                center = zone['center']
+                radius = zone['radius']
+                # Draw forest as 3D cylindrical canopy
+                self._draw_3d_forest(ax1, center, radius)
+            
+            elif zone['type'] == 'lake':
+                center = zone['center']
+                radius = zone['radius']
+                # Draw lake as flat 3D disc
+                self._draw_3d_lake(ax1, center, radius)
         
         ax1.set_xlabel('X Position (m)')
         ax1.set_ylabel('Y Position (m)')
@@ -253,13 +348,26 @@ class Simulation:
         ax2.scatter(positions[0, 0], positions[0, 1], color='green', s=100, label='Start')
         ax2.scatter(positions[-1, 0], positions[-1, 1], color='red', s=100, label='End')
         
-        # Add environment features
+        # Add environment features (buildings in top view with height layers)
         for obstacle in self.environment.obstacles:
             pos = obstacle['position']
             size = obstacle['size']
-            rect = plt.Rectangle((pos[0] - size[0]/2, pos[1] - size[1]/2), 
-                               size[0], size[1], 
-                               facecolor='gray', alpha=0.5, label='Buildings')
+            height = size[2]
+            
+            # Create multiple rectangles to show building height (like stacked blocks)
+            layers = min(5, max(1, int(height / 4)))  # More layers for taller buildings
+            for i in range(layers):
+                # Each layer gets darker/more opaque toward the center
+                alpha = 0.2 + (i * 0.6 / layers)  # Gradient from light to dark
+                layer_size = max(0.3, 1.0 - (i * 0.1))  # Slightly smaller each layer
+                
+                rect = plt.Rectangle(
+                    (pos[0] - size[0]/2 * layer_size, pos[1] - size[1]/2 * layer_size), 
+                    size[0] * layer_size, size[1] * layer_size,
+                    facecolor='gray', alpha=alpha, 
+                    label='Buildings' if i == 0 else ""  # Only label first layer
+                )
+                ax2.add_patch(rect)
         
         for zone in self.environment.terrain_zones:
             if zone['type'] == 'forest':

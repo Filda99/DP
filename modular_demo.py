@@ -96,9 +96,9 @@ def main():
     # Choose environment type
     environment_choice = input("Choose environment (1=City, 2=Natural, 3=Mixed, Enter=Mixed): ").strip()
     
-    if environment_choice == "1":
+    if environment_choice.startswith("1"):  # Accept "1" or "1=City" etc.
         sim.setup_city_environment()
-    elif environment_choice == "2":
+    elif environment_choice.startswith("2"):  # Accept "2" or "2=Natural" etc.
         sim.setup_natural_environment()
     else:
         sim.setup_mixed_environment()
@@ -113,7 +113,7 @@ def main():
     
     scenario_choice = input("Choose scenario (1=Single Quad, 2=Multi-drone, Enter=Multi): ").strip()
     
-    if scenario_choice == "1":
+    if scenario_choice.startswith("1"):  # Accept "1" or "1=Single Quad" etc.
         # Single quadcopter scenario
         sim.add_quadcopter("quad1", position=[0, 0, 5])
         scenario_func = simple_quadcopter_scenario
