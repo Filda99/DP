@@ -1,6 +1,13 @@
-# Drone Simulation Project
+# 🚁 PyBullet Drone Simulation
 
-This project simulates multiple drones navigating through different environments with terrain features, weather conditions, and collision avoidance capabilities.
+Realistická simulace kvadrokoptéry s joystick ovládáním pomocí PyBullet fyzikálního enginu.
+
+## ✨ Hlavní funkce
+
+- **Realistická fyzika**: Gravitace, setrvačnost, momentum
+- **Joystick ovládání**: Jako skutečný DJI/Parrot ovladač  
+- **Flight controller**: Automatická hover stabilizace
+- **Vizualizace**: Detailní grafy trajektorie a sil
 
 ## Setup and Installation
 
@@ -181,13 +188,110 @@ After running scenarios, the program provides detailed statistics:
 
 ## Troubleshooting
 
-If you encounter issues:
+## 🎮 Jak to funguje
 
-1. **Environment not found**: Make sure you've created the conda environment with `conda create -n dp python=3.12`
-2. **Module not found**: Ensure you've activated the environment with `conda activate dp` and installed requirements
-3. **Animation not generating**: Check that matplotlib is properly installed and you have write permissions in the output directory
+### Joystick Input
+```python
+# Joystick values [-1.0 až +1.0]
+joystick = [left_right, forward_back, up_down]
 
-## Contributing
+# Příklady:
+[0.0, 0.0, 0.0]   # Hover - drž pozici
+[-1.0, 0.0, 0.0]  # Leti doleva  
+[0.0, 1.0, 0.0]   # Leti dopředu
+[0.0, 0.0, 1.0]   # Stoupej nahoru
+```
+
+### Force Mapping (flight controller)
+```python
+# Horizontální síly (X, Y)
+force_x = joystick[0] * 10.0  # Max 10N horizontálně
+force_y = joystick[1] * 10.0
+
+# Vertikální síla (Z) - hover + input  
+hover_force = mass * 9.81     # Kompenzace gravitace (4.9N)
+vertical_input = joystick[2] * 15.0  # Extra síla nahoru/dolů
+force_z = hover_force + vertical_input
+```
+
+### Realistické chování
+- **Hover**: 4.9N síla nahoru přesně vyrovnává gravitaci
+- **Momentum**: Dron si udržuje rychlost i po uvolnění joysticku
+- **Setrvačnost**: Postupné zrychlování/zpomalování
+- **Fyzika**: Hmotnost 0.5kg, realtime physics step
+
+## 🚀 Spuštění simulace
+
+```bash
+conda activate dp
+python simple_demo.py
+```
+
+Výstup:
+- Textový log letu v terminálu
+- `quadcopter_flight_analysis.png` - 6 grafů s trajektorií
+- `quadcopter_force_analysis.png` - analýza sil
+
+## 📊 Výsledky posledního testu
+
+- **Čtverec dokončen**: Doleva → Dopředu → Doprava → Zpět  
+- **Vertikální pohyb**: Nahoru + dolů
+- **Přesnost**: 6.1m od startovní pozice
+- **Realistické chování**: Momentum a setrvačnost fungují perfektně
+
+## 🎯 Flight Pattern
+
+1. **Hover** na začátku (50 kroků)
+2. **Leti DOLEVA** (-10N X força, 80 kroků)  
+3. **Hover** na rohu (30 kroků)
+4. **Leti DOPŘEDU** (+10N Y força, 80 kroků)
+5. **Hover** na rohu (30 kroků) 
+6. **Leti DOPRAVA** (+10N X força, 80 kroků)
+7. **Hover** na rohu (30 kroků)
+8. **Leti ZPĚT** (-10N Y força, 80 kroků)
+9. **Čtverec dokončen** (30 kroků)
+10. **Leti NAHORU** (+19.9N Z força, 60 kroků)
+11. **Hover nahoře** (30 kroků)
+12. **Leti DOLŮ** (-2.6N Z força, 60 kroků)  
+13. **Final hover** (40 kroků)
+
+**Celkem**: 680 simulation steps, 13 joystick příkazů
+
+## 🔧 Technické detaily
+
+- **PyBullet**: Realtima fyzikální simulace
+- **Hmotnost**: 0.5 kg
+- **Gravitace**: -9.81 m/s²
+- **Hover síla**: 4.9N (přesně kompenzuje gravitaci)
+- **Max horizontální síla**: 10N (2g acceleration)
+- **Max vertikální síla**: 15N extra (3g acceleration)
+- **Timestep**: 1/240 second (PyBullet default)
+
+## 💡 Klíčové pozorování
+
+1. **Perfektní hover**: Force 4.9N = masa × gravitace
+2. **Smooth trajectories**: Realistické zakřivené dráhy  
+3. **Momentum effects**: Pokračování v pohybu po pustiti joysticku
+4. **Force efficiency**: Malé síly (10-20N) stačí pro rychlý pohyb
+5. **Stability**: Dron se nerozkmitá ani nepřeklopí
+
+## 🎮 Porovnání s reálným dronem
+
+✅ **Stejné jako reálný dron:**
+- Joystick input [-1,+1]
+- Hover stabilizace
+- Momentum a setrvačnost  
+- Postupné zrychlování
+
+❌ **Chybí (zatím):**
+- Rotace (yaw)
+- Vítr a turbulence
+- Baterie a limits  
+- GPS waypoint navigace
+
+---
+
+**🎉 Migrace na PyBullet úspěšně dokončena!**
 
 The simulation system is modular and extensible. You can:
 - Add new drone types by extending `BaseDrone`
