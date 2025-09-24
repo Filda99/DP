@@ -1,13 +1,16 @@
-# 🚁 PyBullet Drone Simulation
+# 🚁 PyBullet Drone Simulation - Modular Architecture
 
-Realistic quadcopter simulation with joystick control using PyBullet physics engine.
+Realistic multi-drone simulation with quadcopters and fixed-wing aircraft using PyBullet physics engine.
 
 ## ✨ Key Features
 
-- **Realistic Physics**: Gravity, inertia, momentum effects
-- **Joystick Control**: Like real DJI/Parrot controller
-- **Flight Controller**: Automatic hover stabilization  
-- **Visualization**: Detailed trajectory and force plots
+- **Modular Architecture**: Separate classes for quadcopters and fixed-wing aircraft
+- **Multi-Drone Support**: Simulate multiple aircraft simultaneously
+- **Environmental System**: Cities, forests, lakes with realistic obstacles
+- **Weather Effects**: Wind, turbulence, visibility conditions
+- **Realistic Physics**: Gravity, inertia, momentum, aerodynamics
+- **Flight Controllers**: Hover stabilization for quads, forward flight for fixed-wing
+- **Comprehensive Visualization**: Individual trajectory and force analysis per drone
 
 ## Setup and Installation
 
@@ -43,18 +46,44 @@ The required modules are:
 - `numpy` - For mathematical operations and array handling
 - `matplotlib` - For visualization and animation generation
 
-### 3. Running the Simulation
+## 🏗️ Modular Architecture
 
-To run the PyBullet joystick simulation:
+The simulation uses a modular object-oriented design:
 
+### Drone Classes (`src/drones/`)
+- **`BaseDrone`**: Abstract base class with common physics interface
+- **`Quadcopter`**: Hover-capable multirotor with omnidirectional movement
+- **`FixedWing`**: Forward-flight aircraft with aerodynamic properties
+
+### Environment System (`src/environment.py`)
+- **Cities**: Building blocks with collision detection
+- **Natural Areas**: Forests, lakes, terrain features
+- **Weather**: Wind effects, turbulence, visibility conditions
+
+### Simulation Manager (`src/simulation.py`)
+- Multi-drone coordination
+- Physics stepping and collision detection
+- Comprehensive flight data logging
+- Individual drone visualization generation
+
+### 3. Running Simulations
+
+#### Simple Single-Drone Demo
 ```bash
 python simple_demo.py
 ```
 
-This will:
-- Run a 13-command flight sequence (square pattern + vertical movement)
-- Generate real-time terminal output with position/force data
-- Create visualization plots saved as PNG files
+#### Advanced Modular Multi-Drone Demo
+```bash
+python modular_demo.py
+```
+
+The modular demo will:
+- Create mixed environment (cities + natural features)
+- Add multiple drones (quadcopters + fixed-wing)
+- Apply weather effects (wind, turbulence)
+- Generate individual analysis plots per drone
+- Save comprehensive flight data
 
 ## How the System Works
 
