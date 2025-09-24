@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-Úplně jednoduchá PyBullet simulace - přímé ovládání silami.
-Bez komplikovaných wrapper tříd.
+Simple PyBullet Quadcopter Demo
+
+Completely simple PyBullet simulation - direct force control.
+No complicated wrapper classes.
 """
 
 import sys
@@ -22,7 +24,7 @@ except ImportError:
     print("Matplotlib not available - no visualization will be created")
 
 def create_flight_visualization(trajectory, forces_log, velocities_log, commands_log, joystick_commands):
-    """Vytvoří komprehensivní vizualizaci letu."""
+    """Creates comprehensive flight visualization."""
     
     if not HAS_MATPLOTLIB:
         print("Cannot create visualization - matplotlib not available")
@@ -30,12 +32,12 @@ def create_flight_visualization(trajectory, forces_log, velocities_log, commands
     
     print("\n📊 Creating flight visualization...")
     
-    # Převod na numpy arrays
+    # Convert to numpy arrays
     traj = np.array(trajectory)
     forces = np.array(forces_log)
     vels = np.array(velocities_log)
     
-    # Vytvoř figure s subploty
+    # Create figure with subplots
     fig = plt.figure(figsize=(20, 12))
     
     # 1. 3D Trajectory
@@ -141,7 +143,7 @@ def create_flight_visualization(trajectory, forces_log, velocities_log, commands
     print("✅ Visualization saved as 'quadcopter_flight_analysis.png'")
     plt.close()
     
-    # Dodatečný graf - force vs position
+    # Additional graph - force vs position
     fig2, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
     
     # Force vs X position
@@ -181,21 +183,21 @@ def create_flight_visualization(trajectory, forces_log, velocities_log, commands
     plt.close()
 
 def simple_quadcopter_demo():
-    """Jednoduchá PyBullet simulace přímo přes PyBullet API."""
+    """Simple PyBullet simulation directly via PyBullet API."""
     
     print("🚁 Simple PyBullet Quadcopter Demo")
     print("=" * 50)
     
-    # Spustí PyBullet
+    # Start PyBullet
     client = p.connect(p.DIRECT)  # Headless mode
     p.setGravity(0, 0, -9.81)
     
-    # Vytvoř zem (simple plane)
+    # Create ground (simple plane)
     plane_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=[50, 50, 0.1], rgbaColor=[0.7, 0.7, 0.7, 1])
     plane_collision = p.createCollisionShape(p.GEOM_BOX, halfExtents=[50, 50, 0.1])
     plane_id = p.createMultiBody(0, plane_collision, plane_visual, [0, 0, -0.1])
     
-    # Vytvoř kvadrokoptéru - jednoduchý box
+    # Create quadcopter - simple box
     start_pos = [0, 0, 5]
     visual_id = p.createVisualShape(
         p.GEOM_BOX, 
@@ -216,9 +218,9 @@ def simple_quadcopter_demo():
     
     print(f"✓ Drone created with ID {drone_id} at {start_pos}")
     
-    # Joystick sekvence pro čtverec
+        # Joystick sequence for square pattern
     joystick_commands = [
-        # Formát: [left_right, forward_back, up_down, duration, description]
+        # [L/R, F/B, U/D], steps, description
         ([0.0, 0.0, 0.0], 50, "Hover at start"),
         ([-1.0, 0.0, 0.0], 80, "Fly LEFT"),
         ([0.0, 0.0, 0.0], 30, "Hover corner 1"),
@@ -250,31 +252,31 @@ def simple_quadcopter_demo():
         print(f"  Joystick: [L/R:{joystick[0]:+4.1f}, F/B:{joystick[1]:+4.1f}, U/D:{joystick[2]:+4.1f}]")
         
         for step in range(duration):
-            # Převod joystick inputu na síly
-            # Horizontální síly (X, Y)
-            force_x = joystick[0] * 10.0  # Max 10N horizontálně
+            # Convert joystick input to forces
+            # Horizontal forces (X, Y)
+            force_x = joystick[0] * 10.0  # Max 10N horizontally
             force_y = joystick[1] * 10.0
             
-            # Vertikální síla (Z) - hover + input
-            hover_force = 0.5 * 9.81  # Kompenzace gravitace (mass * g)
-            vertical_input = joystick[2] * 15.0  # Max 15N extra nahoru/dolů
+            # Vertical force (Z) - hover + input
+            hover_force = 0.5 * 9.81  # Gravity compensation (mass * g)
+            vertical_input = joystick[2] * 15.0  # Max 15N extra up/down
             force_z = hover_force + vertical_input
             
             force = [force_x, force_y, force_z]
             
-            # Aplikuj sílu na střed hmotnosti
+            # Apply force to center of mass
             p.applyExternalForce(
                 drone_id, 
                 -1,  # Base link
                 force, 
-                [0, 0, 0],  # Pozice síly (střed)
+                [0, 0, 0],  # Force position (center)
                 p.WORLD_FRAME
             )
             
             # Krok simulace
             p.stepSimulation()
             
-            # Logování pro graf
+            # Logging for graphs
             pos, _ = p.getBasePositionAndOrientation(drone_id)
             vel, _ = p.getBaseVelocity(drone_id)
             trajectory.append(list(pos))
@@ -282,7 +284,7 @@ def simple_quadcopter_demo():
             forces_log.append(force)
             commands_log.append([cmd_idx, step, description])
             
-            # Status každých 20 kroků
+            # Status every 20 steps
             if step % 20 == 0:
                 speed = np.linalg.norm(vel)
                 print(f"  Step {step:3d}: Pos=[{pos[0]:6.1f}, {pos[1]:6.1f}, {pos[2]:6.1f}] "
@@ -291,7 +293,7 @@ def simple_quadcopter_demo():
             total_steps += 1
             time.sleep(0.01)  # Real-time feel
         
-        # Final position po příkazu
+        # Final position after command
         pos, _ = p.getBasePositionAndOrientation(drone_id)
         print(f"  ✓ Command completed at: [{pos[0]:6.1f}, {pos[1]:6.1f}, {pos[2]:6.1f}]")
     
@@ -317,7 +319,7 @@ def simple_quadcopter_demo():
     p.disconnect()
     print("PyBullet disconnected.")
     
-    # Vytvoř vizualizaci
+    # Create visualization
     create_flight_visualization(trajectory, forces_log, velocities_log, commands_log, joystick_commands)
 
 if __name__ == "__main__":

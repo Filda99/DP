@@ -1,13 +1,13 @@
 # 🚁 PyBullet Drone Simulation
 
-Realistická simulace kvadrokoptéry s joystick ovládáním pomocí PyBullet fyzikálního enginu.
+Realistic quadcopter simulation with joystick control using PyBullet physics engine.
 
-## ✨ Hlavní funkce
+## ✨ Key Features
 
-- **Realistická fyzika**: Gravitace, setrvačnost, momentum
-- **Joystick ovládání**: Jako skutečný DJI/Parrot ovladač  
-- **Flight controller**: Automatická hover stabilizace
-- **Vizualizace**: Detailní grafy trajektorie a sil
+- **Realistic Physics**: Gravity, inertia, momentum effects
+- **Joystick Control**: Like real DJI/Parrot controller
+- **Flight Controller**: Automatic hover stabilization  
+- **Visualization**: Detailed trajectory and force plots
 
 ## Setup and Installation
 
@@ -45,139 +45,116 @@ The required modules are:
 
 ### 3. Running the Simulation
 
-To run the enhanced scenarios with terrain and weather features:
+To run the PyBullet joystick simulation:
 
 ```bash
-python src/enhanced_scenarios.py
+python simple_demo.py
 ```
 
-Alternative scenarios can be run with:
+This will:
+- Run a 13-command flight sequence (square pattern + vertical movement)
+- Generate real-time terminal output with position/force data
+- Create visualization plots saved as PNG files
 
-```bash
-# Basic scenarios
-python src/main_scenarios.py
+## How the System Works
 
-# Original simulation
-python src/main.py
-```
+### PyBullet Architecture
 
-## How the Program Works
+The simulation uses direct PyBullet API calls for realistic physics:
 
-### Architecture Overview
+#### 1. **Physics Engine**
+- **PyBullet**: Real-time physics simulation with gravity (-9.81 m/s²)
+- **Mass**: 0.5kg quadcopter body
+- **Forces**: Applied directly using `p.applyExternalForce()`
+- **Timestep**: 1/240 second (240 FPS physics)
 
-The drone simulation system consists of several key components:
+#### 2. **Joystick Control System**
+- **Input Range**: [-1.0, +1.0] for each axis (left/right, forward/back, up/down)
+- **Force Mapping**: Joystick values mapped to Newton forces
+- **Flight Controller**: Automatic gravity compensation for hover
 
-#### 1. **Drone Types** (`src/drones/`)
-- **`BaseDrone`**: Abstract base class defining the drone interface
-- **`Quadcopter`**: Hovering drone with omnidirectional movement based on Parrot ANAFI USA specifications
-- **`FixedWing`**: Forward-flying aircraft with turning constraints
-
-#### 2. **Environment System** (`environment.py`)
-- **Terrain Types**: Forest, lake, mountain, urban, no-fly zones, etc.
-- **Weather Conditions**: Wind speed/direction, visibility, precipitation
-- **Flight Constraints**: Altitude restrictions, speed modifiers, avoidance priorities
-
-#### 3. **Simulation Engine** (`simulation.py`)
-- **Collision Detection**: Circular zones for quadcopters, rectangular zones for fixed-wing
-- **Collision Avoidance**: Priority-based system where lower-indexed drones have right-of-way
-- **Animation Generation**: Creates GIF files showing drone trajectories and terrain
-
-#### 4. **Scenario Management**
-- **`main_scenarios.py`**: Basic scenarios with simple environments
-- **`enhanced_scenarios.py`**: Advanced scenarios with terrain and weather
+#### 3. **Force Calculation**
+- **Horizontal Forces**: Max 10N (provides ~2g acceleration)
+- **Hover Force**: 4.9N (exactly compensates 0.5kg × 9.81 gravity)
+- **Vertical Control**: ±15N additional force for climb/descent
 
 ### Simulation Flow
 
-1. **Environment Setup**: Terrain zones and weather conditions are defined
-2. **Drone Initialization**: Drones are created with starting positions and goals using the `drone_factory`
-3. **Simulation Loop**: Each time step:
-   - Detect potential collisions (expanded zones for avoidance)
-   - Compute actions for each drone using their `compute_action` method
-   - Apply terrain and weather effects to movement
-   - Move drones and record positions
-   - Check for actual collisions
-4. **Animation Generation**: Create GIF showing the complete simulation
+1. **PyBullet Setup**: Initialize physics world with gravity
+2. **Drone Creation**: Create 0.5kg quadcopter body at [0,0,5] position  
+3. **Joystick Commands**: Execute 13-command flight sequence
+4. **Physics Step**: Each command runs for specified steps with force application
+5. **Data Collection**: Record position, velocity, and force data
+6. **Visualization**: Generate comprehensive flight analysis plots
 
 ### Key Features
 
-- **Intelligent Collision Avoidance**: Drones detect potential collisions and take evasive action
-- **Realistic Flight Physics**: Different movement characteristics for quadcopters vs fixed-wing aircraft
-- **Environmental Effects**: Terrain affects flight speed and drone behavior
-- **Weather Impact**: Wind, visibility, and precipitation influence flight performance
-- **Multiple Scenarios**: Various pre-configured scenarios testing different aspects
+- **Realistic Physics**: Full momentum and inertia effects
+- **Hover Stabilization**: Automatic gravity compensation (4.9N upward force)
+- **Smooth Trajectories**: Natural curved flight paths due to momentum
+- **Force Feedback**: Real-time force and position monitoring
+- **Flight Analysis**: Detailed 6-panel visualization of flight performance
 
-## Enhanced Scenarios
+## 🎮 Joystick Control System
 
-Running `enhanced_scenarios.py` provides four different simulation scenarios:
+### Input Mapping
+```python
+# Joystick values [-1.0 to +1.0]
+joystick = [left_right, forward_back, up_down]
 
-### 1. Natural Environment Navigation
-- **Environment**: Forests, lakes, and mountains
-- **Drones**: 3 drones (2 quadcopters, 1 fixed-wing)
-- **Challenge**: Navigate through natural terrain features
-- **Output**: `natural_environment.gif`
+# Examples:
+[0.0, 0.0, 0.0]   # Hover - maintain position
+[-1.0, 0.0, 0.0]  # Fly LEFT  
+[0.0, 1.0, 0.0]   # Fly FORWARD
+[0.0, 0.0, 1.0]   # Climb UP
+```
 
-### 2. Urban Drone Delivery
-- **Environment**: Urban area with buildings
-- **Drones**: 2 quadcopters
-- **Challenge**: Delivery routes between buildings with moderate weather
-- **Weather**: 8 m/s wind, 800m visibility
-- **Output**: `urban_environment.gif`
+### Force Mapping (Flight Controller)
+```python
+# Horizontal forces (X, Y)
+force_x = joystick[0] * 10.0  # Max 10N horizontally
+force_y = joystick[1] * 10.0
 
-### 3. Mixed Terrain Challenge
-- **Environment**: Complex multi-terrain scenario including:
-  - Forest areas (reduced speed)
-  - Lakes (increased speed)
-  - Mountains (altitude restrictions)
-  - No-fly zones (military base)
-  - Urban areas (altitude restrictions)
-- **Drones**: 4 drones with challenging cross-terrain routes
-- **Weather**: Strong winds (12 m/s), precipitation
-- **Output**: `mixed_terrain.gif`
+# Vertical force (Z) - hover + input  
+hover_force = mass * 9.81     # Gravity compensation (4.9N)
+vertical_input = joystick[2] * 15.0  # Extra force up/down
+force_z = hover_force + vertical_input
+```
 
-### 4. Storm Navigation
-- **Environment**: Natural terrain with severe weather
-- **Drones**: 2 quadcopters
-- **Weather**: Extreme conditions (15 m/s winds, 300m visibility, heavy rain)
-- **Challenge**: Navigation in adverse weather conditions
-- **Output**: `weather_challenge.gif`
+### Realistic Behavior
+- **Hover**: 4.9N upward force exactly balances gravity
+- **Momentum**: Drone maintains velocity after joystick release
+- **Inertia**: Gradual acceleration/deceleration
+- **Physics**: 0.5kg mass, real-time physics steps
 
 ## Output Files
 
-Each simulation generates an animated GIF showing:
-- Drone trajectories in different colors
-- Terrain zones with visual labels
-- Collision zones around each drone
-- Real-time collision warnings
-- Environment and weather information
+The simulation generates two comprehensive visualizations:
+- `quadcopter_flight_analysis.png` - 6-panel flight trajectory analysis
+- `quadcopter_force_analysis.png` - Force relationships and patterns
 
 ## Project Structure
 
 ```
 DP/
-├── README.md
-├── requirements.txt
+├── README.md                         # This documentation
+├── requirements.txt                  # Python dependencies
+├── simple_demo.py                    # 🔥 Main PyBullet simulation
+├── quadcopter_flight_analysis.png    # Generated flight visualization
+├── quadcopter_force_analysis.png     # Generated force analysis
 ├── datasheets/
 │   └── white-paper-anafi-usa-v1.5.3_en.pdf
-└── src/
-    ├── main.py                 # Original simulation entry point
-    ├── main_scenarios.py       # Basic simulation scenarios
-    ├── enhanced_scenarios.py   # Advanced scenarios with terrain/weather
-    ├── simulation.py           # Core simulation engine
-    ├── environment.py          # Environment and terrain system
-    ├── drone_factory.py        # Drone creation factory
-    └── drones/
-        ├── base_drone.py       # Abstract drone base class
-        ├── quadcopter.py       # Quadcopter implementation
-        └── fixedwing.py        # Fixed-wing aircraft implementation
+└── urdf/
+    └── quadcopter.urdf              # Drone 3D model definition
 ```
 
-## Simulation Statistics
+## Flight Performance Results
 
-After running scenarios, the program provides detailed statistics:
-- **Total simulation steps**
-- **Number of collisions detected**
-- **Collision rate percentage**
-- **Performance metrics for each scenario**
+Latest test results (680 simulation steps):
+- **Square Pattern**: LEFT → FORWARD → RIGHT → BACK completed
+- **Vertical Movement**: UP + DOWN maneuvers  
+- **Final Precision**: 6.1m from start position (excellent)
+- **Realistic Behavior**: Momentum and inertia working perfectly
 
 ## Requirements
 
@@ -188,113 +165,78 @@ After running scenarios, the program provides detailed statistics:
 
 ## Troubleshooting
 
-## 🎮 Jak to funguje
+## � Flight Pattern Details
 
-### Joystick Input
-```python
-# Joystick values [-1.0 až +1.0]
-joystick = [left_right, forward_back, up_down]
+The simulation executes a 13-command sequence demonstrating various flight maneuvers:
 
-# Příklady:
-[0.0, 0.0, 0.0]   # Hover - drž pozici
-[-1.0, 0.0, 0.0]  # Leti doleva  
-[0.0, 1.0, 0.0]   # Leti dopředu
-[0.0, 0.0, 1.0]   # Stoupej nahoru
-```
+1. **Hover** at start (50 steps)
+2. **Fly LEFT** (-10N X force, 80 steps)  
+3. **Hover** corner 1 (30 steps)
+4. **Fly FORWARD** (+10N Y force, 80 steps)
+5. **Hover** corner 2 (30 steps) 
+6. **Fly RIGHT** (+10N X force, 80 steps)
+7. **Hover** corner 3 (30 steps)
+8. **Fly BACK** (-10N Y force, 80 steps)
+9. **Square complete** (30 steps)
+10. **Fly UP** (+19.9N Z force, 60 steps)
+11. **Hover** at top (30 steps)
+12. **Fly DOWN** (-2.6N Z force, 60 steps)  
+13. **Final hover** (40 steps)
 
-### Force Mapping (flight controller)
-```python
-# Horizontální síly (X, Y)
-force_x = joystick[0] * 10.0  # Max 10N horizontálně
-force_y = joystick[1] * 10.0
+**Total**: 680 simulation steps, 13 joystick commands
 
-# Vertikální síla (Z) - hover + input  
-hover_force = mass * 9.81     # Kompenzace gravitace (4.9N)
-vertical_input = joystick[2] * 15.0  # Extra síla nahoru/dolů
-force_z = hover_force + vertical_input
-```
+## 🔧 Technical Specifications
 
-### Realistické chování
-- **Hover**: 4.9N síla nahoru přesně vyrovnává gravitaci
-- **Momentum**: Dron si udržuje rychlost i po uvolnění joysticku
-- **Setrvačnost**: Postupné zrychlování/zpomalování
-- **Fyzika**: Hmotnost 0.5kg, realtime physics step
+- **Physics Engine**: PyBullet real-time simulation
+- **Mass**: 0.5 kg quadcopter body
+- **Gravity**: -9.81 m/s²
+- **Hover Force**: 4.9N (exactly compensates gravity)
+- **Max Horizontal Force**: 10N (≈2g acceleration)
+- **Max Vertical Force**: 15N extra (≈3g acceleration)
+- **Timestep**: 1/240 second (PyBullet default)
 
-## 🚀 Spuštění simulace
+## 💡 Key Observations
+
+1. **Perfect Hover**: 4.9N force = mass × gravity compensation
+2. **Smooth Trajectories**: Realistic curved flight paths  
+3. **Momentum Effects**: Continued motion after joystick release
+4. **Force Efficiency**: Small forces (10-20N) achieve rapid movement
+5. **Stability**: No oscillation or instability issues
+
+## 🎮 Comparison with Real Drones
+
+✅ **Same as Real Drone:**
+- Joystick input range [-1,+1]
+- Hover stabilization
+- Momentum and inertia effects  
+- Gradual acceleration/deceleration
+
+❌ **Missing (for now):**
+- Rotation (yaw control)
+- Wind and turbulence
+- Battery limitations  
+- GPS waypoint navigation
+
+---
+
+**🎉 PyBullet Migration Successfully Completed!**
+
+## 🚀 Running the Simulation
 
 ```bash
 conda activate dp
 python simple_demo.py
 ```
 
-Výstup:
-- Textový log letu v terminálu
-- `quadcopter_flight_analysis.png` - 6 grafů s trajektorií
-- `quadcopter_force_analysis.png` - analýza sil
+**Output:**
+- Real-time flight log in terminal
+- `quadcopter_flight_analysis.png` - 6-panel trajectory analysis  
+- `quadcopter_force_analysis.png` - force relationship analysis
 
-## 📊 Výsledky posledního testu
+## 🔄 Extensibility
 
-- **Čtverec dokončen**: Doleva → Dopředu → Doprava → Zpět  
-- **Vertikální pohyb**: Nahoru + dolů
-- **Přesnost**: 6.1m od startovní pozice
-- **Realistické chování**: Momentum a setrvačnost fungují perfektně
-
-## 🎯 Flight Pattern
-
-1. **Hover** na začátku (50 kroků)
-2. **Leti DOLEVA** (-10N X força, 80 kroků)  
-3. **Hover** na rohu (30 kroků)
-4. **Leti DOPŘEDU** (+10N Y força, 80 kroků)
-5. **Hover** na rohu (30 kroků) 
-6. **Leti DOPRAVA** (+10N X força, 80 kroků)
-7. **Hover** na rohu (30 kroků)
-8. **Leti ZPĚT** (-10N Y força, 80 kroků)
-9. **Čtverec dokončen** (30 kroků)
-10. **Leti NAHORU** (+19.9N Z força, 60 kroků)
-11. **Hover nahoře** (30 kroků)
-12. **Leti DOLŮ** (-2.6N Z força, 60 kroků)  
-13. **Final hover** (40 kroků)
-
-**Celkem**: 680 simulation steps, 13 joystick příkazů
-
-## 🔧 Technické detaily
-
-- **PyBullet**: Realtima fyzikální simulace
-- **Hmotnost**: 0.5 kg
-- **Gravitace**: -9.81 m/s²
-- **Hover síla**: 4.9N (přesně kompenzuje gravitaci)
-- **Max horizontální síla**: 10N (2g acceleration)
-- **Max vertikální síla**: 15N extra (3g acceleration)
-- **Timestep**: 1/240 second (PyBullet default)
-
-## 💡 Klíčové pozorování
-
-1. **Perfektní hover**: Force 4.9N = masa × gravitace
-2. **Smooth trajectories**: Realistické zakřivené dráhy  
-3. **Momentum effects**: Pokračování v pohybu po pustiti joysticku
-4. **Force efficiency**: Malé síly (10-20N) stačí pro rychlý pohyb
-5. **Stability**: Dron se nerozkmitá ani nepřeklopí
-
-## 🎮 Porovnání s reálným dronem
-
-✅ **Stejné jako reálný dron:**
-- Joystick input [-1,+1]
-- Hover stabilizace
-- Momentum a setrvačnost  
-- Postupné zrychlování
-
-❌ **Chybí (zatím):**
-- Rotace (yaw)
-- Vítr a turbulence
-- Baterie a limits  
-- GPS waypoint navigace
-
----
-
-**🎉 Migrace na PyBullet úspěšně dokončena!**
-
-The simulation system is modular and extensible. You can:
-- Add new drone types by extending `BaseDrone`
-- Create custom terrain types in `environment.py`
-- Design new scenarios in the scenario files
-- Modify weather conditions and environmental effects
+The system is designed for easy modification:
+- **Joystick Commands**: Edit the `joystick_commands` list in `simple_demo.py`
+- **Force Mapping**: Modify force calculations in the simulation loop
+- **Flight Patterns**: Create custom sequences of joystick inputs
+- **Visualization**: Extend the plotting functions for additional analysis
