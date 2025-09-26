@@ -420,12 +420,16 @@ class Simulation:
         
         plt.tight_layout()
         
-        # Save plot
+        # Save plot to output directory
+        import os
+        output_dir = "output"
+        os.makedirs(output_dir, exist_ok=True)
         filename = f"multi_drone_combined_analysis.png"
-        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        filepath = os.path.join(output_dir, filename)
+        plt.savefig(filepath, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"✅ Multi-drone visualization saved as '{filename}'")
+        print(f"✅ Multi-drone visualization saved as '{filepath}'")
 
     def create_visualization(self, drone_name=None, title="Simulation Analysis"):
         """Create comprehensive visualization of simulation results."""
@@ -582,10 +586,14 @@ Collisions: {len(self.simulation_log['collisions'])}
         
         plt.tight_layout()
         
-        # Save visualization
+        # Save visualization to output directory
+        import os
+        output_dir = "output"
+        os.makedirs(output_dir, exist_ok=True)
         filename = f"{title.lower().replace(' ', '_')}_{drone_name}_analysis.png"
-        plt.savefig(filename, dpi=150, bbox_inches='tight')
-        print(f"✅ Visualization saved as '{filename}'")
+        filepath = os.path.join(output_dir, filename)
+        plt.savefig(filepath, dpi=150, bbox_inches='tight')
+        print(f"✅ Visualization saved as '{filepath}'")
         plt.close()
     
     def get_simulation_summary(self):

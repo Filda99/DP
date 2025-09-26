@@ -80,7 +80,7 @@ def main():
         clean_title = title.replace("/", "_per_").replace(":", "_").replace(" ", "_")
         sim.create_visualization("test_quad", clean_title)
         
-        print(f"  📊 Saved: hover_test_{test['name'].lower().replace(' ', '_').replace('(', '').replace(')', '')}_analysis.png")
+        print(f"  📊 Saved: output/{clean_title.lower()}_test_quad_analysis.png")
     
     # Stop simulation
     sim.stop_simulation()
