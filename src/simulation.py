@@ -280,6 +280,153 @@ class Simulation:
         # Add a circular outline for clarity
         ax.plot(x, y, z, color='blue', alpha=0.8, linewidth=2)
     
+    def create_multi_drone_visualization(self, title="Multi-Drone Analysis"):
+        """Create visualization showing all drones together."""
+        if len(self.drones) == 0:
+            print("❌ No drones to visualize")
+            return
+            
+        # Create visualization
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        fig.suptitle(f'{title} - All Drones', fontsize=16, fontweight='bold')
+        
+        # Flatten axes
+        ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
+        
+        # Colors for different drones
+        colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown']
+        
+        # 1. 3D Trajectory with all drones
+        ax1.remove()
+        ax1 = fig.add_subplot(2, 3, 1, projection='3d')
+        
+        for i, (drone_name, drone_data) in enumerate(self.simulation_log['drones'].items()):
+            if len(drone_data['positions']) == 0:
+                continue
+                
+            positions = np.array(drone_data['positions'])
+            color = colors[i % len(colors)]
+            
+            # Plot trajectory
+            ax1.plot(positions[:, 0], positions[:, 1], positions[:, 2], 
+                    color=color, linewidth=2, alpha=0.8, label=drone_name)
+            ax1.scatter(positions[0, 0], positions[0, 1], positions[0, 2], 
+                       color=color, s=100, marker='o', alpha=0.8)
+            ax1.scatter(positions[-1, 0], positions[-1, 1], positions[-1, 2], 
+                       color=color, s=100, marker='s', alpha=0.8)
+        
+        # Add environment
+        for obstacle in self.environment.obstacles:
+            pos = obstacle['position']
+            size = obstacle['size']
+            self._draw_3d_building(ax1, pos, size)
+            
+        for zone in self.environment.terrain_zones:
+            if zone['type'] == 'forest':
+                self._draw_3d_forest(ax1, zone['center'], zone['radius'])
+            elif zone['type'] == 'lake':
+                self._draw_3d_lake(ax1, zone['center'], zone['radius'])
+        
+        ax1.set_xlabel('X Position (m)')
+        ax1.set_ylabel('Y Position (m)')
+        ax1.set_zlabel('Z Position (m)')
+        ax1.set_title('3D Flight Trajectories - All Drones')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # 2. Top view with all drones
+        for i, (drone_name, drone_data) in enumerate(self.simulation_log['drones'].items()):
+            if len(drone_data['positions']) == 0:
+                continue
+                
+            positions = np.array(drone_data['positions'])
+            color = colors[i % len(colors)]
+            
+            ax2.plot(positions[:, 0], positions[:, 1], color=color, linewidth=2, alpha=0.8, label=drone_name)
+            ax2.scatter(positions[0, 0], positions[0, 1], color=color, s=100, marker='o', alpha=0.8)
+            ax2.scatter(positions[-1, 0], positions[-1, 1], color=color, s=100, marker='s', alpha=0.8)
+        
+        # Add environment features (simplified for clarity with multiple drones)
+        for obstacle in self.environment.obstacles:
+            pos = obstacle['position']
+            size = obstacle['size']
+            rect = plt.Rectangle(
+                (pos[0] - size[0]/2, pos[1] - size[1]/2), 
+                size[0], size[1],
+                facecolor='gray', alpha=0.3, edgecolor='black'
+            )
+            ax2.add_patch(rect)
+        
+        for zone in self.environment.terrain_zones:
+            if zone['type'] == 'forest':
+                circle = plt.Circle(zone['center'], zone['radius'], 
+                                  facecolor='green', alpha=0.3)
+                ax2.add_patch(circle)
+            elif zone['type'] == 'lake':
+                circle = plt.Circle(zone['center'], zone['radius'], 
+                                  facecolor='blue', alpha=0.3)
+                ax2.add_patch(circle)
+        
+        ax2.set_xlabel('X Position (m)')
+        ax2.set_ylabel('Y Position (m)')
+        ax2.set_title('Top View - All Drone Paths')
+        ax2.grid(True, alpha=0.3)
+        ax2.legend()
+        ax2.axis('equal')
+        
+        # 3-6. Combined plots for all drones
+        times = np.array(self.simulation_log['times'])
+        
+        for i, (drone_name, drone_data) in enumerate(self.simulation_log['drones'].items()):
+            if len(drone_data['forces']) == 0:
+                continue
+                
+            forces = np.array(drone_data['forces'])
+            positions = np.array(drone_data['positions'])
+            color = colors[i % len(colors)]
+            
+            # Force X
+            ax3.plot(times, forces[:, 0], color=color, alpha=0.7, label=f'{drone_name}')
+            # Force Y  
+            ax4.plot(times, forces[:, 1], color=color, alpha=0.7, label=f'{drone_name}')
+            # Force Z
+            ax5.plot(times, forces[:, 2], color=color, alpha=0.7, label=f'{drone_name}')
+            # Altitude
+            ax6.plot(times, positions[:, 2], color=color, alpha=0.7, label=f'{drone_name}')
+        
+        ax3.set_title('X Forces Over Time')
+        ax3.set_xlabel('Time (s)')
+        ax3.set_ylabel('Force X (N)')
+        ax3.grid(True, alpha=0.3)
+        ax3.legend()
+        
+        ax4.set_title('Y Forces Over Time')
+        ax4.set_xlabel('Time (s)')  
+        ax4.set_ylabel('Force Y (N)')
+        ax4.grid(True, alpha=0.3)
+        ax4.legend()
+        
+        ax5.set_title('Z Forces Over Time')
+        ax5.set_xlabel('Time (s)')
+        ax5.set_ylabel('Force Z (N)')
+        ax5.grid(True, alpha=0.3)
+        ax5.legend()
+        
+        ax6.set_title('Altitude Profiles')
+        ax6.set_xlabel('Time (s)')
+        ax6.set_ylabel('Altitude (m)')
+        ax6.grid(True, alpha=0.3)
+        ax6.legend()
+        
+        plt.tight_layout()
+        
+        # Save plot
+        filename = f"multi_drone_combined_analysis.png"
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"✅ Multi-drone visualization saved as '{filename}'")
+
     def create_visualization(self, drone_name=None, title="Simulation Analysis"):
         """Create comprehensive visualization of simulation results."""
         if drone_name is None:

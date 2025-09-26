@@ -150,10 +150,16 @@ def main():
         pos = status['position']
         print(f"  {name}: [{pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}]")
     
-    # Create visualizations for each drone
+    # Create visualizations
     print("\n📊 Creating visualizations...")
-    for drone_name in sim.drones.keys():
-        sim.create_visualization(drone_name, title)
+    if len(sim.drones) > 1:
+        # Multi-drone combined visualization only
+        sim.create_multi_drone_visualization(title)
+        print("✅ Multi-drone combined visualization created")
+    else:
+        # Single drone visualization
+        for drone_name in sim.drones.keys():
+            sim.create_visualization(drone_name, title)
     
     # Stop simulation
     sim.stop_simulation()
