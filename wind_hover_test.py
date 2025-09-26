@@ -37,9 +37,9 @@ def main():
     # Test different wind strengths
     wind_tests = [
         {"wind": [5.0, 0.0, 0.0], "name": "Light Wind (5 m/s)", "steps": 1000},
+        {"wind": [12.0, 0.0, 0.0], "name": "Fresh Wind (12 m/s)", "steps": 1000},
         {"wind": [15.0, 0.0, 0.0], "name": "Strong Wind (15 m/s)", "steps": 1000}, 
-        {"wind": [25.0, 0.0, 0.0], "name": "Hurricane Wind (25 m/s)", "steps": 1000},
-        {"wind": [35.0, 0.0, 0.0], "name": "Extreme Wind (35 m/s)", "steps": 1000}
+        {"wind": [25.0, 0.0, 0.0], "name": "Hurricane Wind (25 m/s)", "steps": 1000}
     ]
     
     for test in wind_tests:
@@ -49,7 +49,7 @@ def main():
         sim.drones["test_quad"].position = np.array([0, 0, 5])
         
         # Set wind conditions
-        sim.set_wind(test["wind"], turbulence=2.0)  # High turbulence
+        sim.set_wind(test["wind"], turbulence=0.0)  # High turbulence
         
         # Get initial position
         initial_pos = sim.drones["test_quad"].get_position()

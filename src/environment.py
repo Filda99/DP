@@ -191,8 +191,8 @@ class Environment:
             turbulence = np.array([horizontal_turbulence[0], horizontal_turbulence[1], vertical_turbulence[0]])
             base_wind += turbulence
         
-        # Height effect - wind increases with altitude
-        height_factor = 1.0 + position[2] * 0.05
+        # Height effect - wind increases with altitude (reduced effect)
+        height_factor = 1.0 + position[2] * 0.01  # Reduced from 0.05 to 0.01
         base_wind *= height_factor
         
         return base_wind

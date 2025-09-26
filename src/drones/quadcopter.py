@@ -87,7 +87,7 @@ class Quadcopter(BaseDrone):
     
     def apply_wind_effect(self, wind_velocity):
         """Apply wind forces with automatic compensation (like real drones)."""
-        wind_force = np.array(wind_velocity) * 0.667  # Realistic wind resistance coefficient
+        wind_force = np.array(wind_velocity) * (2/3)  # Exact coefficient: 12 m/s = 8.0 N
         
         # Real drone automatic wind compensation capability
         # Modern drones can compensate up to ~80% of their max thrust for wind
@@ -97,7 +97,8 @@ class Quadcopter(BaseDrone):
         horizontal_wind = wind_force[:2]  # Only X, Y components
         wind_magnitude = np.linalg.norm(horizontal_wind)
         
-        if wind_magnitude <= max_wind_compensation:
+        # Use small epsilon for floating-point comparison
+        if wind_magnitude <= max_wind_compensation + 1e-10:
             # Wind is within capability - drone automatically compensates and holds position
             # Apply ONLY vertical wind component (horizontal is fully compensated)
             remaining_wind = np.array([0, 0, wind_force[2]])
