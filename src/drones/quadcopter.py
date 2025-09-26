@@ -86,17 +86,41 @@ class Quadcopter(BaseDrone):
         return forces
     
     def apply_wind_effect(self, wind_velocity):
-        """Apply wind forces to the quadcopter."""
-        # Simple wind model - proportional to wind speed
-        wind_force = np.array(wind_velocity) * 0.1  # Wind resistance coefficient
+        """Apply wind forces with automatic compensation (like real drones)."""
+        wind_force = np.array(wind_velocity) * 0.667  # Realistic wind resistance coefficient
         
-        p.applyExternalForce(
-            self.drone_id,
-            -1,
-            wind_force.tolist(),
-            [0, 0, 0],
-            p.WORLD_FRAME
-        )
+        # Real drone automatic wind compensation capability
+        # Modern drones can compensate up to ~80% of their max thrust for wind
+        max_wind_compensation = self.max_horizontal_force * 0.8  # 8N compensation capability
+        
+        # Calculate horizontal wind force (ignore vertical for position hold)
+        horizontal_wind = wind_force[:2]  # Only X, Y components
+        wind_magnitude = np.linalg.norm(horizontal_wind)
+        
+        if wind_magnitude <= max_wind_compensation:
+            # Wind is within capability - drone automatically compensates and holds position
+            # Apply ONLY vertical wind component (horizontal is fully compensated)
+            remaining_wind = np.array([0, 0, wind_force[2]])
+            
+            # No net horizontal wind force applied - drone holds position!
+            
+        else:
+            # Wind exceeds compensation capability - partial compensation + remaining drift
+            compensation_factor = max_wind_compensation / wind_magnitude
+            
+            # Calculate net wind effect after partial compensation
+            compensated_horizontal = horizontal_wind * (1.0 - compensation_factor)
+            remaining_wind = np.array([compensated_horizontal[0], compensated_horizontal[1], wind_force[2]])
+        
+        # Apply only the remaining (uncompensated) wind effects
+        if np.linalg.norm(remaining_wind) > 0.05:
+            p.applyExternalForce(
+                self.drone_id,
+                -1,
+                remaining_wind.tolist(),
+                [0, 0, 0],
+                p.WORLD_FRAME
+            )
         
         return wind_force
     

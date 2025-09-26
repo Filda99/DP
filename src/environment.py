@@ -183,9 +183,12 @@ class Environment:
         """Get wind velocity at a specific position with turbulence."""
         base_wind = self.weather['wind_velocity'].copy()
         
-        # Add turbulence
+        # Add turbulence (primarily horizontal, minimal vertical)
         if self.weather['wind_turbulence'] > 0:
-            turbulence = np.random.normal(0, self.weather['wind_turbulence'], 3)
+            # Realistic turbulence: 90% horizontal, 10% vertical intensity
+            horizontal_turbulence = np.random.normal(0, self.weather['wind_turbulence'], 2)
+            vertical_turbulence = np.random.normal(0, self.weather['wind_turbulence'] * 0.1, 1)
+            turbulence = np.array([horizontal_turbulence[0], horizontal_turbulence[1], vertical_turbulence[0]])
             base_wind += turbulence
         
         # Height effect - wind increases with altitude
