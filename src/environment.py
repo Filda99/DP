@@ -325,8 +325,13 @@ class Environment:
         H, W = self.grid_mapper.get_grid_dimensions()
         
         # Create fire grid with wind from weather system
-        wind_speed = np.linalg.norm(self.weather['wind_velocity'][:2])  # Use only x,y components
-        wind_angle = np.arctan2(self.weather['wind_velocity'][1], self.weather['wind_velocity'][0])
+        wind_velocity = self.weather['wind_velocity'][:2]  # Only x,y components
+        wind_speed = np.linalg.norm(wind_velocity)
+        
+        if wind_speed > 0.01:
+            wind_angle = np.arctan2(wind_velocity[1], wind_velocity[0])
+        else:
+            wind_angle = 0.0
         
         # Create base lambda values (higher in forest areas)
         l_base = np.ones(H) * 0.5  # Base fire spread rate
@@ -354,24 +359,38 @@ class Environment:
         for i in range(H):
             for j in range(W):
                 world_pos = self.grid_mapper.cell_to_world(i, j)
-                fuel_level = 0.3  # Default fuel level
+                fuel_level = 0.3  # Default fuel level (open terrain)
                 
-                # Check if this position is in a forest (higher fuel)
-                for zone in self.terrain_zones:
-                    if zone['type'] == 'forest':
-                        center = zone['center']
-                        radius = zone['radius']
-                        distance = np.sqrt((world_pos[0] - center[0])**2 + (world_pos[1] - center[1])**2)
-                        if distance <= radius:
-                            fuel_level = 0.8  # High fuel in forests
+                # FIRST: Check if position is inside a building - NO FUEL
+                in_building = False
+                for obstacle in self.obstacles:
+                    if obstacle['type'] == 'city_block':
+                        bounds = obstacle['bounds']
+                        if (bounds['min'][0] <= world_pos[0] <= bounds['max'][0] and
+                            bounds['min'][1] <= world_pos[1] <= bounds['max'][1]):
+                            fuel_level = 0.0  # Buildings have no fuel!
+                            in_building = True
                             break
-                    elif zone['type'] == 'lake':
-                        center = zone['center']
-                        radius = zone['radius']
-                        distance = np.sqrt((world_pos[0] - center[0])**2 + (world_pos[1] - center[1])**2)
-                        if distance <= radius:
-                            fuel_level = 0.0  # No fuel in water
-                            break
+                
+                # Only check terrain zones if not in a building
+                if not in_building:
+                    for zone in self.terrain_zones:
+                        if zone['type'] == 'forest':
+                            center = zone['center']
+                            radius = zone['radius']
+                            distance = np.sqrt((world_pos[0] - center[0])**2 + 
+                                             (world_pos[1] - center[1])**2)
+                            if distance <= radius:
+                                fuel_level = 0.8  # High fuel in forests
+                                break
+                        elif zone['type'] == 'lake':
+                            center = zone['center']
+                            radius = zone['radius']
+                            distance = np.sqrt((world_pos[0] - center[0])**2 + 
+                                             (world_pos[1] - center[1])**2)
+                            if distance <= radius:
+                                fuel_level = 0.0  # No fuel in water
+                                break
                 
                 self.fire_grid.F[i, j] = fuel_level
         
@@ -383,7 +402,7 @@ class Environment:
         
         Args:
             world_pos: (x, y) position in world coordinates
-            intensity: Initial fire intensity
+            intensity: Initial fire intensity (used for visualization only)
         """
         if not self.fire_enabled:
             print("❌ Fire simulation not enabled")
@@ -393,7 +412,7 @@ class Environment:
         
         if self.fire_grid.F[i, j] > 0:  # Only if there's fuel
             self.fire_grid.B[i, j] = True
-            self.fire_grid.I[i, j] = intensity
+            self.fire_grid.I[i, j] = np.minimum(1.0, self.fire_grid.F[i, j])
             print(f"✅ Fire started at world pos {world_pos} -> cell ({i}, {j})")
             return True
         else:
@@ -410,9 +429,22 @@ class Environment:
         if not self.fire_enabled:
             return
         
-        # Update wind direction based on current weather
-        wind_angle = np.arctan2(self.weather['wind_velocity'][1], self.weather['wind_velocity'][0])
+        # Update wind from unified weather system
+        wind_velocity = self.weather['wind_velocity'][:2]  # Only x, y components
+        wind_speed = np.linalg.norm(wind_velocity)
+        
+        if wind_speed > 0.01:  # Avoid division by zero
+            wind_angle = np.arctan2(wind_velocity[1], wind_velocity[0])
+        else:
+            wind_angle = 0.0
+        
+        # Update fire grid wind parameters
         self.fire_grid.wind_dir = wind_angle
+        
+        # Optional: Scale wind influence by wind speed
+        # Stronger wind = more spread influence
+        # base_k_wind = 1.5
+        # self.fire_grid.k_wind = base_k_wind * min(2.0, wind_speed / 5.0)
         
         # Step the fire simulation
         self.fire_grid.step(suppression_assignments)

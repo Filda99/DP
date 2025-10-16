@@ -12,6 +12,8 @@ class FireGrid:
     - Slope effects
     - Fuel availability
     - Suppression activities
+    
+    Based on the MDP formulation from Griffith et al. (2017)
     """
     
     def __init__(self, H: int, W: int, dt: float = 0.1, alpha: float = 1.0,
@@ -59,7 +61,7 @@ class FireGrid:
         # Remaining fuel (0.0 to 1.0)
         self.F = np.random.uniform(0.3, 1.0, (self.H, self.W))
         
-        # Intensity (fuel consumption rate)
+        # Intensity (for visualization only - not used in fuel consumption)
         self.I = np.zeros((self.H, self.W))
         
         # Start with a few random burning cells
@@ -69,7 +71,7 @@ class FireGrid:
             j = np.random.randint(0, self.W)
             if self.F[i, j] > 0:
                 self.B[i, j] = True
-                self.I[i, j] = np.random.uniform(0.1, 0.3)
+                self.I[i, j] = np.minimum(1.0, self.F[i, j])
     
     def _calculate_distance(self, x1: int, y1: int, x2: int, y2: int) -> float:
         """Calculate Euclidean distance between two grid points."""
@@ -86,8 +88,6 @@ class FireGrid:
         spread_dir = np.arctan2(di, dj)
         
         # Angle difference between wind direction and spread direction
-        # Used for wind gain calculation (positive when spreading with the wind)
-        # e.g., if wind is blowing east (0 radians) and fire spreads east, gain is maximized
         angle_diff = np.abs(spread_dir - self.wind_dir)
         angle_diff = min(angle_diff, 2*np.pi - angle_diff)  # Use smaller angle
         
@@ -108,11 +108,6 @@ class FireGrid:
         
         # Distance decay
         d = self._calculate_distance(from_i, from_j, to_i, to_j)
-        # Tells us how much the distance reduces the spread rate 
-        # because fire spreads less effectively over longer distances.
-        # Calculation: -alpha * d gives the decay exponent,
-        # and exp(-alpha * d) gives the decay factor which is how much
-        # the spread rate is reduced due to distance.
         distance_factor = np.exp(-self.alpha * d)
         
         # Environmental factors
@@ -126,9 +121,6 @@ class FireGrid:
     
     def _calculate_spread_probability(self, from_i: int, from_j: int, to_i: int, to_j: int) -> float:
         """Calculate P_xy = 1 - exp(-lambda_xy * dt)."""
-        # Tells us the probability that fire spreads from cell (from_i, from_j)
-        # to cell (to_i, to_j) during the time step dt.
-        # It is derived from the rate lambda_xy and the time step dt.
         lambda_xy = self._calculate_lambda_xy(from_i, from_j, to_i, to_j)
         return 1.0 - np.exp(-lambda_xy * self.dt)
     
@@ -216,7 +208,7 @@ class FireGrid:
         Perform one simulation step with the following update order:
         1. Ignition (new fires start)
         2. Suppression (fires are extinguished)
-        3. Fuel decrease (burning cells consume fuel)
+        3. Fuel decrease (burning cells consume fuel at CONSTANT rate)
         4. Burn-out (cells with no fuel stop burning)
         
         Args:
@@ -238,8 +230,8 @@ class FireGrid:
         ignition_mask = (ignition_probs > ignition_random) & (~self.B) & (self.F > 0)
         
         new_B[ignition_mask] = True
-        # Set initial intensity for newly ignited cells
-        new_I[ignition_mask] = np.random.uniform(0.05, 0.2, np.sum(ignition_mask))
+        # Set initial intensity for newly ignited cells based on fuel
+        new_I[ignition_mask] = np.minimum(1.0, new_F[ignition_mask])
         
         # 2. SUPPRESSION: Fires are extinguished
         suppression_random = np.random.random((self.H, self.W))
@@ -252,14 +244,14 @@ class FireGrid:
                         new_B[i, j] = False
                         new_I[i, j] = 0.0
         
-        # 3. FUEL DECREASE: Burning cells consume fuel
+        # 3. FUEL DECREASE: Burning cells consume fuel at CONSTANT rate
+        # Paper (p.41): "The fuel in an ignited cell decreases at a constant rate"
+        # "We can rescale the units of fuel to assume that this rate is one unit"
         burning_mask = new_B
-        fuel_consumption = new_I * self.dt
-        new_F[burning_mask] = np.maximum(0.0, new_F[burning_mask] - fuel_consumption[burning_mask])
+        new_F[burning_mask] = np.maximum(0.0, new_F[burning_mask] - 1.0 * self.dt)
         
-        # Update intensity based on remaining fuel (intensity decreases as fuel runs out)
-        fuel_factor = np.where(new_F > 0, np.minimum(1.0, new_F / 0.1), 0.0)  # Intensity scales with fuel
-        new_I[burning_mask] = new_I[burning_mask] * fuel_factor[burning_mask]
+        # Update intensity for visualization (based on remaining fuel)
+        new_I[burning_mask] = np.minimum(1.0, new_F[burning_mask])
         
         # 4. BURN-OUT: Cells with no fuel stop burning
         burnout_mask = burning_mask & (new_F <= 0)
@@ -281,7 +273,7 @@ class FireGrid:
         return {
             'B': self.B.copy(),  # Burning flags
             'F': self.F.copy(),  # Fuel levels
-            'I': self.I.copy()   # Intensities
+            'I': self.I.copy()   # Intensities (for visualization)
         }
     
     def get_stats(self) -> Dict[str, Any]:
