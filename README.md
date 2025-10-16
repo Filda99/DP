@@ -1,137 +1,271 @@
-# 🚁 PyBullet Drone Simulation - Modular Architecture
+# Drone Firefighting Simulation - Diploma Thesis# 🚁 PyBullet Drone Simulation - Modular Architecture
 
-Realistic multi-drone simulation with quadcopters and fixed-wing aircraft using PyBullet physics engine.
 
-## ✨ Key Features
 
-- **Modular Architecture**: Separate classes for quadcopters and fixed-wing aircraft
+A PyBullet-based simulation environment for autonomous drone firefighting research.Realistic multi-drone simulation with quadcopters and fixed-wing aircraft using PyBullet physics engine.
+
+
+
+## 🏗️ Project Structure## ✨ Key Features
+
+
+
+This project follows a **3-layer architecture** as documented in the thesis:- **Modular Architecture**: Separate classes for quadcopters and fixed-wing aircraft
+
 - **Multi-Drone Support**: Simulate multiple aircraft simultaneously
-- **Environmental System**: Cities, forests, lakes with realistic obstacles
-- **Weather Effects**: Wind, turbulence, visibility conditions
+
+### **Layer 1: Core Components** (`core/`, `src/`)- **Environmental System**: Cities, forests, lakes with realistic obstacles
+
+Fundamental physics, algorithms, and simulation infrastructure.- **Weather Effects**: Wind, turbulence, visibility conditions
+
 - **Realistic Physics**: Gravity, inertia, momentum, aerodynamics
-- **Flight Controllers**: Hover stabilization for quads, forward flight for fixed-wing
-- **Comprehensive Visualization**: Individual trajectory and force analysis per drone
 
-## Setup and Installation
+```- **Flight Controllers**: Hover stabilization for quads, forward flight for fixed-wing
 
-### 1. Create and Activate Conda Environment
+core/- **Comprehensive Visualization**: Individual trajectory and force analysis per drone
 
-First, check if the `dp` environment exists:
+├── fire_grid.py         # Fire spread physics and cellular automata
 
-```bash
-conda env list
+└── grid_mapper.py       # Coordinate transformation system## Setup and Installation
+
+
+
+src/### 1. Create and Activate Conda Environment
+
+├── environment.py       # Wind system and environmental physics
+
+├── simulation.py        # Main simulation orchestrationFirst, check if the `dp` environment exists:
+
+└── drones/
+
+    ├── base_drone.py    # Abstract drone interface```bash
+
+    ├── quadcopter.py    # Quadcopter implementationconda env list
+
+    └── fixedwing.py     # Fixed-wing drone (experimental)```
+
 ```
 
 If the `dp` environment doesn't exist, create it:
 
-```bash
+### **Layer 2: Configuration** (`config/`)
+
+Tunable parameters and scenario definitions.```bash
+
 conda create -n dp python=3.12
-```
 
-Activate the environment:
+``````
+
+config/
+
+└── (Parameter configuration files)Activate the environment:
+
+```
 
 ```bash
-conda activate dp
+
+### **Layer 3: Demos & Experiments** (`demos/`)conda activate dp
+
+Demonstration scripts and experimental scenarios.```
+
+
+
+```### 2. Install Required Dependencies
+
+demos/
+
+├── demo_fire_timelapse.py    # Main fire spread visualization demoInstall the required Python packages:
+
+├── demo_fire_fighting.py     # Multi-drone firefighting scenario
+
+└── demo_pure_fire.py         # Pure fire spread (no drones)```bash
+
+```pip install -r requirements.txt
+
 ```
 
-### 2. Install Required Dependencies
-
-Install the required Python packages:
-
-```bash
-pip install -r requirements.txt
-```
+### **Supporting Directories**
 
 The required modules are:
-- `numpy` - For mathematical operations and array handling
-- `matplotlib` - For visualization and animation generation
 
-## 🏗️ Modular Architecture
+```- `numpy` - For mathematical operations and array handling
+
+tests/                   # Unit and integration tests- `matplotlib` - For visualization and animation generation
+
+├── test_fire_grid.py
+
+├── test_integrated_fire.py## 🏗️ Modular Architecture
+
+└── test_scenarios.py
 
 The simulation uses a modular object-oriented design:
 
-### Drone Classes (`src/drones/`)
-- **`BaseDrone`**: Abstract base class with common physics interface
-- **`Quadcopter`**: Hover-capable multirotor with omnidirectional movement
-- **`FixedWing`**: Forward-flight aircraft with aerodynamic properties
+docs/                    # Documentation (if any)
 
-### Environment System (`src/environment.py`)
+datasheets/              # Hardware specifications and datasheets### Drone Classes (`src/drones/`)
+
+output/                  # Generated plots and visualizations- **`BaseDrone`**: Abstract base class with common physics interface
+
+urdf/                    # Robot description files- **`Quadcopter`**: Hover-capable multirotor with omnidirectional movement
+
+```- **`FixedWing`**: Forward-flight aircraft with aerodynamic properties
+
+
+
+## 🚀 Quick Start### Environment System (`src/environment.py`)
+
 - **Cities**: Building blocks with collision detection
-- **Natural Areas**: Forests, lakes, terrain features
+
+### Installation- **Natural Areas**: Forests, lakes, terrain features
+
 - **Weather**: Wind effects, turbulence, visibility conditions
 
-### Simulation Manager (`src/simulation.py`)
-- Multi-drone coordination
-- Physics stepping and collision detection
-- Comprehensive flight data logging
+```bash
+
+# Create virtual environment### Simulation Manager (`src/simulation.py`)
+
+python -m venv dp- Multi-drone coordination
+
+source dp/bin/activate  # Linux/Mac- Physics stepping and collision detection
+
+# or: dp\Scripts\activate  # Windows- Comprehensive flight data logging
+
 - Individual drone visualization generation
 
-### 3. Running Simulations
+# Install dependencies
+
+pip install -r requirements.txt### 3. Running Simulations
+
+```
 
 #### Simple Single-Drone Demo
-```bash
+
+### Running Demos```bash
+
 python simple_demo.py
-```
 
-#### Advanced Modular Multi-Drone Demo
+```bash```
+
+# Fire spread visualization
+
+python demos/demo_fire_timelapse.py#### Advanced Modular Multi-Drone Demo
+
 ```bash
-python modular_demo.py
-```
 
-The modular demo will:
-- Create mixed environment (cities + natural features)
-- Add multiple drones (quadcopters + fixed-wing)
+# Multi-drone firefightingpython modular_demo.py
+
+python demos/demo_fire_fighting.py```
+
+
+
+# Pure fire spread (validation)The modular demo will:
+
+python demos/demo_pure_fire.py- Create mixed environment (cities + natural features)
+
+```- Add multiple drones (quadcopters + fixed-wing)
+
 - Apply weather effects (wind, turbulence)
-- Generate individual analysis plots per drone
+
+### Running Tests- Generate individual analysis plots per drone
+
 - Save comprehensive flight data
 
-## How the System Works
+```bash
+
+# All tests## How the System Works
+
+python -m pytest tests/
 
 ### PyBullet Architecture
 
-The simulation uses direct PyBullet API calls for realistic physics:
+# Specific test file
+
+python -m pytest tests/test_fire_grid.pyThe simulation uses direct PyBullet API calls for realistic physics:
+
+```
 
 #### 1. **Physics Engine**
-- **PyBullet**: Real-time physics simulation with gravity (-9.81 m/s²)
+
+## 📊 Key Features- **PyBullet**: Real-time physics simulation with gravity (-9.81 m/s²)
+
 - **Mass**: 0.5kg quadcopter body
-- **Forces**: Applied directly using `p.applyExternalForce()`
-- **Timestep**: 1/240 second (240 FPS physics)
 
-#### 2. **Joystick Control System**
-- **Input Range**: [-1.0, +1.0] for each axis (left/right, forward/back, up/down)
+- **Realistic Fire Physics**: Cellular automata-based fire spread with wind interaction- **Forces**: Applied directly using `p.applyExternalForce()`
+
+- **Wind System**: 3D turbulent wind field with configurable parameters- **Timestep**: 1/240 second (240 FPS physics)
+
+- **Multi-Drone Support**: Coordinate multiple drones for firefighting
+
+- **Real-Time Visualization**: PyBullet 3D rendering + Matplotlib analysis#### 2. **Joystick Control System**
+
+- **Modular Architecture**: Clean separation of concerns for easy extension- **Input Range**: [-1.0, +1.0] for each axis (left/right, forward/back, up/down)
+
 - **Force Mapping**: Joystick values mapped to Newton forces
-- **Flight Controller**: Automatic gravity compensation for hover
 
-#### 3. **Force Calculation**
-- **Horizontal Forces**: Max 10N (provides ~2g acceleration)
-- **Hover Force**: 4.9N (exactly compensates 0.5kg × 9.81 gravity)
-- **Vertical Control**: ±15N additional force for climb/descent
+## 🔬 Research Applications- **Flight Controller**: Automatic gravity compensation for hover
+
+
+
+This simulation environment supports research in:#### 3. **Force Calculation**
+
+- Autonomous firefighting strategies- **Horizontal Forces**: Max 10N (provides ~2g acceleration)
+
+- Multi-agent coordination- **Hover Force**: 4.9N (exactly compensates 0.5kg × 9.81 gravity)
+
+- Wind-affected fire behavior modeling- **Vertical Control**: ±15N additional force for climb/descent
+
+- Drone swarm control algorithms
 
 ### Simulation Flow
 
+## 📖 Documentation
+
 1. **PyBullet Setup**: Initialize physics world with gravity
-2. **Drone Creation**: Create 0.5kg quadcopter body at [0,0,5] position  
-3. **Joystick Commands**: Execute 13-command flight sequence
-4. **Physics Step**: Each command runs for specified steps with force application
+
+For complete architecture details, mathematical foundations, and validation results, see:2. **Drone Creation**: Create 0.5kg quadcopter body at [0,0,5] position  
+
+- `docs/THESIS_DOCUMENTATION.md` (if available)3. **Joystick Commands**: Execute 13-command flight sequence
+
+- `docs/ARCHITECTURE.md` (if available)4. **Physics Step**: Each command runs for specified steps with force application
+
 5. **Data Collection**: Record position, velocity, and force data
-6. **Visualization**: Generate comprehensive flight analysis plots
 
-### Key Features
+## 📝 Requirements6. **Visualization**: Generate comprehensive flight analysis plots
 
-- **Realistic Physics**: Full momentum and inertia effects
-- **Hover Stabilization**: Automatic gravity compensation (4.9N upward force)
-- **Smooth Trajectories**: Natural curved flight paths due to momentum
+
+
+- Python 3.8+### Key Features
+
+- PyBullet
+
+- NumPy- **Realistic Physics**: Full momentum and inertia effects
+
+- Matplotlib- **Hover Stabilization**: Automatic gravity compensation (4.9N upward force)
+
+- SciPy- **Smooth Trajectories**: Natural curved flight paths due to momentum
+
 - **Force Feedback**: Real-time force and position monitoring
-- **Flight Analysis**: Detailed 6-panel visualization of flight performance
 
-## 🎮 Joystick Control System
+See `requirements.txt` for full dependency list.- **Flight Analysis**: Detailed 6-panel visualization of flight performance
 
-### Input Mapping
-```python
+
+
+## 🎓 Academic Context## 🎮 Joystick Control System
+
+
+
+This project is part of a diploma thesis on autonomous drone firefighting simulation.### Input Mapping
+
+For citation or academic use, please contact the author.```python
+
 # Joystick values [-1.0 to +1.0]
-joystick = [left_right, forward_back, up_down]
 
-# Examples:
+## 📄 Licensejoystick = [left_right, forward_back, up_down]
+
+
+
+[Specify license here]# Examples:
+
 [0.0, 0.0, 0.0]   # Hover - maintain position
 [-1.0, 0.0, 0.0]  # Fly LEFT  
 [0.0, 1.0, 0.0]   # Fly FORWARD

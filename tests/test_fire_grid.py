@@ -4,10 +4,17 @@ Test script for the FireGrid wildfire simulation.
 """
 
 import numpy as np
+import sys
+import os
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
-from fire_grid import FireGrid
+
+# Add the project root to Python path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+
+from core.fire_grid import FireGrid
 
 
 def test_basic_functionality():

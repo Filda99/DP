@@ -8,7 +8,7 @@ import sys
 import os
 
 # Add the project root to Python path
-project_root = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 from src.simulation import Simulation
@@ -128,7 +128,7 @@ def test_grid_mapper():
     """Test the GridMapper functionality."""
     print("\nTesting GridMapper...")
     
-    from grid_mapper import GridMapper
+    from core.grid_mapper import GridMapper
     
     mapper = GridMapper(grid_width_m=100, grid_height_m=80, cell_size_m=2.5)
     
