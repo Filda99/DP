@@ -27,17 +27,45 @@ class Environment:
         """Initialize environment."""
         self.obstacles = []
         self.terrain_zones = []
+        
+        # Initialize random wind (will vary over time)
+        self._initialize_random_wind()
+        
         self.weather = {
-            'wind_velocity': np.array([0.0, 0.0, 0.0]),
-            'wind_turbulence': 0.0,
+            'wind_velocity': self.wind_velocity,
+            'wind_turbulence': self.wind_turbulence,
             'visibility': 1000.0,  # meters
             'precipitation': 0.0   # 0.0 = none, 1.0 = heavy
         }
+        
+        # Wind dynamics (for temporal variation)
+        self.wind_change_timer = 0.0
+        self.wind_change_interval = random.uniform(5.0, 15.0)  # Change wind every 5-15 seconds
+        self.target_wind = self.wind_velocity.copy()
         
         # Fire simulation components
         self.fire_grid = None
         self.grid_mapper = None
         self.fire_enabled = False
+    
+    def _initialize_random_wind(self):
+        """Initialize random wind direction and speed."""
+        # Random wind speed between 3-12 m/s (light to strong breeze)
+        wind_speed = random.uniform(3.0, 12.0)
+        
+        # Random direction (angle in radians)
+        wind_angle = random.uniform(0, 2 * np.pi)
+        
+        # Convert to velocity vector (x=east, y=north, z=up)
+        wind_x = wind_speed * np.cos(wind_angle)
+        wind_y = wind_speed * np.sin(wind_angle)
+        wind_z = 0.0  # No vertical wind
+        
+        self.wind_velocity = np.array([wind_x, wind_y, wind_z])
+        self.wind_turbulence = random.uniform(0.2, 0.5)  # Random turbulence
+        
+        print(f"🌬️  Initial wind: {wind_speed:.1f} m/s at {np.degrees(wind_angle):.0f}°")
+        print(f"   Vector: [{wind_x:.1f}, {wind_y:.1f}, {wind_z:.1f}] m/s, turbulence: {self.wind_turbulence:.2f}")
         self.fire_visual_objects = []
         
     def create_ground(self):
@@ -439,6 +467,41 @@ class Environment:
             print(f"❌ Cannot start fire at {world_pos} - no fuel")
             return False
     
+    def _update_wind_dynamics(self, dt=0.1):
+        """
+        Update wind velocity over time with smooth transitions.
+        Wind changes gradually to create realistic temporal variation.
+        
+        Args:
+            dt: Time step in seconds (default 0.1s per simulation step)
+        """
+        self.wind_change_timer += dt
+        
+        # Check if it's time to set a new target wind
+        if self.wind_change_timer >= self.wind_change_interval:
+            # Generate new target wind
+            wind_speed = random.uniform(3.0, 12.0)  # 3-12 m/s
+            wind_angle = random.uniform(0, 2 * np.pi)
+            
+            self.target_wind[0] = wind_speed * np.cos(wind_angle)
+            self.target_wind[1] = wind_speed * np.sin(wind_angle)
+            self.target_wind[2] = 0.0
+            
+            # Reset timer with new random interval
+            self.wind_change_timer = 0.0
+            self.wind_change_interval = random.uniform(5.0, 15.0)
+            
+            # Also vary turbulence
+            self.wind_turbulence = random.uniform(0.2, 0.5)
+        
+        # Smoothly interpolate current wind toward target (takes ~2-3 seconds to transition)
+        blend_factor = 0.02  # Smooth interpolation rate
+        self.wind_velocity = (1 - blend_factor) * self.wind_velocity + blend_factor * self.target_wind
+        
+        # Update weather dictionary
+        self.weather['wind_velocity'] = self.wind_velocity
+        self.weather['wind_turbulence'] = self.wind_turbulence
+    
     def update_fire_simulation(self, suppression_assignments=None):
         """
         Update the fire simulation by one step.
@@ -448,6 +511,9 @@ class Environment:
         """
         if not self.fire_enabled:
             return
+        
+        # Update wind dynamics (gradual changes over time)
+        self._update_wind_dynamics(dt=0.1)
         
         # Update wind from unified weather system
         wind_velocity = self.weather['wind_velocity'][:2]  # Only x, y components
