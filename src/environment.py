@@ -16,8 +16,8 @@ import os
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-from core.fire_grid import FireGrid
-from core.grid_mapper import GridMapper
+from src.fire_grid import FireGrid
+from src.grid_mapper import GridMapper
 
 
 class Environment:
