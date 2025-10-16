@@ -10,8 +10,13 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from .environment import Environment
-from .drones import Quadcopter, FixedWing
+
+try:
+    from .environment import Environment
+    from .drones import Quadcopter, FixedWing
+except ImportError:
+    from src.environment import Environment
+    from src.drones import Quadcopter, FixedWing
 
 
 class Simulation:
@@ -31,6 +36,7 @@ class Simulation:
             'drones': {},
             'environment_effects': [],
             'collisions': [],
+            'fire_states': [],  # Add fire state logging
             'times': []
         }
         
@@ -102,6 +108,15 @@ class Simulation:
         """Setup mixed urban/natural environment."""
         self.environment.create_mixed_environment()
     
+    def enable_fire_simulation(self, grid_width_m=100, grid_height_m=100, cell_size_m=2.0):
+        """Enable wildfire simulation in the environment."""
+        self.environment.enable_fire_simulation(grid_width_m, grid_height_m, cell_size_m)
+        print(f"✅ Fire simulation enabled in environment")
+    
+    def start_fire(self, world_pos, intensity=0.2):
+        """Start a fire at a world position."""
+        return self.environment.start_fire_at_position(world_pos, intensity)
+    
     def set_wind(self, wind_velocity, turbulence=0.0):
         """Set wind conditions."""
         self.environment.set_wind(wind_velocity, turbulence)
@@ -144,8 +159,72 @@ class Simulation:
         self.simulation_time += self.timestep
         self.simulation_log['times'].append(self.simulation_time)
         
+        # Update fire simulation if enabled
+        if self.environment.fire_enabled:
+            # Calculate suppression from drones (if any)
+            suppression_assignments = self._calculate_drone_suppression()
+            
+            # Update fire simulation
+            self.environment.update_fire_simulation(suppression_assignments)
+            
+            # Update fire visualization every 10 steps (for performance)
+            if len(self.simulation_log['times']) % 10 == 0:
+                self.environment.visualize_fire_in_simulation()
+            
+            # Log fire state
+            fire_state = self.environment.get_fire_state()
+            self.simulation_log['fire_states'].append(fire_state)
+        
         # Check for collisions with environment
         self._check_collisions()
+    
+    def _calculate_drone_suppression(self):
+        """Calculate fire suppression effects from drone positions."""
+        if not self.environment.fire_enabled:
+            return {}
+        
+        suppression_assignments = {}
+        
+        # Simple model: drones within certain distance can suppress fires
+        suppression_radius = 10.0  # meters
+        suppression_effectiveness = 0.3  # base suppression probability
+        
+        for drone_name, drone in self.drones.items():
+            drone_pos = drone.get_position()
+            
+            # Check if drone is close to any burning cells
+            if self.environment.grid_mapper.is_position_in_bounds((drone_pos[0], drone_pos[1])):
+                # Get nearby cells within suppression radius
+                center_i, center_j = self.environment.grid_mapper.world_to_cell((drone_pos[0], drone_pos[1]))
+                
+                # Check cells in a radius around the drone
+                search_radius = int(np.ceil(suppression_radius / self.environment.grid_mapper.cell_size_m))
+                
+                for di in range(-search_radius, search_radius + 1):
+                    for dj in range(-search_radius, search_radius + 1):
+                        i = center_i + di
+                        j = center_j + dj
+                        
+                        # Check bounds
+                        H, W = self.environment.grid_mapper.get_grid_dimensions()
+                        if 0 <= i < H and 0 <= j < W:
+                            # Check if cell is burning
+                            if self.environment.fire_grid.B[i, j]:
+                                # Calculate distance
+                                cell_world_pos = self.environment.grid_mapper.cell_to_world(i, j)
+                                distance = np.sqrt((drone_pos[0] - cell_world_pos[0])**2 + 
+                                                 (drone_pos[1] - cell_world_pos[1])**2)
+                                
+                                if distance <= suppression_radius:
+                                    # Add suppression assignment
+                                    if (i, j) not in suppression_assignments:
+                                        suppression_assignments[(i, j)] = []
+                                    
+                                    # Effectiveness decreases with distance
+                                    effectiveness = suppression_effectiveness * (1.0 - distance / suppression_radius)
+                                    suppression_assignments[(i, j)].append(effectiveness)
+        
+        return suppression_assignments
     
     def _check_collisions(self):
         """Check for collisions between drones and environment."""
@@ -430,6 +509,10 @@ class Simulation:
         plt.close()
         
         print(f"✅ Multi-drone visualization saved as '{filepath}'")
+        
+        # Generate fire analysis if enabled
+        if self.environment.fire_enabled and self.simulation_log['fire_states']:
+            self._generate_fire_analysis("multi_drone_combined")
 
     def create_visualization(self, drone_name=None, title="Simulation Analysis"):
         """Create comprehensive visualization of simulation results."""
@@ -596,12 +679,108 @@ Collisions: {len(self.simulation_log['collisions'])}
         print(f"✅ Visualization saved as '{filepath}'")
         plt.close()
     
+    def _generate_fire_analysis(self, base_name):
+        """Generate fire spread analysis visualization."""
+        fire_states = self.simulation_log['fire_states']
+        times = self.simulation_log['times']
+        
+        if not fire_states:
+            return
+        
+        # Extract fire statistics over time
+        burning_cells = []
+        total_fuel = []
+        avg_intensity = []
+        
+        for state in fire_states:
+            if state and 'fire_stats' in state:
+                stats = state['fire_stats']
+                burning_cells.append(stats['burning_cells'])
+                total_fuel.append(stats['total_fuel'])
+                avg_intensity.append(stats['avg_intensity'])
+        
+        # Create fire analysis plots
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        
+        # 1. Fire spread over time
+        fire_times = times[:len(burning_cells)]
+        axes[0, 0].plot(fire_times, burning_cells, 'r-', linewidth=2)
+        axes[0, 0].set_xlabel('Time (s)')
+        axes[0, 0].set_ylabel('Burning Cells')
+        axes[0, 0].set_title('Fire Spread Over Time')
+        axes[0, 0].grid(True, alpha=0.3)
+        
+        # 2. Fuel consumption
+        axes[0, 1].plot(fire_times, total_fuel, 'g-', linewidth=2)
+        axes[0, 1].set_xlabel('Time (s)')
+        axes[0, 1].set_ylabel('Total Fuel Remaining')
+        axes[0, 1].set_title('Fuel Consumption Over Time')
+        axes[0, 1].grid(True, alpha=0.3)
+        
+        # 3. Fire intensity
+        axes[1, 0].plot(fire_times, avg_intensity, 'orange', linewidth=2)
+        axes[1, 0].set_xlabel('Time (s)')
+        axes[1, 0].set_ylabel('Average Fire Intensity')
+        axes[1, 0].set_title('Fire Intensity Over Time')
+        axes[1, 0].grid(True, alpha=0.3)
+        
+        # 4. Final fire state visualization
+        if fire_states:
+            final_state = fire_states[-1]['fire_grid_state']
+            grid_bounds = fire_states[-1]['grid_bounds']
+            
+            # Create composite image
+            H, W = final_state['B'].shape
+            img = np.zeros((H, W, 3))
+            
+            # Fuel as green background
+            fuel_normalized = final_state['F'] / np.max(final_state['F']) if np.max(final_state['F']) > 0 else final_state['F']
+            img[:, :, 1] = fuel_normalized * 0.5
+            
+            # Burned areas as dark
+            burned_mask = (final_state['F'] < 0.1) & (~final_state['B'])
+            img[burned_mask] = [0.2, 0.1, 0.0]  # Dark brown for burned areas
+            
+            # Currently burning as red
+            burning_mask = final_state['B']
+            img[burning_mask, 0] = 1.0  # Red
+            img[burning_mask, 1] = 0.0  # Remove green
+            
+            # Display with correct spatial extent
+            x_min, x_max, y_min, y_max = grid_bounds
+            axes[1, 1].imshow(img, extent=[x_min, x_max, y_min, y_max], origin='lower')
+            axes[1, 1].set_xlabel('X Position (m)')
+            axes[1, 1].set_ylabel('Y Position (m)')
+            axes[1, 1].set_title('Final Fire State')
+            
+            # Add drone trajectories to fire map
+            for drone_name, drone_data in self.simulation_log['drones'].items():
+                positions = np.array(drone_data['positions'])
+                axes[1, 1].plot(positions[:, 0], positions[:, 1], 'b-', alpha=0.7, 
+                              linewidth=2, label=f'{drone_name} path')
+            
+            axes[1, 1].legend()
+        
+        plt.tight_layout()
+        plt.savefig(f'output/{base_name}_fire_analysis.png', dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"✅ Fire analysis saved to output/{base_name}_fire_analysis.png")
+    
     def get_simulation_summary(self):
         """Get complete simulation summary."""
-        return {
+        summary = {
             'total_time': self.simulation_time,
             'total_steps': len(self.simulation_log['times']),
             'drones': {name: self.get_drone_status(name) for name in self.drones.keys()},
             'environment': self.environment.get_environment_info(),
             'collisions': len(self.simulation_log['collisions'])
         }
+        
+        # Add fire information if enabled
+        if self.environment.fire_enabled:
+            fire_state = self.environment.get_fire_state()
+            if fire_state:
+                summary['fire'] = fire_state['fire_stats']
+        
+        return summary

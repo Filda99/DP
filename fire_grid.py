@@ -86,6 +86,8 @@ class FireGrid:
         spread_dir = np.arctan2(di, dj)
         
         # Angle difference between wind direction and spread direction
+        # Used for wind gain calculation (positive when spreading with the wind)
+        # e.g., if wind is blowing east (0 radians) and fire spreads east, gain is maximized
         angle_diff = np.abs(spread_dir - self.wind_dir)
         angle_diff = min(angle_diff, 2*np.pi - angle_diff)  # Use smaller angle
         
@@ -96,7 +98,7 @@ class FireGrid:
     def _calculate_slope_gain(self, from_i: int, from_j: int, to_i: int, to_j: int) -> float:
         """Calculate slope influence on fire spread (simplified model)."""
         # For simplicity, assume flat terrain with slight uphill bias
-        # In a real implementation, this would use actual elevation data
+        # TODO: In a real implementation, this would use actual elevation data
         return 1.0 + self.k_slope * 0.1  # Small uphill bias
     
     def _calculate_lambda_xy(self, from_i: int, from_j: int, to_i: int, to_j: int) -> float:
@@ -106,6 +108,11 @@ class FireGrid:
         
         # Distance decay
         d = self._calculate_distance(from_i, from_j, to_i, to_j)
+        # Tells us how much the distance reduces the spread rate 
+        # because fire spreads less effectively over longer distances.
+        # Calculation: -alpha * d gives the decay exponent,
+        # and exp(-alpha * d) gives the decay factor which is how much
+        # the spread rate is reduced due to distance.
         distance_factor = np.exp(-self.alpha * d)
         
         # Environmental factors
@@ -119,6 +126,9 @@ class FireGrid:
     
     def _calculate_spread_probability(self, from_i: int, from_j: int, to_i: int, to_j: int) -> float:
         """Calculate P_xy = 1 - exp(-lambda_xy * dt)."""
+        # Tells us the probability that fire spreads from cell (from_i, from_j)
+        # to cell (to_i, to_j) during the time step dt.
+        # It is derived from the rate lambda_xy and the time step dt.
         lambda_xy = self._calculate_lambda_xy(from_i, from_j, to_i, to_j)
         return 1.0 - np.exp(-lambda_xy * self.dt)
     

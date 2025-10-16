@@ -3,11 +3,21 @@ Environment System
 
 Creates environmental features like obstacles, terrain, weather effects.
 Manages cities, forests, wind, and other environmental factors.
+Includes wildfire simulation capabilities.
 """
 
 import pybullet as p
 import numpy as np
 import random
+import sys
+import os
+
+# Add project root to path for imports
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+
+from fire_grid import FireGrid
+from grid_mapper import GridMapper
 
 
 class Environment:
@@ -23,6 +33,12 @@ class Environment:
             'visibility': 1000.0,  # meters
             'precipitation': 0.0   # 0.0 = none, 1.0 = heavy
         }
+        
+        # Fire simulation components
+        self.fire_grid = None
+        self.grid_mapper = None
+        self.fire_enabled = False
+        self.fire_visual_objects = []
         
     def create_ground(self):
         """Create ground plane."""
@@ -287,3 +303,181 @@ class Environment:
         self.add_lake([0, -25], 10)
         
         print(f"✅ Mixed environment created with {len(self.obstacles)} buildings and {len(self.terrain_zones)} natural zones")
+    
+    def enable_fire_simulation(self, grid_width_m=100, grid_height_m=100, cell_size_m=2.0, 
+                             dt=0.1, alpha=1.0, k_wind=1.5, wind_dir=0.0):
+        """
+        Enable wildfire simulation in the environment.
+        
+        Args:
+            grid_width_m: Width of fire grid in meters
+            grid_height_m: Height of fire grid in meters  
+            cell_size_m: Size of each fire cell in meters
+            dt: Fire simulation time step
+            alpha: Distance decay factor for fire spread
+            k_wind: Wind influence factor
+            wind_dir: Wind direction in radians
+        """
+        # Create grid mapper
+        self.grid_mapper = GridMapper(grid_width_m, grid_height_m, cell_size_m)
+        
+        # Get grid dimensions
+        H, W = self.grid_mapper.get_grid_dimensions()
+        
+        # Create fire grid with wind from weather system
+        wind_speed = np.linalg.norm(self.weather['wind_velocity'][:2])  # Use only x,y components
+        wind_angle = np.arctan2(self.weather['wind_velocity'][1], self.weather['wind_velocity'][0])
+        
+        # Create base lambda values (higher in forest areas)
+        l_base = np.ones(H) * 0.5  # Base fire spread rate
+        
+        self.fire_grid = FireGrid(
+            H=H, W=W, dt=dt, alpha=alpha, 
+            k_wind=k_wind, k_slope=0.5,
+            wind_dir=wind_angle, l_base=l_base
+        )
+        
+        # Modify fuel based on terrain
+        self._initialize_fire_fuel_from_terrain()
+        
+        self.fire_enabled = True
+        print(f"✅ Fire simulation enabled: {H}x{W} grid, {cell_size_m}m cells")
+    
+    def _initialize_fire_fuel_from_terrain(self):
+        """Initialize fire fuel levels based on terrain zones."""
+        if not self.fire_enabled or self.fire_grid is None:
+            return
+        
+        H, W = self.grid_mapper.get_grid_dimensions()
+        
+        # Set fuel based on terrain type
+        for i in range(H):
+            for j in range(W):
+                world_pos = self.grid_mapper.cell_to_world(i, j)
+                fuel_level = 0.3  # Default fuel level
+                
+                # Check if this position is in a forest (higher fuel)
+                for zone in self.terrain_zones:
+                    if zone['type'] == 'forest':
+                        center = zone['center']
+                        radius = zone['radius']
+                        distance = np.sqrt((world_pos[0] - center[0])**2 + (world_pos[1] - center[1])**2)
+                        if distance <= radius:
+                            fuel_level = 0.8  # High fuel in forests
+                            break
+                    elif zone['type'] == 'lake':
+                        center = zone['center']
+                        radius = zone['radius']
+                        distance = np.sqrt((world_pos[0] - center[0])**2 + (world_pos[1] - center[1])**2)
+                        if distance <= radius:
+                            fuel_level = 0.0  # No fuel in water
+                            break
+                
+                self.fire_grid.F[i, j] = fuel_level
+        
+        print("✅ Fire fuel levels initialized from terrain")
+    
+    def start_fire_at_position(self, world_pos, intensity=0.2):
+        """
+        Start a fire at a specific world position.
+        
+        Args:
+            world_pos: (x, y) position in world coordinates
+            intensity: Initial fire intensity
+        """
+        if not self.fire_enabled:
+            print("❌ Fire simulation not enabled")
+            return False
+        
+        i, j = self.grid_mapper.world_to_cell(world_pos)
+        
+        if self.fire_grid.F[i, j] > 0:  # Only if there's fuel
+            self.fire_grid.B[i, j] = True
+            self.fire_grid.I[i, j] = intensity
+            print(f"✅ Fire started at world pos {world_pos} -> cell ({i}, {j})")
+            return True
+        else:
+            print(f"❌ Cannot start fire at {world_pos} - no fuel")
+            return False
+    
+    def update_fire_simulation(self, suppression_assignments=None):
+        """
+        Update the fire simulation by one step.
+        
+        Args:
+            suppression_assignments: Dict mapping (i,j) to list of suppression probabilities
+        """
+        if not self.fire_enabled:
+            return
+        
+        # Update wind direction based on current weather
+        wind_angle = np.arctan2(self.weather['wind_velocity'][1], self.weather['wind_velocity'][0])
+        self.fire_grid.wind_dir = wind_angle
+        
+        # Step the fire simulation
+        self.fire_grid.step(suppression_assignments)
+    
+    def get_fire_state(self):
+        """Get current fire simulation state."""
+        if not self.fire_enabled:
+            return None
+        
+        return {
+            'fire_grid_state': self.fire_grid.get_state(),
+            'fire_stats': self.fire_grid.get_stats(),
+            'grid_bounds': self.grid_mapper.get_grid_bounds(),
+            'cell_size': self.grid_mapper.cell_size_m
+        }
+    
+    def visualize_fire_in_simulation(self):
+        """Create visual objects for fire in PyBullet simulation."""
+        if not self.fire_enabled:
+            return
+        
+        # Remove old fire visualizations
+        for obj_id in self.fire_visual_objects:
+            try:
+                p.removeBody(obj_id)
+            except:
+                pass
+        self.fire_visual_objects.clear()
+        
+        # Create new fire visualizations
+        H, W = self.fire_grid.B.shape
+        
+        for i in range(H):
+            for j in range(W):
+                if self.fire_grid.B[i, j]:  # If cell is burning
+                    world_pos = self.grid_mapper.cell_to_world(i, j)
+                    intensity = self.fire_grid.I[i, j]
+                    
+                    # Create fire visual (red cylinder)
+                    fire_height = 0.5 + intensity * 2.0  # Height based on intensity
+                    fire_radius = self.grid_mapper.cell_size_m * 0.4
+                    
+                    # Color based on intensity (yellow to red)
+                    red = 1.0
+                    green = max(0.0, 1.0 - intensity * 2.0)
+                    blue = 0.0
+                    alpha = 0.8
+                    
+                    collision_shape = p.createCollisionShape(
+                        p.GEOM_CYLINDER,
+                        radius=fire_radius,
+                        height=fire_height
+                    )
+                    visual_shape = p.createVisualShape(
+                        p.GEOM_CYLINDER,
+                        radius=fire_radius,
+                        length=fire_height,
+                        rgbaColor=[red, green, blue, alpha]
+                    )
+                    
+                    fire_obj = p.createMultiBody(
+                        baseMass=0,  # Static
+                        baseCollisionShapeIndex=collision_shape,
+                        baseVisualShapeIndex=visual_shape,
+                        basePosition=[world_pos[0], world_pos[1], fire_height/2]
+                    )
+                    
+                    self.fire_visual_objects.append(fire_obj)
