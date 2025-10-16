@@ -185,12 +185,23 @@ class Simulation:
         
         suppression_assignments = {}
         
-        # Simple model: drones within certain distance can suppress fires
-        suppression_radius = 10.0  # meters
-        suppression_effectiveness = 0.3  # base suppression probability
+        # Realistic suppression model:
+        # - Drones must be low altitude to suppress (< 15m)
+        # - Small suppression radius (only 5m)
+        # - Low effectiveness (15% base probability)
+        suppression_radius = 5.0  # meters - drones must be close
+        base_effectiveness = 0.15  # base suppression probability per drone
+        max_altitude = 15.0  # meters - maximum altitude for effective suppression
         
         for drone_name, drone in self.drones.items():
             drone_pos = drone.get_position()
+            
+            # Altitude check - drones too high cannot suppress fires
+            if drone_pos[2] > max_altitude:
+                continue  # Skip this drone, too high to suppress
+            
+            # Altitude factor - effectiveness decreases with altitude
+            altitude_factor = 1.0 - (drone_pos[2] / max_altitude)  # 1.0 at ground, 0.0 at max_altitude
             
             # Check if drone is close to any burning cells
             if self.environment.grid_mapper.is_position_in_bounds((drone_pos[0], drone_pos[1])):
@@ -220,8 +231,9 @@ class Simulation:
                                     if (i, j) not in suppression_assignments:
                                         suppression_assignments[(i, j)] = []
                                     
-                                    # Effectiveness decreases with distance
-                                    effectiveness = suppression_effectiveness * (1.0 - distance / suppression_radius)
+                                    # Effectiveness decreases with both distance and altitude
+                                    distance_factor = (1.0 - distance / suppression_radius)
+                                    effectiveness = base_effectiveness * distance_factor * altitude_factor
                                     suppression_assignments[(i, j)].append(effectiveness)
         
         return suppression_assignments

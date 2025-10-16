@@ -342,10 +342,17 @@ class Environment:
             wind_dir=wind_angle, l_base=l_base
         )
         
+        # Enable fire BEFORE initializing fuel from terrain
+        self.fire_enabled = True
+        
         # Modify fuel based on terrain
         self._initialize_fire_fuel_from_terrain()
         
-        self.fire_enabled = True
+        # IMPORTANT: Clear any random fires that were started in reset_random()
+        # We want to start fires manually, not have random initial fires
+        self.fire_grid.B[:] = False
+        self.fire_grid.I[:] = 0.0
+        
         print(f"✅ Fire simulation enabled: {H}x{W} grid, {cell_size_m}m cells")
     
     def _initialize_fire_fuel_from_terrain(self):
@@ -355,11 +362,15 @@ class Environment:
         
         H, W = self.grid_mapper.get_grid_dimensions()
         
+        # Debug counters
+        debug_counts = {'building': 0, 'forest': 0, 'lake': 0, 'default': 0}
+        
         # Set fuel based on terrain type
         for i in range(H):
             for j in range(W):
                 world_pos = self.grid_mapper.cell_to_world(i, j)
                 fuel_level = 0.3  # Default fuel level (open terrain)
+                terrain_type = 'default'
                 
                 # FIRST: Check if position is inside a building - NO FUEL
                 in_building = False
@@ -370,6 +381,7 @@ class Environment:
                             bounds['min'][1] <= world_pos[1] <= bounds['max'][1]):
                             fuel_level = 0.0  # Buildings have no fuel!
                             in_building = True
+                            terrain_type = 'building'
                             break
                 
                 # Only check terrain zones if not in a building
@@ -382,6 +394,7 @@ class Environment:
                                              (world_pos[1] - center[1])**2)
                             if distance <= radius:
                                 fuel_level = 0.8  # High fuel in forests
+                                terrain_type = 'forest'
                                 break
                         elif zone['type'] == 'lake':
                             center = zone['center']
@@ -390,11 +403,18 @@ class Environment:
                                              (world_pos[1] - center[1])**2)
                             if distance <= radius:
                                 fuel_level = 0.0  # No fuel in water
+                                terrain_type = 'lake'
                                 break
                 
                 self.fire_grid.F[i, j] = fuel_level
+                debug_counts[terrain_type] += 1
         
-        print("✅ Fire fuel levels initialized from terrain")
+        print(f"✅ Fire fuel levels initialized from terrain:")
+        print(f"   Buildings: {debug_counts['building']} cells")
+        print(f"   Forests: {debug_counts['forest']} cells")
+        print(f"   Lakes: {debug_counts['lake']} cells")
+        print(f"   Open terrain: {debug_counts['default']} cells")
+
     
     def start_fire_at_position(self, world_pos, intensity=0.2):
         """
