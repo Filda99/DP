@@ -33,6 +33,13 @@ class FixedWing(BaseDrone):
         self.wing_area = 0.5  # m²
         self.current_air_density = 1.225  # kg/m³ (default at sea level, updated by atmospheric conditions)
         
+        # Store atmospheric conditions for lift calculation
+        self.atmospheric_conditions = {
+            'velocity': np.array([0.0, 0.0, 0.0]),
+            'temperature': 293.15,
+            'density': 1.225
+        }
+        
     def _create_pybullet_body(self, position, mass):
         """Create fixed-wing body in PyBullet."""
         # Create a more aerodynamic shape (elongated box)
@@ -84,11 +91,18 @@ class FixedWing(BaseDrone):
         force_y = thrust * np.sin(self.current_heading)
         
         # Vertical force (elevator control + basic lift)
-        current_speed = self.get_speed()
+        # Get atmospheric conditions
+        local_airflow_velocity = self.atmospheric_conditions['velocity']
+        local_density = self.atmospheric_conditions['density']
         
-        # Generate lift based on forward speed
-        if current_speed > 0.1:
-            lift = 0.5 * self.current_air_density * (current_speed ** 2) * self.wing_area * self.lift_coefficient
+        # Calculate velocity relative to air (not ground)
+        aircraft_velocity = self.get_velocity()
+        air_relative_velocity = aircraft_velocity - local_airflow_velocity
+        v_air = np.linalg.norm(air_relative_velocity)
+        
+        # Generate lift based on airspeed (not groundspeed)
+        if v_air > 0.1:
+            lift = 0.5 * local_density * (v_air ** 2) * self.wing_area * self.lift_coefficient
         else:
             lift = 0
         
@@ -111,29 +125,9 @@ class FixedWing(BaseDrone):
             p.WORLD_FRAME
         )
         
-        # Apply drag
-        self._apply_drag()
+        # Note: Drag is now handled in apply_environmental_effects() using air-relative velocity
         
         return forces
-    
-    def _apply_drag(self):
-        """Apply aerodynamic drag."""
-        velocity = self.get_velocity()
-        speed = np.linalg.norm(velocity)
-        
-        if speed > 0.1:
-            # Drag force opposes motion
-            drag_magnitude = 0.5 * self.current_air_density * (speed ** 2) * self.wing_area * self.drag_coefficient
-            drag_direction = -velocity / speed
-            drag_force = drag_direction * drag_magnitude
-            
-            p.applyExternalForce(
-                self.drone_id,
-                -1,
-                drag_force.tolist(),
-                [0, 0, 0],
-                p.WORLD_FRAME
-            )
     
     def apply_wind_effect(self, wind_velocity):
         """Apply wind forces to the fixed-wing aircraft."""
@@ -198,7 +192,8 @@ class FixedWing(BaseDrone):
         local_airflow = atmospheric_conditions['velocity']
         local_density = atmospheric_conditions.get('density', 1.225)  # kg/m³
         
-        # Store density for use in lift calculation
+        # Store atmospheric conditions for use in lift calculation
+        self.atmospheric_conditions = atmospheric_conditions
         self.current_air_density = local_density
         
         # Aircraft velocity relative to the air (v_air_relative = v_aircraft - u_air)
