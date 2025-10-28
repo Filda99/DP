@@ -31,6 +31,7 @@ class FixedWing(BaseDrone):
         self.lift_coefficient = 0.8
         self.drag_coefficient = 0.05
         self.wing_area = 0.5  # m²
+        self.current_air_density = 1.225  # kg/m³ (default at sea level, updated by atmospheric conditions)
         
     def _create_pybullet_body(self, position, mass):
         """Create fixed-wing body in PyBullet."""
@@ -87,7 +88,7 @@ class FixedWing(BaseDrone):
         
         # Generate lift based on forward speed
         if current_speed > 0.1:
-            lift = 0.5 * 1.225 * (current_speed ** 2) * self.wing_area * self.lift_coefficient
+            lift = 0.5 * self.current_air_density * (current_speed ** 2) * self.wing_area * self.lift_coefficient
         else:
             lift = 0
         
@@ -122,7 +123,7 @@ class FixedWing(BaseDrone):
         
         if speed > 0.1:
             # Drag force opposes motion
-            drag_magnitude = 0.5 * 1.225 * (speed ** 2) * self.wing_area * self.drag_coefficient
+            drag_magnitude = 0.5 * self.current_air_density * (speed ** 2) * self.wing_area * self.drag_coefficient
             drag_direction = -velocity / speed
             drag_force = drag_direction * drag_magnitude
             
@@ -183,17 +184,29 @@ class FixedWing(BaseDrone):
             'drag_coefficient': self.drag_coefficient
         }
     
-    def apply_environmental_effects(self, local_airflow: np.ndarray):
-        """Apply drag force based on air relative velocity, incorporating the paper's concept of airflow."""
+    def apply_environmental_effects(self, atmospheric_conditions: dict):
+        """
+        Apply drag force based on air relative velocity and local atmospheric density.
         
-        local_density = 1.225 # kg/m³ (Simplified, a full implementation would use the paper's density model)
+        Args:
+            atmospheric_conditions: dict with keys:
+                - 'velocity': [u, v, w] airflow vector (m/s)
+                - 'temperature': local temperature (K)
+                - 'density': local air density (kg/m³)
+        """
+        # Extract atmospheric conditions
+        local_airflow = atmospheric_conditions['velocity']
+        local_density = atmospheric_conditions.get('density', 1.225)  # kg/m³
+        
+        # Store density for use in lift calculation
+        self.current_air_density = local_density
         
         # Aircraft velocity relative to the air (v_air_relative = v_aircraft - u_air)
         aircraft_velocity = self.get_velocity()
         air_relative_velocity = aircraft_velocity - local_airflow
         v_air = np.linalg.norm(air_relative_velocity)
         
-        # Drag Force: F_drag = 0.5 * rho_a * v_air^2 * C_D * A * (-v_air_relative / v_air)
+        # Drag Force: F_drag = 0.5 * ρ * v²_air * C_D * A * (-v̂_air_relative)
         drag_magnitude = 0.5 * local_density * (v_air ** 2) * self.drag_coefficient * self.wing_area
         
         # Drag acts opposite to the direction of relative air velocity
@@ -207,5 +220,3 @@ class FixedWing(BaseDrone):
             [0, 0, 0],
             p.WORLD_FRAME
         )
-        # Note: For full accuracy, Lift calculation (part of apply_control) should also 
-        # use v_air and local_density, as per the paper.

@@ -125,17 +125,28 @@ class Quadcopter(BaseDrone):
         
         return wind_force
     
-    def apply_environmental_effects(self, local_airflow: np.ndarray):
+    def apply_environmental_effects(self, atmospheric_conditions: dict):
         """
-        Apply environmental forces (convection, wind) based on local airflow.
+        Apply environmental forces based on local atmospheric conditions.
         
         Args:
-            local_airflow: [vx, vy, vz] velocity vector from environment (m/s)
+            atmospheric_conditions: dict with keys:
+                - 'velocity': [u, v, w] airflow vector (m/s)
+                - 'temperature': local temperature (K)
+                - 'density': local air density (kg/m³)
         """
+        # Extract airflow velocity
+        local_airflow = atmospheric_conditions['velocity']
+        local_density = atmospheric_conditions.get('density', 1.225)  # Default sea level density
+        
         # Convert airflow velocity to force
-        # For quadcopters, use drag-based model
+        # For quadcopters, use drag-based model with density
+        # F_drag = 0.5 × ρ × C_d × A × v²
         drag_coefficient = 0.5  # Simplified drag coefficient
-        airflow_force = local_airflow * drag_coefficient
+        
+        # Scale force by air density (lower density = less force)
+        density_factor = local_density / 1.225  # Normalize to sea level
+        airflow_force = local_airflow * drag_coefficient * density_factor
         
         # Apply the environmental force
         if np.linalg.norm(airflow_force) > 0.05:

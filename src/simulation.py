@@ -35,6 +35,10 @@ class Simulation:
         self.plume_radius_factor = 2.0  # Plume extends ~2x cell size
         self.radial_flow_factor = 0.3  # Radial flow is ~30% of vertical velocity
         
+        # --- Temperature grid for heat diffusion ---
+        self.temperature_grid = None  # Will be initialized when fire is enabled
+        self.base_temperature = 293.15  # 20°C in Kelvin
+        
         # Initialize visualizer
         self.visualizer = SimulationVisualizer()
         
@@ -118,6 +122,14 @@ class Simulation:
     def enable_fire_simulation(self, grid_width_m=100, grid_height_m=100, cell_size_m=2.0):
         """Enable wildfire simulation in the environment."""
         self.environment.enable_fire_simulation(grid_width_m, grid_height_m, cell_size_m)
+        
+        # Initialize temperature grid (3D: height × rows × cols)
+        if hasattr(self.environment, 'fire_grid') and self.environment.fire_grid is not None:
+            H, W = self.environment.fire_grid.H, self.environment.fire_grid.W
+            height_levels = 20  # 20 vertical layers
+            self.temperature_grid = np.full((height_levels, H, W), self.base_temperature, dtype=float)
+            print(f"✅ Temperature grid initialized: {height_levels}×{H}×{W}")
+        
         print(f"✅ Fire simulation enabled in environment")
     
     def start_fire(self, world_pos, intensity=0.2):
@@ -134,6 +146,70 @@ class Simulation:
         self.environment.set_weather(visibility, precipitation)
         print(f"✅ Weather set - visibility: {visibility}m, precipitation: {precipitation}")
     
+    def _update_temperature_grid(self):
+        """
+        Update temperature grid based on fire intensity and heat diffusion.
+        
+        Physics:
+        - Bottom layer heats up from burning cells: T = base_temp + intensity × 500K
+        - Heat diffuses to neighbors (simple 3D diffusion)
+        - Heat rises (convection approximated by vertical diffusion bias)
+        """
+        if self.temperature_grid is None or not self.fire_enabled:
+            return
+        
+        height_levels, H, W = self.temperature_grid.shape
+        new_temp = self.temperature_grid.copy()
+        
+        # 1. Heat bottom layer from fire
+        fire_intensities = self.fire_grid.I  # (H, W)
+        new_temp[0, :, :] = self.base_temperature + fire_intensities * 500.0
+        
+        # 2. Simple heat diffusion (6-neighbor stencil in 3D)
+        diffusion_rate = 0.1  # Diffusion coefficient
+        
+        for layer in range(height_levels):
+            for i in range(H):
+                for j in range(W):
+                    heat_sum = self.temperature_grid[layer, i, j]
+                    neighbor_count = 1
+                    
+                    # Horizontal neighbors (same layer)
+                    if i > 0:
+                        heat_sum += self.temperature_grid[layer, i-1, j]
+                        neighbor_count += 1
+                    if i < H-1:
+                        heat_sum += self.temperature_grid[layer, i+1, j]
+                        neighbor_count += 1
+                    if j > 0:
+                        heat_sum += self.temperature_grid[layer, i, j-1]
+                        neighbor_count += 1
+                    if j < W-1:
+                        heat_sum += self.temperature_grid[layer, i, j+1]
+                        neighbor_count += 1
+                    
+                    # Vertical neighbors (heat rises - stronger upward diffusion)
+                    if layer > 0:
+                        heat_sum += self.temperature_grid[layer-1, i, j] * 1.5  # Heat from below (stronger)
+                        neighbor_count += 1.5
+                    if layer < height_levels-1:
+                        heat_sum += self.temperature_grid[layer+1, i, j] * 0.5  # Heat from above (weaker)
+                        neighbor_count += 0.5
+                    
+                    # Average temperature
+                    avg_temp = heat_sum / neighbor_count
+                    
+                    # Apply diffusion
+                    new_temp[layer, i, j] = (1 - diffusion_rate) * self.temperature_grid[layer, i, j] + \
+                                            diffusion_rate * avg_temp
+                    
+                    # Clamp to realistic range
+                    new_temp[layer, i, j] = np.clip(new_temp[layer, i, j], 
+                                                     self.base_temperature, 
+                                                     self.base_temperature + 1000.0)
+        
+        self.temperature_grid = new_temp
+    
     def step_simulation(self, drone_controls):
         """
         Step the simulation forward.
@@ -147,11 +223,11 @@ class Simulation:
             if drone_name in self.drones:
                 drone = self.drones[drone_name]
                 
-                # 1. Get local airflow (Fire -> Airflow)
-                local_airflow = self.get_local_airflow(drone.get_position())
+                # 1. Get local atmospheric conditions (Fire -> Temperature -> Density + Airflow)
+                atmospheric_conditions = self.get_local_atmospheric_conditions(drone.get_position())
                 
-                # 2. Apply environmental effects (Airflow -> Aircraft)
-                drone.apply_environmental_effects(local_airflow)
+                # 2. Apply environmental effects (Atmospheric conditions -> Aircraft)
+                drone.apply_environmental_effects(atmospheric_conditions)
 
                 # Apply drone control
                 forces = drone.apply_control(control_input)
@@ -179,6 +255,9 @@ class Simulation:
             
             # Update fire simulation
             self.environment.update_fire_simulation(suppression_assignments)
+            
+            # Update temperature grid from fire
+            self._update_temperature_grid()
             
             # Update fire visualization every 10 steps (for performance)
             if len(self.simulation_log['times']) % 10 == 0:
@@ -305,27 +384,62 @@ class Simulation:
         return {name: self.get_drone_status(name) for name in self.drones.keys()}
     
 
-    def get_local_airflow(self, world_pos: np.ndarray) -> np.ndarray:
+    def get_local_atmospheric_conditions(self, world_pos: np.ndarray) -> dict:
         """
-        Calculates the local airflow vector (u, v, w) based on global wind and fire convection.
+        Calculates the local atmospheric conditions including airflow, temperature, and air density.
         
         Implements physically accurate fire-driven convection model:
         - Vertical convection (w): Fire heat creates buoyant upward flow with peaked velocity profile
         - Radial flow (u, v): INWARD at low altitude (<50% height), OUTWARD at high altitude (>50% height)
         - Radial attenuation: Velocities decay with distance from fire center (Gaussian plume)
+        - Temperature: Heat from fire diffuses through 3D temperature grid
+        - Density: Calculated using ideal gas law approximation
         - Superposition with global wind
         
         Args:
             world_pos: [x, y, z] position in world coordinates (meters)
             
         Returns:
-            [u, v, w] airflow velocity vector (m/s)
+            dict: {
+                'velocity': [u, v, w] airflow velocity vector (m/s),
+                'temperature': local temperature (K),
+                'density': local air density (kg/m³)
+            }
         """
         # Start with global wind
         local_airflow = self.weather['wind_velocity'].copy()
         
+        # Default atmospheric conditions
+        local_temp = self.base_temperature  # 293.15 K (20°C)
+        local_density = 1.225  # kg/m³ at sea level, 20°C
+        
+        # Get temperature from grid if available
+        if self.temperature_grid is not None and self.fire_enabled:
+            # Map world position to temperature grid
+            try:
+                center_i, center_j = self.grid_mapper.world_to_cell((world_pos[0], world_pos[1]))
+                # Map height to vertical layer (0 to height_levels-1)
+                height_levels = self.temperature_grid.shape[0]
+                layer_height = self.airflow_H / height_levels
+                layer_idx = int(np.clip(world_pos[2] / layer_height, 0, height_levels - 1))
+                
+                if 0 <= center_i < self.temperature_grid.shape[1] and 0 <= center_j < self.temperature_grid.shape[2]:
+                    local_temp = self.temperature_grid[layer_idx, center_i, center_j]
+                    
+                    # Calculate density using ideal gas approximation
+                    # ρ = ρ₀ × (T₀ / T)
+                    initial_density = 1.225  # kg/m³
+                    initial_temp = 293.15  # K
+                    local_density = initial_density * (initial_temp / local_temp)
+            except (IndexError, AttributeError):
+                pass  # Use default values
+        
         if not self.fire_enabled:
-            return local_airflow
+            return {
+                'velocity': local_airflow,
+                'temperature': local_temp,
+                'density': local_density
+            }
         
         # Only apply fire effects below convection height
         if world_pos[2] >= self.airflow_H:
@@ -403,7 +517,11 @@ class Simulation:
         local_airflow[1] += total_convection_y
         local_airflow[2] += total_convection_z
         
-        return local_airflow
+        return {
+            'velocity': local_airflow,
+            'temperature': local_temp,
+            'density': local_density
+        }
     
     def create_multi_drone_visualization(self, title="Multi-Drone Analysis"):
         """Create visualization showing all drones together."""

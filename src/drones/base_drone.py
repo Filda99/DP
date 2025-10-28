@@ -84,6 +84,14 @@ class BaseDrone(ABC):
         pass
 
     @abstractmethod
-    def apply_environmental_effects(self, local_airflow: np.ndarray):
-        """Apply environmental forces (convection, wind) based on local airflow."""
+    def apply_environmental_effects(self, atmospheric_conditions: dict):
+        """
+        Apply environmental forces based on local atmospheric conditions.
+        
+        Args:
+            atmospheric_conditions: dict with keys:
+                - 'velocity': [u, v, w] airflow vector (m/s)
+                - 'temperature': local temperature (K)
+                - 'density': local air density (kg/m³)
+        """
         pass
