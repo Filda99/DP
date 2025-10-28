@@ -13,13 +13,25 @@ from .base_drone import BaseDrone
 class FixedWing(BaseDrone):
     """Fixed-wing aircraft with forward flight requirements."""
     
-    def __init__(self, position=[0, 0, 5], mass=1.0, max_thrust=20.0, min_speed=3.0):
-        """Initialize fixed-wing aircraft."""
+    def __init__(self, position=[0, 0, 5], mass=1.0, max_thrust=20.0, min_speed=3.0, water_capacity=50.0):
+        """Initialize fixed-wing aircraft.
+        
+        Args:
+            position: Initial position [x, y, z]
+            mass: Aircraft mass in kg
+            max_thrust: Maximum thrust in Newtons
+            min_speed: Minimum speed to maintain lift in m/s
+            water_capacity: Water tank capacity in liters (0 = no firefighting)
+        """
         # Create PyBullet body first
         self.drone_id = self._create_pybullet_body(position, mass)
         
         # Initialize base class
         super().__init__(self.drone_id, position, mass)
+        
+        # Firefighting capability for fixed-wing
+        self.water_capacity = water_capacity
+        self.current_water = water_capacity  # Start with full tank
         
         # Fixed-wing specific parameters
         self.max_thrust = max_thrust
@@ -27,8 +39,8 @@ class FixedWing(BaseDrone):
         self.current_heading = 0.0  # Current heading in radians
         self.turn_rate = 1.0  # Max turn rate (rad/s)
         
-        # Aerodynamic properties
-        self.lift_coefficient = 0.8
+        # Aerodynamic properties (REDUCED lift for more controlable flight)
+        self.lift_coefficient = 0.2  # REDUCED from 0.8 to prevent excessive climbing
         self.drag_coefficient = 0.05
         self.wing_area = 0.5  # m²
         self.current_air_density = 1.225  # kg/m³ (default at sea level, updated by atmospheric conditions)
@@ -79,8 +91,9 @@ class FixedWing(BaseDrone):
         throttle_input = joystick_input[1]
         elevator_input = joystick_input[2]
         
-        # Update heading based on turn input
-        self.current_heading += turn_input * self.turn_rate * (1/240)  # Assuming 240 FPS
+        # Update heading based on turn input (assuming 60 FPS)
+        dt = 1/60.0
+        self.current_heading += turn_input * self.turn_rate * dt
         
         # Forward thrust (always needs some thrust to maintain flight)
         base_thrust = self.max_thrust * 0.3  # Minimum thrust to maintain flight
@@ -107,7 +120,8 @@ class FixedWing(BaseDrone):
             lift = 0
         
         # Combine lift with elevator input
-        force_z = lift + elevator_input * self.max_thrust * 0.3 - self.gravity_compensation
+        # Elevator has STRONG authority (100% of max_thrust) for altitude control
+        force_z = lift + elevator_input * self.max_thrust * 1.0 - self.gravity_compensation
         
         return np.array([force_x, force_y, force_z])
     

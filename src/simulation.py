@@ -28,7 +28,8 @@ class Simulation:
         self.drones = {}
         self.environment = Environment()
         self.simulation_time = 0.0
-        self.timestep = 1/240.0  # 240 FPS
+        self.fps = 60  # Simulation FPS
+        self.timestep = 1/60.0  # 60 FPS (reduced from 240 for performance)
         # --- Airflow model variables (corrected for physical accuracy) ---
         self.airflow_H = 50.0  # Convection height limit (m)
         self.convection_gain = 8.0  # Base updraft velocity [m/s] for unit fire intensity (realistic: 5-20 m/s)
@@ -88,23 +89,30 @@ class Simulation:
         }
         
         print(f"✅ Added quadcopter '{name}' at {position}")
-        return quad
     
-    def add_fixedwing(self, name, position=[0, 0, 5], mass=1.0):
-        """Add a fixed-wing aircraft to the simulation."""
-        fw = FixedWing(position, mass)
+    def add_fixedwing(self, name, position=[0, 0, 5], mass=1.0, max_thrust=20.0, water_capacity=0.0):
+        """Add a fixed-wing drone to the simulation.
+        
+        Args:
+            name: Drone identifier
+            position: Initial position [x, y, z]
+            mass: Aircraft mass in kg
+            max_thrust: Maximum thrust in Newtons
+            water_capacity: Water tank capacity in liters (0 = no firefighting)
+        """
+        fw = FixedWing(position, mass, max_thrust, water_capacity=water_capacity)
         self.drones[name] = fw
         
         # Initialize logging for this drone
         self.simulation_log['drones'][name] = {
-            'type': 'fixedwing', 
+            'type': 'fixedwing',
             'positions': [],
             'forces': [],
             'velocities': [],
             'control_inputs': []
         }
         
-        print(f"✅ Added fixed-wing '{name}' at {position}")
+        print(f"✅ Added fixed-wing '{name}' at {position} (water: {water_capacity}L)")
         return fw
     
     def setup_city_environment(self):
@@ -155,58 +163,25 @@ class Simulation:
         - Heat diffuses to neighbors (simple 3D diffusion)
         - Heat rises (convection approximated by vertical diffusion bias)
         """
-        if self.temperature_grid is None or not self.fire_enabled:
+        if self.temperature_grid is None or not self.environment.fire_enabled:
             return
         
         height_levels, H, W = self.temperature_grid.shape
         new_temp = self.temperature_grid.copy()
         
         # 1. Heat bottom layer from fire
-        fire_intensities = self.fire_grid.I  # (H, W)
+        fire_intensities = self.environment.fire_grid.I  # (H, W)
         new_temp[0, :, :] = self.base_temperature + fire_intensities * 500.0
         
-        # 2. Simple heat diffusion (6-neighbor stencil in 3D)
-        diffusion_rate = 0.1  # Diffusion coefficient
+        # 2. Simplified heat diffusion - only vertical (heat rises)
+        # Much faster than full 3D diffusion
+        for layer in range(1, height_levels):
+            # Heat from layer below rises up with decay
+            decay = 0.85 ** layer  # Exponential decay with height
+            new_temp[layer, :, :] = self.base_temperature + (new_temp[0, :, :] - self.base_temperature) * decay
         
-        for layer in range(height_levels):
-            for i in range(H):
-                for j in range(W):
-                    heat_sum = self.temperature_grid[layer, i, j]
-                    neighbor_count = 1
-                    
-                    # Horizontal neighbors (same layer)
-                    if i > 0:
-                        heat_sum += self.temperature_grid[layer, i-1, j]
-                        neighbor_count += 1
-                    if i < H-1:
-                        heat_sum += self.temperature_grid[layer, i+1, j]
-                        neighbor_count += 1
-                    if j > 0:
-                        heat_sum += self.temperature_grid[layer, i, j-1]
-                        neighbor_count += 1
-                    if j < W-1:
-                        heat_sum += self.temperature_grid[layer, i, j+1]
-                        neighbor_count += 1
-                    
-                    # Vertical neighbors (heat rises - stronger upward diffusion)
-                    if layer > 0:
-                        heat_sum += self.temperature_grid[layer-1, i, j] * 1.5  # Heat from below (stronger)
-                        neighbor_count += 1.5
-                    if layer < height_levels-1:
-                        heat_sum += self.temperature_grid[layer+1, i, j] * 0.5  # Heat from above (weaker)
-                        neighbor_count += 0.5
-                    
-                    # Average temperature
-                    avg_temp = heat_sum / neighbor_count
-                    
-                    # Apply diffusion
-                    new_temp[layer, i, j] = (1 - diffusion_rate) * self.temperature_grid[layer, i, j] + \
-                                            diffusion_rate * avg_temp
-                    
-                    # Clamp to realistic range
-                    new_temp[layer, i, j] = np.clip(new_temp[layer, i, j], 
-                                                     self.base_temperature, 
-                                                     self.base_temperature + 1000.0)
+        # Clamp to realistic range
+        new_temp = np.clip(new_temp, self.base_temperature, self.base_temperature + 1000.0)
         
         self.temperature_grid = new_temp
     
@@ -256,10 +231,10 @@ class Simulation:
             # Update fire simulation with water drops
             self.environment.update_fire_simulation(water_drops=water_drops)
             
-            # Update temperature grid from fire
+            # Update temperature grid from fire (for physics demos)
             self._update_temperature_grid()
             
-            # Update fire visualization every 10 steps (for performance)
+            # Visualize less frequently
             if len(self.simulation_log['times']) % 10 == 0:
                 self.environment.visualize_fire_in_simulation()
             
@@ -273,6 +248,8 @@ class Simulation:
     def _calculate_water_drops(self):
         """
         Calculate water drops from drone positions.
+        Only drones with firefighting capability (water_capacity > 0) and open valve can drop water.
+        Water consumption is limited by tank capacity.
         
         Returns:
             Dict mapping (i, j) cell coordinates to total water amount (0.0 to 1.0+)
@@ -283,19 +260,33 @@ class Simulation:
         water_drops = {}
         
         # Realistic water drop model:
-        # - Drones must be low altitude to drop water effectively (< 15m)
-        # - Small drop radius (only 5m)
-        # - Water amount based on altitude and distance
-        drop_radius = 5.0  # meters - effective drop radius
-        base_water_amount = 0.2  # base water amount per drone per step
-        max_altitude = 15.0  # meters - maximum altitude for effective drops
+        # - Only drones with water tanks (water_capacity > 0) can drop water
+        # - Valve must be open (water_valve_open = True)
+        # - Drones must be low altitude to drop water effectively (< 50m)
+        # - Water distributed over area, total consumption per step
+        drop_radius = 15.0  # meters - effective drop radius (WIDER coverage for aerial firefighting)
+        water_consumption_rate = 200.0  # liters per second when valve open (REALISTIC for aerial firefighting)
+        max_altitude = 50.0  # meters - maximum altitude for effective drops (HIGHER ceiling to accommodate climb)
         
         for drone_name, drone in self.drones.items():
+            # Check if drone has firefighting capability
+            if not drone.can_drop_water():
+                continue  # Skip drones without water tank, closed valve, or empty tank
+            
             drone_pos = drone.get_position()
             
             # Altitude check - drones too high cannot drop water effectively
             if drone_pos[2] > max_altitude:
                 continue  # Skip this drone, too high
+            
+            # Calculate water consumption for this step
+            dt = 1.0 / self.fps
+            water_to_drop = water_consumption_rate * dt  # liters consumed this frame
+            
+            # Try to consume water from tank
+            actual_water = drone.consume_water(water_to_drop)
+            if actual_water <= 0:
+                continue  # No water left
             
             # Altitude factor - effectiveness decreases with altitude
             altitude_factor = 1.0 - (drone_pos[2] / max_altitude)  # 1.0 at ground, 0.0 at max_altitude
@@ -322,9 +313,10 @@ class Simulation:
                                              (drone_pos[1] - cell_world_pos[1])**2)
                             
                             if distance <= drop_radius:
-                                # Calculate water amount based on distance and altitude
+                                # Calculate water amount based on distance, altitude, and actual water available
+                                # Scale actual_water (liters) to moisture units
                                 distance_factor = (1.0 - distance / drop_radius)
-                                water_amount = base_water_amount * distance_factor * altitude_factor
+                                water_amount = actual_water * distance_factor * altitude_factor
                                 
                                 # Accumulate water from multiple drones
                                 if (i, j) not in water_drops:
@@ -410,17 +402,17 @@ class Simulation:
             }
         """
         # Start with global wind
-        local_airflow = self.weather['wind_velocity'].copy()
+        local_airflow = self.environment.weather['wind_velocity'].copy()
         
         # Default atmospheric conditions
         local_temp = self.base_temperature  # 293.15 K (20°C)
         local_density = 1.225  # kg/m³ at sea level, 20°C
         
         # Get temperature from grid if available
-        if self.temperature_grid is not None and self.fire_enabled:
+        if self.temperature_grid is not None and self.environment.fire_enabled:
             # Map world position to temperature grid
             try:
-                center_i, center_j = self.grid_mapper.world_to_cell((world_pos[0], world_pos[1]))
+                center_i, center_j = self.environment.grid_mapper.world_to_cell((world_pos[0], world_pos[1]))
                 # Map height to vertical layer (0 to height_levels-1)
                 height_levels = self.temperature_grid.shape[0]
                 layer_height = self.airflow_H / height_levels
@@ -437,19 +429,16 @@ class Simulation:
             except (IndexError, AttributeError):
                 pass  # Use default values
         
-        if not self.fire_enabled:
+        # Only apply convection effects below convection height and if fire enabled
+        if not self.environment.fire_enabled or world_pos[2] >= self.airflow_H:
             return {
                 'velocity': local_airflow,
                 'temperature': local_temp,
                 'density': local_density
             }
         
-        # Only apply fire effects below convection height
-        if world_pos[2] >= self.airflow_H:
-            return local_airflow
-        
         # Map world position to grid
-        center_i, center_j = self.grid_mapper.world_to_cell((world_pos[0], world_pos[1]))
+        center_i, center_j = self.environment.grid_mapper.world_to_cell((world_pos[0], world_pos[1]))
         
         # Accumulate contributions from nearby burning cells
         influence_radius_cells = 2  # Consider cells within 2-cell radius
@@ -463,16 +452,16 @@ class Simulation:
                 j = center_j + dj
                 
                 # Check bounds
-                if not (0 <= i < self.fire_grid.H and 0 <= j < self.fire_grid.W):
+                if not (0 <= i < self.environment.fire_grid.H and 0 <= j < self.environment.fire_grid.W):
                     continue
                 
-                fire_intensity = self.fire_grid.I[i, j]
+                fire_intensity = self.environment.fire_grid.I[i, j]
                 if fire_intensity <= 0:
                     continue
                 
                 # Calculate distance from this fire cell center
-                fire_center_x = self.grid_mapper.origin_x + (j + 0.5) * self.grid_mapper.cell_size_m
-                fire_center_y = self.grid_mapper.origin_y + (i + 0.5) * self.grid_mapper.cell_size_m
+                fire_center_x = self.environment.grid_mapper.origin_x + (j + 0.5) * self.environment.grid_mapper.cell_size_m
+                fire_center_y = self.environment.grid_mapper.origin_y + (i + 0.5) * self.environment.grid_mapper.cell_size_m
                 
                 dx = world_pos[0] - fire_center_x
                 dy = world_pos[1] - fire_center_y
@@ -489,7 +478,7 @@ class Simulation:
                     height_taper = (1.0 - normalized_height) / 0.7
                 
                 # Radial attenuation: Gaussian plume (fire effects decay with horizontal distance)
-                plume_radius = self.grid_mapper.cell_size_m * self.plume_radius_factor
+                plume_radius = self.environment.grid_mapper.cell_size_m * self.plume_radius_factor
                 radial_taper = np.exp(-0.5 * (horizontal_dist / plume_radius)**2)
                 
                 # Calculate upward velocity with realistic magnitude

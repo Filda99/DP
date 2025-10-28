@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 """
-Demo 3: Advanced Physics - Temperature, Density, and Aerodynamics
-
-Demonstrates the complete physics model:
-- Temperature grid affected by fire
-- Air density changes with temperature
-- Fixed-wing lift calculation using airspeed
-- Atmospheric conditions affecting both drone types
+Demo 3: Advanced Physics Model
+Demonstrates temperature-dependent density, terrain-dependent fuel, and moisture suppression.
 """
 
 import numpy as np
@@ -15,7 +10,6 @@ import os
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
@@ -24,269 +18,319 @@ from src.simulation import Simulation
 
 
 def run_physics_demo():
-    """Run advanced physics demonstration."""
+    """Run physics demonstration with frame-by-frame output."""
     print("=" * 70)
-    print("🌡️  DEMO 3: ADVANCED PHYSICS MODEL")
+    print("🌡️  DEMO 3: ADVANCED PHYSICS")
     print("=" * 70)
     print()
-    print("Demonstrating:")
-    print("  • Temperature grid (20 height levels)")
-    print("  • Fire heats air: T = T_base + intensity × 500K")
+    print("Physics features:")
+    print("  • Terrain-dependent fuel burn rates")
+    print("  • Temperature grid (fire heats air)")
     print("  • Air density: ρ = ρ₀ × (T₀ / T)")
-    print("  • Fixed-wing lift from airspeed, not groundspeed")
-    print("  • Quadcopter affected by local density")
+    print("  • Moisture prevents ignition")
     print()
     
     # Create simulation
     sim = Simulation(gui=False)
     sim.start_simulation()
     
-    # Simple environment with one fire zone
-    sim.environment.add_forest_zone(center=[0, 0], radius=30, density=1.0)
+    # NO special terrain - all open (fast burning)
+    # sim.environment.add_forest_area(center=[0, 0], radius=25)
     
-    # Enable fire
+    # Enable fire - SMALLER grid
     sim.enable_fire_simulation(
         grid_width_m=60,
         grid_height_m=60,
         cell_size_m=2.0
     )
     
-    # Add wind for airspeed demonstration
-    sim.set_wind([5.0, 0.0, 0.0])  # 5 m/s eastward wind
+    sim.set_wind([4.0, 0.0, 0.0])
     
-    # Start intense fire in center
+    # Start MULTIPLE fires to ensure it spreads - HIGHER INTENSITY
     sim.start_fire((0, 0), intensity=0.8)
-    print("  🔥 Intense fire started at center")
+    sim.start_fire((4, 0), intensity=0.8)
+    sim.start_fire((-4, 0), intensity=0.8)
+    sim.start_fire((0, 4), intensity=0.8)
+    sim.start_fire((0, -4), intensity=0.8)
+    print("  🔥 5 intense fires started in center area")
     
-    # Add drones at different altitudes
-    sim.add_quadcopter("Quad_Low", position=[-5, 0, 5])
-    sim.add_quadcopter("Quad_High", position=[5, 0, 25])
-    sim.add_fixedwing("FixedWing", position=[0, -10, 15])
-    
-    print("  🚁 Quadcopter at 5m altitude")
-    print("  🚁 Quadcopter at 25m altitude")
-    print("  ✈️  Fixed-wing at 15m altitude")
+    # Add drones SIDE BY SIDE closer to fire (offset so both visible from above)
+    sim.add_quadcopter("Low_Altitude", position=[-2, 0, 8])
+    sim.add_quadcopter("High_Altitude", position=[2, 0, 25])
+    print("  🚁 Low drone at (-2, 0, 8m) - in hot air")
+    print("  🚁 High drone at (2, 0, 25m) - in cooler air")
+    print("  🚁 Quadcopter at 8m (above fire - hot air)")
+    print("  🚁 Quadcopter at 25m (high - cooler air)")
     
     print()
-    print("Running simulation for 30 seconds...")
+    print("Running simulation for 20 seconds...")
+    print("  Phase 1 (0-5s): Fire spreads rapidly in open terrain")
+    print("  Phase 2 (5-20s): Low drone drops water - watch temperature drop!")
     print()
+    
+    # Create output directory
+    output_dir = 'output/demo_03_frames'
+    os.makedirs(output_dir, exist_ok=True)
     
     # Data collection
-    data = {
+    physics_data = {
         'time': [],
-        'temp_low': [],  # Temperature at 5m
-        'temp_high': [],  # Temperature at 25m
+        'temp_low': [],
+        'temp_high': [],
         'density_low': [],
         'density_high': [],
-        'quad_low_z': [],
-        'quad_high_z': [],
-        'fixedwing_speed': [],
-        'fixedwing_airspeed': [],
+        'altitude_low': [],
+        'altitude_high': []
     }
     
-    snapshots = []
-    snapshot_times = [0, 10, 20, 30]
+    # Run simulation
+    frame = 0
+    save_interval = 30  # Save every 0.5 seconds (30 steps at 60 FPS)
     
-    for step in range(int(30 / sim.timestep)):
+    total_steps = int(20 / sim.timestep)
+    for step in range(total_steps):
         current_time = sim.simulation_time
         
-        # Simple control - drones try to hover/maintain
-        controls = {
-            "Quad_Low": np.array([0, 0, 0]),  # Hover
-            "Quad_High": np.array([0, 0, 0]),  # Hover
-            "FixedWing": np.array([0, 0.6, 0])  # Maintain altitude, moderate throttle
-        }
+        # PID control to hold drones in position
+        low_pos = sim.drones["Low_Altitude"].get_position()
+        high_pos = sim.drones["High_Altitude"].get_position()
+        
+        low_target = np.array([-2.0, 0.0, 8.0])
+        high_target = np.array([2.0, 0.0, 25.0])
+        
+        low_error = low_target - low_pos
+        high_error = high_target - high_pos
+        
+        # Phase 1 (0-5s): Just observe fire
+        # Phase 2 (5-20s): Low drone fights fire with water
+        if current_time < 5:
+            controls = {
+                "Low_Altitude": low_error * 0.5,
+                "High_Altitude": high_error * 0.5
+            }
+        else:
+            # Low drone drops to 5m and drops water
+            low_target[2] = 5.0  # Lower for effective water drops
+            low_error = low_target - low_pos
+            controls = {
+                "Low_Altitude": low_error * 0.5,  # Active firefighting
+                "High_Altitude": high_error * 0.5  # Keep observing
+            }
         
         sim.step_simulation(controls)
         
-        # Collect data every 0.1s
-        if step % 24 == 0:
-            # Get atmospheric conditions at drone positions
-            quad_low_pos = sim.drones["Quad_Low"].get_position()
-            quad_high_pos = sim.drones["Quad_High"].get_position()
-            fw_pos = sim.drones["FixedWing"].get_position()
+        # Collect physics data every step
+        if step % 6 == 0:  # Every 0.1s
+            low_pos = sim.drones["Low_Altitude"].get_position()
+            high_pos = sim.drones["High_Altitude"].get_position()
             
-            atm_low = sim.get_local_atmospheric_conditions(quad_low_pos)
-            atm_high = sim.get_local_atmospheric_conditions(quad_high_pos)
+            atm_low = sim.get_local_atmospheric_conditions(low_pos)
+            atm_high = sim.get_local_atmospheric_conditions(high_pos)
             
-            # Fixed-wing speeds
-            fw_velocity = sim.drones["FixedWing"].get_velocity()
-            fw_groundspeed = np.linalg.norm(fw_velocity)
-            
-            # Airspeed calculation
-            atm_fw = sim.get_local_atmospheric_conditions(fw_pos)
-            air_rel_vel = fw_velocity - atm_fw['velocity']
-            fw_airspeed = np.linalg.norm(air_rel_vel)
-            
-            data['time'].append(current_time)
-            data['temp_low'].append(atm_low['temperature'])
-            data['temp_high'].append(atm_high['temperature'])
-            data['density_low'].append(atm_low['density'])
-            data['density_high'].append(atm_high['density'])
-            data['quad_low_z'].append(quad_low_pos[2])
-            data['quad_high_z'].append(quad_high_pos[2])
-            data['fixedwing_speed'].append(fw_groundspeed)
-            data['fixedwing_airspeed'].append(fw_airspeed)
+            physics_data['time'].append(current_time)
+            physics_data['temp_low'].append(atm_low['temperature'])
+            physics_data['temp_high'].append(atm_high['temperature'])
+            physics_data['density_low'].append(atm_low['density'])
+            physics_data['density_high'].append(atm_high['density'])
+            physics_data['altitude_low'].append(low_pos[2])
+            physics_data['altitude_high'].append(high_pos[2])
         
-        # Snapshots for temperature visualization
-        if any(abs(current_time - t) < sim.timestep for t in snapshot_times):
+        # Save frame
+        if step % save_interval == 0:
             fire_state = sim.environment.get_fire_state()
             if fire_state:
-                snapshots.append({
-                    'time': current_time,
-                    'fire_state': fire_state['fire_grid_state'].copy(),
-                    'temp_grid': sim.temperature_grid.copy(),
-                    'drone_positions': {
-                        'Quad_Low': sim.drones["Quad_Low"].get_position().copy(),
-                        'Quad_High': sim.drones["Quad_High"].get_position().copy(),
-                        'FixedWing': sim.drones["FixedWing"].get_position().copy()
-                    }
-                })
-                print(f"  📸 Snapshot at t={current_time:.1f}s")
+                state = fire_state['fire_grid_state']
+                burning = np.sum(state['B'])
+                
+                # Get drone positions
+                low_pos = sim.drones["Low_Altitude"].get_position()
+                high_pos = sim.drones["High_Altitude"].get_position()
+                
+                # Get atmospheric data
+                atm_low = sim.get_local_atmospheric_conditions(low_pos)
+                atm_high = sim.get_local_atmospheric_conditions(high_pos)
+                
+                save_physics_frame(sim, state, low_pos, high_pos, atm_low, atm_high,
+                                 frame, current_time, output_dir)
+                
+                phase_label = "OBSERVING" if current_time < 5 else "FIREFIGHTING"
+                print(f"  Frame {frame:03d} | t={current_time:4.1f}s | {phase_label:12s} | Burning: {burning:3d} | "
+                      f"T_low: {atm_low['temperature']:.1f}K | T_high: {atm_high['temperature']:.1f}K")
+                frame += 1
     
-    # Create visualizations
-    create_temperature_visualization(sim, snapshots)
-    create_physics_plots(data)
+    # Save physics plots
+    save_physics_plots(physics_data, 'output/demo_03_physics_data.png')
     
     print()
-    print("📊 Final observations:")
-    print(f"   Temperature difference: {data['temp_low'][-1] - data['temp_high'][-1]:.1f}K")
-    print(f"   Density ratio (low/high): {data['density_low'][-1] / data['density_high'][-1]:.3f}")
-    print(f"   Fixed-wing groundspeed: {data['fixedwing_speed'][-1]:.2f} m/s")
-    print(f"   Fixed-wing airspeed: {data['fixedwing_airspeed'][-1]:.2f} m/s")
-    
+    print(f"✅ Saved {frame} frames to {output_dir}/")
+    print(f"✅ Saved physics plots to output/demo_03_physics_data.png")
     print()
-    print("✅ Demo complete! Check output/demo_03_*.png")
+    print("📊 Final physics observations:")
+    if len(physics_data['time']) > 0:
+        max_temp_diff = max(np.array(physics_data['temp_low']) - np.array(physics_data['temp_high']))
+        print(f"   Max temperature difference: {max_temp_diff:.1f}K")
+        print(f"   Final low altitude temp: {physics_data['temp_low'][-1]:.1f}K ({physics_data['temp_low'][-1]-273.15:.1f}°C)")
+        print(f"   Final high altitude temp: {physics_data['temp_high'][-1]:.1f}K ({physics_data['temp_high'][-1]-273.15:.1f}°C)")
+        print(f"   Final density ratio: {physics_data['density_low'][-1]/physics_data['density_high'][-1]:.3f}")
     print("=" * 70)
 
 
-def create_temperature_visualization(sim, snapshots):
-    """Create 3D temperature visualization."""
-    os.makedirs('output', exist_ok=True)
+def save_physics_frame(sim, state, low_pos, high_pos, atm_low, atm_high, frame_num, time, output_dir):
+    """Save a single frame with 3 panels: fire state, terrain, temperature."""
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6))
     
-    fig = plt.figure(figsize=(20, 10))
+    x_min, x_max, y_min, y_max = sim.environment.grid_mapper.get_grid_bounds()
+    H, W = state['B'].shape
     
-    for idx, snapshot in enumerate(snapshots[:4]):
-        ax = fig.add_subplot(2, 4, idx + 1, projection='3d')
-        
-        temp_grid = snapshot['temp_grid']
-        fire_state = snapshot['fire_state']
-        
-        # Sample temperature grid (show every 3rd point for clarity)
-        H, W = fire_state['B'].shape
-        x_min, x_max, y_min, y_max = sim.environment.grid_mapper.get_grid_bounds()
-        
-        # Create meshgrid for ground plane
-        x = np.linspace(x_min, x_max, W)[::3]
-        y = np.linspace(y_min, y_max, H)[::3]
-        X, Y = np.meshgrid(x, y)
-        
-        # Plot temperature at different heights
-        for h_idx in [0, 5, 10, 15]:  # Ground, 5m, 10m, 15m
-            Z = np.ones_like(X) * (h_idx * 2.5)  # Assuming 2.5m per level
-            T = temp_grid[h_idx, ::3, ::3]
-            
-            surf = ax.plot_surface(X, Y, Z, facecolors=plt.cm.hot((T - 293) / 200),
-                                  alpha=0.3, shade=False)
-        
-        # Plot fire on ground
-        burning = fire_state['B']
-        for i in range(0, H, 2):
-            for j in range(0, W, 2):
-                if burning[i, j]:
-                    world_pos = sim.environment.grid_mapper.cell_to_world(i, j)
-                    ax.scatter([world_pos[0]], [world_pos[1]], [0], 
-                             c='red', s=50, marker='^', alpha=0.8)
-        
-        # Plot drones
-        drone_pos = snapshot['drone_positions']
-        for name, pos in drone_pos.items():
-            color = 'blue' if 'Quad' in name else 'green'
-            ax.scatter([pos[0]], [pos[1]], [pos[2]], 
-                      c=color, s=100, marker='o', edgecolors='black', linewidth=2)
-        
-        ax.set_xlabel('X (m)')
-        ax.set_ylabel('Y (m)')
-        ax.set_zlabel('Altitude (m)')
-        ax.set_zlim(0, 50)
-        ax.set_title(f't = {snapshot["time"]:.1f}s', fontweight='bold')
-        ax.view_init(elev=25, azim=45)
-        
-        # 2D temperature at ground level
-        ax2 = fig.add_subplot(2, 4, idx + 5)
-        T_ground = temp_grid[0, :, :]
-        im = ax2.imshow(T_ground, origin='lower', extent=[x_min, x_max, y_min, y_max],
-                       cmap='hot', vmin=293, vmax=500)
-        ax2.set_title(f'Ground Temperature t={snapshot["time"]:.1f}s', fontweight='bold')
-        ax2.set_xlabel('X (m)')
-        ax2.set_ylabel('Y (m)')
-        plt.colorbar(im, ax=ax2, label='Temperature (K)')
+    # === PANEL 1: Fire state ===
+    img = np.zeros((H, W, 3))
     
-    plt.suptitle('3D Temperature Distribution & Fire Heating', 
-                 fontsize=16, fontweight='bold')
+    # Base terrain - ALL FOREST (dark green)
+    img[:, :] = [0.1, 0.4, 0.1]
+    
+    # Overlay burning cells (RED)
+    burning = state['B']
+    intensity = state['I']
+    img[burning] = np.stack([
+        np.ones_like(intensity[burning]),
+        intensity[burning] * 0.3,
+        np.zeros_like(intensity[burning])
+    ], axis=-1)
+    
+    ax1.imshow(img, origin='lower', extent=[x_min, x_max, y_min, y_max])
+    
+    # Add drone positions
+    ax1.plot(low_pos[0], low_pos[1], 'ro', markersize=12, 
+            markeredgecolor='white', markeredgewidth=2, label='Low (8m)', zorder=10)
+    ax1.plot(high_pos[0], high_pos[1], 'co', markersize=12, 
+            markeredgecolor='white', markeredgewidth=2, label='High (25m)', zorder=10)
+    
+    # Wind arrow
+    wind_vel = sim.environment.weather['wind_velocity']
+    wind_x, wind_y = wind_vel[0], wind_vel[1]
+    wind_speed = np.sqrt(wind_x**2 + wind_y**2)
+    
+    arrow_start_x = x_max - 15
+    arrow_start_y = y_max - 10
+    arrow_scale = 3.0
+    
+    ax1.arrow(arrow_start_x, arrow_start_y, 
+             wind_x * arrow_scale, wind_y * arrow_scale,
+             head_width=3, head_length=2, fc='cyan', ec='white', 
+             linewidth=3, alpha=0.9, zorder=10)
+    
+    ax1.text(arrow_start_x, arrow_start_y - 5, 
+            f'Wind: {wind_speed:.1f} m/s',
+            color='white', fontsize=10, fontweight='bold',
+            bbox=dict(boxstyle='round', facecolor='black', alpha=0.7),
+            ha='center', zorder=11)
+    
+    ax1.set_title(f'Fire State (t={time:.1f}s)', fontsize=14, fontweight='bold')
+    ax1.set_xlabel('X (m)')
+    ax1.set_ylabel('Y (m)')
+    ax1.legend(loc='upper left', fontsize=9)
+    ax1.grid(True, alpha=0.3)
+    
+    # === PANEL 2: Burn rate (terrain type) ===
+    burn_rate_grid = sim.environment.fire_grid.fuel_burn_rate
+    im2 = ax2.imshow(burn_rate_grid, origin='lower', cmap='YlOrRd', 
+                     extent=[x_min, x_max, y_min, y_max],
+                     vmin=0, vmax=0.1)
+    
+    ax2.plot(low_pos[0], low_pos[1], 'ro', markersize=12, 
+            markeredgecolor='white', markeredgewidth=2, zorder=10)
+    ax2.plot(high_pos[0], high_pos[1], 'co', markersize=12, 
+            markeredgecolor='white', markeredgewidth=2, zorder=10)
+    
+    ax2.set_title('Fuel Burn Rate (terrain-dependent)', fontsize=14, fontweight='bold')
+    ax2.set_xlabel('X (m)')
+    ax2.set_ylabel('Y (m)')
+    ax2.grid(True, alpha=0.3)
+    plt.colorbar(im2, ax=ax2, label='Burn rate')
+    
+    # === PANEL 3: Temperature info ===
+    ax3.axis('off')
+    
+    # Display temperature and density data
+    info_text = f"""PHYSICS DATA at t={time:.1f}s
+
+LOW ALTITUDE DRONE (8m):
+  Position: ({low_pos[0]:.1f}, {low_pos[1]:.1f}, {low_pos[2]:.1f})
+  Temperature: {atm_low['temperature']:.1f} K ({atm_low['temperature']-273.15:.1f}°C)
+  Air Density: {atm_low['density']:.3f} kg/m³
+
+HIGH ALTITUDE DRONE (25m):
+  Position: ({high_pos[0]:.1f}, {high_pos[1]:.1f}, {high_pos[2]:.1f})
+  Temperature: {atm_high['temperature']:.1f} K ({atm_high['temperature']-273.15:.1f}°C)
+  Air Density: {atm_high['density']:.3f} kg/m³
+
+PHYSICS EFFECTS:
+  ΔT = {atm_low['temperature'] - atm_high['temperature']:.1f} K
+  Density ratio: {atm_low['density'] / atm_high['density']:.3f}
+  
+  Fire heats air → lower density
+  Lower density → reduced lift
+  Drones must work harder in hot air
+
+TERRAIN EFFECTS:
+  Open terrain: Fast burn (0.08/s)
+  Forest: Slow burn (0.03/s)
+  Water/Buildings: No burn (0.0)
+"""
+    
+    ax3.text(0.05, 0.95, info_text, transform=ax3.transAxes,
+            fontsize=11, verticalalignment='top', family='monospace',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    
     plt.tight_layout()
-    plt.savefig('output/demo_03_temperature.png', dpi=150, bbox_inches='tight')
+    plt.savefig(f'{output_dir}/frame_{frame_num:03d}.png', dpi=100, bbox_inches='tight')
     plt.close()
 
 
-def create_physics_plots(data):
-    """Create plots showing physics effects."""
-    fig, axes = plt.subplots(3, 1, figsize=(14, 12))
+def save_physics_plots(data, filename):
+    """Save physics time-series plots."""
+    fig, axes = plt.subplots(3, 1, figsize=(14, 10))
     
-    # Temperature and density
+    # Temperature
     ax1 = axes[0]
-    ax1_twin = ax1.twinx()
-    
     ax1.plot(data['time'], np.array(data['temp_low']) - 273.15, 'r-', 
-            linewidth=2, label='Temperature 5m (°C)')
-    ax1.plot(data['time'], np.array(data['temp_high']) - 273.15, 'orange', 
-            linewidth=2, label='Temperature 25m (°C)')
-    ax1.set_ylabel('Temperature (°C)', fontsize=12, fontweight='bold', color='red')
-    ax1.tick_params(axis='y', labelcolor='red')
-    ax1.legend(loc='upper left', fontsize=10)
+            linewidth=2, label='Low altitude (8m)')
+    ax1.plot(data['time'], np.array(data['temp_high']) - 273.15, 'b-', 
+            linewidth=2, label='High altitude (25m)')
+    ax1.set_ylabel('Temperature (°C)', fontsize=12, fontweight='bold')
+    ax1.set_title('Temperature vs Time (Fire Heating Effect)', fontsize=14, fontweight='bold')
+    ax1.legend(loc='best')
     ax1.grid(True, alpha=0.3)
     
-    ax1_twin.plot(data['time'], data['density_low'], 'b--', 
-                 linewidth=2, label='Density 5m (kg/m³)')
-    ax1_twin.plot(data['time'], data['density_high'], 'cyan', linestyle='--',
-                 linewidth=2, label='Density 25m (kg/m³)')
-    ax1_twin.set_ylabel('Air Density (kg/m³)', fontsize=12, fontweight='bold', color='blue')
-    ax1_twin.tick_params(axis='y', labelcolor='blue')
-    ax1_twin.legend(loc='upper right', fontsize=10)
-    
-    ax1.set_title('Fire Heating → Lower Air Density', fontsize=14, fontweight='bold')
-    
-    # Quadcopter altitude drift
+    # Density
     ax2 = axes[1]
-    ax2.plot(data['time'], data['quad_low_z'], 'b-', linewidth=2, 
-            label='Quad at 5m (hot air)')
-    ax2.plot(data['time'], data['quad_high_z'], 'c-', linewidth=2, 
-            label='Quad at 25m (cooler air)')
-    ax2.axhline(y=5, color='b', linestyle=':', alpha=0.5)
-    ax2.axhline(y=25, color='c', linestyle=':', alpha=0.5)
-    ax2.set_ylabel('Altitude (m)', fontsize=12, fontweight='bold')
-    ax2.set_title('Quadcopter Altitude (Lower density → reduced lift)', 
-                 fontsize=14, fontweight='bold')
-    ax2.legend(loc='best', fontsize=10)
+    ax2.plot(data['time'], data['density_low'], 'r-', 
+            linewidth=2, label='Low altitude (8m)')
+    ax2.plot(data['time'], data['density_high'], 'b-', 
+            linewidth=2, label='High altitude (25m)')
+    ax2.set_ylabel('Air Density (kg/m³)', fontsize=12, fontweight='bold')
+    ax2.set_title('Air Density vs Time (ρ = ρ₀ × T₀/T)', fontsize=14, fontweight='bold')
+    ax2.legend(loc='best')
     ax2.grid(True, alpha=0.3)
     
-    # Fixed-wing: groundspeed vs airspeed
+    # Altitude drift
     ax3 = axes[2]
-    ax3.plot(data['time'], data['fixedwing_speed'], 'g-', linewidth=2, 
-            label='Groundspeed')
-    ax3.plot(data['time'], data['fixedwing_airspeed'], 'purple', linewidth=2,
-            linestyle='--', label='Airspeed (used for lift)')
+    ax3.plot(data['time'], data['altitude_low'], 'r-', 
+            linewidth=2, label='Low altitude drone')
+    ax3.plot(data['time'], data['altitude_high'], 'b-', 
+            linewidth=2, label='High altitude drone')
+    ax3.axhline(y=8, color='r', linestyle=':', alpha=0.5, label='Target 8m')
+    ax3.axhline(y=25, color='b', linestyle=':', alpha=0.5, label='Target 25m')
     ax3.set_xlabel('Time (s)', fontsize=12, fontweight='bold')
-    ax3.set_ylabel('Speed (m/s)', fontsize=12, fontweight='bold')
-    ax3.set_title('Fixed-Wing: Lift uses Airspeed, not Groundspeed', 
-                 fontsize=14, fontweight='bold')
-    ax3.legend(loc='best', fontsize=10)
+    ax3.set_ylabel('Altitude (m)', fontsize=12, fontweight='bold')
+    ax3.set_title('Drone Altitude (hover in hot air)', fontsize=14, fontweight='bold')
+    ax3.legend(loc='best', fontsize=9)
     ax3.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('output/demo_03_physics.png', dpi=150, bbox_inches='tight')
+    plt.savefig(filename, dpi=100, bbox_inches='tight')
     plt.close()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     run_physics_demo()

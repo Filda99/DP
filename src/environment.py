@@ -361,8 +361,8 @@ class Environment:
         else:
             wind_angle = 0.0
         
-        # Create base lambda values (higher in forest areas)
-        l_base = np.ones(H) * 0.5  # Base fire spread rate
+        # Create base lambda values for fire spread
+        l_base = np.ones(H) * 0.5  # Base fire spread rate (probability ~20% per 0.5s step)
         
         self.fire_grid = FireGrid(
             H=H, W=W, dt=dt, alpha=alpha, 

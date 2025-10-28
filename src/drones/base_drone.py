@@ -19,6 +19,11 @@ class BaseDrone(ABC):
         self.mass = mass
         self.velocity = np.array([0.0, 0.0, 0.0])
         
+        # Water tank properties (only used by firefighting drones)
+        self.water_capacity = 0.0  # liters (0 = no firefighting capability)
+        self.current_water = 0.0  # liters
+        self.water_valve_open = False  # water valve state (True = water flowing)
+        
         # Flight data logging
         self.flight_log = {
             'positions': [],
@@ -47,6 +52,32 @@ class BaseDrone(ABC):
     def get_speed(self):
         """Get current speed (velocity magnitude)."""
         return np.linalg.norm(self.get_velocity())
+    
+    def can_drop_water(self):
+        """Check if drone can drop water (has water tank and valve is open)."""
+        return self.water_capacity > 0 and self.water_valve_open and self.current_water > 0
+    
+    def open_water_valve(self):
+        """Open water valve to start dropping water."""
+        if self.water_capacity > 0:
+            self.water_valve_open = True
+    
+    def close_water_valve(self):
+        """Close water valve to stop dropping water."""
+        self.water_valve_open = False
+    
+    def refill_water(self, amount=None):
+        """Refill water tank (full refill if no amount specified)."""
+        if amount is None:
+            self.current_water = self.water_capacity
+        else:
+            self.current_water = min(self.water_capacity, self.current_water + amount)
+    
+    def consume_water(self, amount):
+        """Consume water from tank. Returns actual amount consumed."""
+        actual_amount = min(amount, self.current_water)
+        self.current_water -= actual_amount
+        return actual_amount
     
     def log_flight_data(self, forces, time_step):
         """Log flight data for analysis."""

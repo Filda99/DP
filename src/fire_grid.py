@@ -106,7 +106,6 @@ class FireGrid:
     def _calculate_slope_gain(self, from_i: int, from_j: int, to_i: int, to_j: int) -> float:
         """Calculate slope influence on fire spread (simplified model)."""
         # For simplicity, assume flat terrain with slight uphill bias
-        # TODO: In a real implementation, this would use actual elevation data
         return 1.0 + self.k_slope * 0.1  # Small uphill bias
     
     def _calculate_lambda_xy(self, from_i: int, from_j: int, to_i: int, to_j: int) -> float:
