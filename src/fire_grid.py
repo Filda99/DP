@@ -61,6 +61,9 @@ class FireGrid:
         # Remaining fuel (0.0 to 1.0)
         self.F = np.random.uniform(0.3, 1.0, (self.H, self.W))
         
+        # Fuel burn rate (terrain-dependent, default 0.05)
+        self.fuel_burn_rate = np.full((self.H, self.W), 0.05, dtype=float)
+        
         # Intensity (for visualization only - not used in fuel consumption)
         self.I = np.zeros((self.H, self.W))
         
@@ -254,15 +257,17 @@ class FireGrid:
                         new_B[i, j] = False
                         new_I[i, j] = 0.0
         
-        # 3. FUEL DECREASE: Burning cells consume fuel at CONSTANT rate
-        # Paper (p.41): "The fuel in an ignited cell decreases at a constant rate"
-        # "We can rescale the units of fuel to assume that this rate is one unit"
-        # NOTE: Reduced from 1.0 to 0.1 for better visualization (fires last ~10x longer)
+        # 3. FUEL DECREASE: Burning cells consume fuel at terrain-dependent rate
+        # Use specific burn rate for each cell based on terrain type
         burning_mask = new_B
-        new_F[burning_mask] = np.maximum(0.0, new_F[burning_mask] - 0.1 * self.dt)
         
-        # Update intensity for visualization (based on remaining fuel)
-        new_I[burning_mask] = np.minimum(1.0, new_F[burning_mask])
+        # Get burn rates for burning cells only
+        burn_rates_for_burning_cells = self.fuel_burn_rate[burning_mask]
+        new_F[burning_mask] = np.maximum(0.0, new_F[burning_mask] - burn_rates_for_burning_cells * self.dt)
+        
+        # Update intensity for visualization (combination of remaining fuel and burn rate)
+        # Intenzita je kombinací paliva a rychlosti hoření
+        new_I[burning_mask] = np.minimum(1.0, new_F[burning_mask]) * self.fuel_burn_rate[burning_mask] * 10.0
         
         # 4. BURN-OUT: Cells with no fuel stop burning
         burnout_mask = burning_mask & (new_F <= 0)

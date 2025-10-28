@@ -398,6 +398,7 @@ class Environment:
             for j in range(W):
                 world_pos = self.grid_mapper.cell_to_world(i, j)
                 fuel_level = 0.3  # Default fuel level (open terrain)
+                burn_rate = 0.08  # Default burn rate (grass burns fast)
                 terrain_type = 'default'
                 
                 # FIRST: Check if position is inside a building - NO FUEL
@@ -408,6 +409,7 @@ class Environment:
                         if (bounds['min'][0] <= world_pos[0] <= bounds['max'][0] and
                             bounds['min'][1] <= world_pos[1] <= bounds['max'][1]):
                             fuel_level = 0.0  # Buildings have no fuel!
+                            burn_rate = 0.0   # Buildings don't burn
                             in_building = True
                             terrain_type = 'building'
                             break
@@ -422,6 +424,7 @@ class Environment:
                                              (world_pos[1] - center[1])**2)
                             if distance <= radius:
                                 fuel_level = 0.8  # High fuel in forests
+                                burn_rate = 0.03  # Forest burns slowly but longer
                                 terrain_type = 'forest'
                                 break
                         elif zone['type'] == 'lake':
@@ -431,10 +434,12 @@ class Environment:
                                              (world_pos[1] - center[1])**2)
                             if distance <= radius:
                                 fuel_level = 0.0  # No fuel in water
+                                burn_rate = 0.0   # Water doesn't burn
                                 terrain_type = 'lake'
                                 break
                 
                 self.fire_grid.F[i, j] = fuel_level
+                self.fire_grid.fuel_burn_rate[i, j] = burn_rate
                 debug_counts[terrain_type] += 1
         
         print(f"✅ Fire fuel levels initialized from terrain:")
