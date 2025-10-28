@@ -64,6 +64,9 @@ class FireGrid:
         # Fuel burn rate (terrain-dependent, default 0.05)
         self.fuel_burn_rate = np.full((self.H, self.W), 0.05, dtype=float)
         
+        # Moisture level (0.0 to 1.0) - reduces ignition probability
+        self.M = np.zeros((self.H, self.W), dtype=float)
+        
         # Intensity (for visualization only - not used in fuel consumption)
         self.I = np.zeros((self.H, self.W))
         
@@ -171,7 +174,10 @@ class FireGrid:
                     P_xy = self._calculate_spread_probability(source_i, source_j, target_i, target_j)
                     product_term *= (1.0 - P_xy)
         
-        return 1.0 - product_term
+        ignition_prob = 1.0 - product_term
+        # Reduce ignition probability based on moisture level
+        ignition_prob *= (1.0 - self.M[target_i, target_j])
+        return ignition_prob
     
     def _calculate_ignition_probabilities_vectorized(self) -> np.ndarray:
         """
@@ -216,16 +222,20 @@ class FireGrid:
         
         return 1.0 - product_term
     
-    def step(self, suppression_assignments: Optional[Dict[Tuple[int, int], List[float]]] = None) -> None:
+    def step(self, suppression_assignments: Optional[Dict[Tuple[int, int], List[float]]] = None,
+             water_drops: Optional[Dict[Tuple[int, int], float]] = None) -> None:
         """
         Perform one simulation step with the following update order:
-        1. Ignition (new fires start)
-        2. Suppression (fires are extinguished)
-        3. Fuel decrease (burning cells consume fuel at CONSTANT rate)
-        4. Burn-out (cells with no fuel stop burning)
+        1. Water application (increase moisture, suppress fire)
+        2. Ignition (new fires start)
+        3. Suppression (fires are extinguished)
+        4. Fuel decrease (burning cells consume fuel at CONSTANT rate)
+        5. Burn-out (cells with no fuel stop burning)
+        6. Moisture evaporation
         
         Args:
-            suppression_assignments: Dict mapping (i,j) to list of suppression probabilities
+            suppression_assignments: Dict mapping (i,j) to list of suppression probabilities (deprecated)
+            water_drops: Dict mapping (i,j) to water amount (0.0 to 1.0+)
         """
         if suppression_assignments is None:
             suppression_assignments = {}
@@ -234,6 +244,21 @@ class FireGrid:
         new_B = self.B.copy()
         new_F = self.F.copy()
         new_I = self.I.copy()
+        new_M = self.M.copy()
+        
+        # 0. WATER APPLICATION: Apply water drops to increase moisture and suppress fire
+        if water_drops:
+            for (i, j), water_amount in water_drops.items():
+                # Increase moisture (capped at 1.0)
+                new_M[i, j] = min(1.0, new_M[i, j] + water_amount)
+                
+                # Immediate fire suppression effect
+                if new_B[i, j]:
+                    # Water reduces intensity immediately
+                    new_I[i, j] *= (1.0 - water_amount * 0.8)
+                    # Chance to extinguish fire completely
+                    if np.random.random() < water_amount:
+                        new_B[i, j] = False
         
         # 1. IGNITION: New fires start based on burning neighbors
         ignition_probs = self._calculate_ignition_probabilities_vectorized()
@@ -274,10 +299,14 @@ class FireGrid:
         new_B[burnout_mask] = False
         new_I[burnout_mask] = 0.0
         
+        # 5. MOISTURE EVAPORATION: Moisture gradually evaporates over time
+        new_M = np.maximum(0.0, new_M - 0.01 * self.dt)
+        
         # Apply all updates simultaneously
         self.B = new_B
         self.F = new_F
         self.I = new_I
+        self.M = new_M
     
     def get_state(self) -> Dict[str, np.ndarray]:
         """
@@ -289,7 +318,8 @@ class FireGrid:
         return {
             'B': self.B.copy(),  # Burning flags
             'F': self.F.copy(),  # Fuel levels
-            'I': self.I.copy()   # Intensities (for visualization)
+            'I': self.I.copy(),  # Intensities (for visualization)
+            'M': self.M.copy()   # Moisture levels
         }
     
     def get_stats(self) -> Dict[str, Any]:

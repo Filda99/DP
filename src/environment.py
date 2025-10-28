@@ -507,12 +507,13 @@ class Environment:
         self.weather['wind_velocity'] = self.wind_velocity
         self.weather['wind_turbulence'] = self.wind_turbulence
     
-    def update_fire_simulation(self, suppression_assignments=None):
+    def update_fire_simulation(self, suppression_assignments=None, water_drops=None):
         """
         Update the fire simulation by one step.
         
         Args:
-            suppression_assignments: Dict mapping (i,j) to list of suppression probabilities
+            suppression_assignments: Dict mapping (i,j) to list of suppression probabilities (deprecated)
+            water_drops: Dict mapping (i,j) to water amount (0.0 to 1.0+)
         """
         if not self.fire_enabled:
             return
@@ -537,8 +538,8 @@ class Environment:
         # base_k_wind = 1.5
         # self.fire_grid.k_wind = base_k_wind * min(2.0, wind_speed / 5.0)
         
-        # Step the fire simulation
-        self.fire_grid.step(suppression_assignments)
+        # Step the fire simulation with water drops
+        self.fire_grid.step(suppression_assignments, water_drops)
     
     def get_fire_state(self):
         """Get current fire simulation state."""

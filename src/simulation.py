@@ -250,11 +250,11 @@ class Simulation:
         
         # Update fire simulation if enabled
         if self.environment.fire_enabled:
-            # Calculate suppression from drones (if any)
-            suppression_assignments = self._calculate_drone_suppression()
+            # Calculate water drops from drones (if any)
+            water_drops = self._calculate_water_drops()
             
-            # Update fire simulation
-            self.environment.update_fire_simulation(suppression_assignments)
+            # Update fire simulation with water drops
+            self.environment.update_fire_simulation(water_drops=water_drops)
             
             # Update temperature grid from fire
             self._update_temperature_grid()
@@ -270,38 +270,43 @@ class Simulation:
         # Check for collisions with environment
         self._check_collisions()
     
-    def _calculate_drone_suppression(self):
-        """Calculate fire suppression effects from drone positions."""
+    def _calculate_water_drops(self):
+        """
+        Calculate water drops from drone positions.
+        
+        Returns:
+            Dict mapping (i, j) cell coordinates to total water amount (0.0 to 1.0+)
+        """
         if not self.environment.fire_enabled:
             return {}
         
-        suppression_assignments = {}
+        water_drops = {}
         
-        # Realistic suppression model:
-        # - Drones must be low altitude to suppress (< 15m)
-        # - Small suppression radius (only 5m)
-        # - Low effectiveness (15% base probability)
-        suppression_radius = 5.0  # meters - drones must be close
-        base_effectiveness = 0.15  # base suppression probability per drone
-        max_altitude = 15.0  # meters - maximum altitude for effective suppression
+        # Realistic water drop model:
+        # - Drones must be low altitude to drop water effectively (< 15m)
+        # - Small drop radius (only 5m)
+        # - Water amount based on altitude and distance
+        drop_radius = 5.0  # meters - effective drop radius
+        base_water_amount = 0.2  # base water amount per drone per step
+        max_altitude = 15.0  # meters - maximum altitude for effective drops
         
         for drone_name, drone in self.drones.items():
             drone_pos = drone.get_position()
             
-            # Altitude check - drones too high cannot suppress fires
+            # Altitude check - drones too high cannot drop water effectively
             if drone_pos[2] > max_altitude:
-                continue  # Skip this drone, too high to suppress
+                continue  # Skip this drone, too high
             
             # Altitude factor - effectiveness decreases with altitude
             altitude_factor = 1.0 - (drone_pos[2] / max_altitude)  # 1.0 at ground, 0.0 at max_altitude
             
-            # Check if drone is close to any burning cells
+            # Check if drone is close to any cells
             if self.environment.grid_mapper.is_position_in_bounds((drone_pos[0], drone_pos[1])):
-                # Get nearby cells within suppression radius
+                # Get nearby cells within drop radius
                 center_i, center_j = self.environment.grid_mapper.world_to_cell((drone_pos[0], drone_pos[1]))
                 
                 # Check cells in a radius around the drone
-                search_radius = int(np.ceil(suppression_radius / self.environment.grid_mapper.cell_size_m))
+                search_radius = int(np.ceil(drop_radius / self.environment.grid_mapper.cell_size_m))
                 
                 for di in range(-search_radius, search_radius + 1):
                     for dj in range(-search_radius, search_radius + 1):
@@ -311,24 +316,22 @@ class Simulation:
                         # Check bounds
                         H, W = self.environment.grid_mapper.get_grid_dimensions()
                         if 0 <= i < H and 0 <= j < W:
-                            # Check if cell is burning
-                            if self.environment.fire_grid.B[i, j]:
-                                # Calculate distance
-                                cell_world_pos = self.environment.grid_mapper.cell_to_world(i, j)
-                                distance = np.sqrt((drone_pos[0] - cell_world_pos[0])**2 + 
-                                                 (drone_pos[1] - cell_world_pos[1])**2)
+                            # Calculate distance
+                            cell_world_pos = self.environment.grid_mapper.cell_to_world(i, j)
+                            distance = np.sqrt((drone_pos[0] - cell_world_pos[0])**2 + 
+                                             (drone_pos[1] - cell_world_pos[1])**2)
+                            
+                            if distance <= drop_radius:
+                                # Calculate water amount based on distance and altitude
+                                distance_factor = (1.0 - distance / drop_radius)
+                                water_amount = base_water_amount * distance_factor * altitude_factor
                                 
-                                if distance <= suppression_radius:
-                                    # Add suppression assignment
-                                    if (i, j) not in suppression_assignments:
-                                        suppression_assignments[(i, j)] = []
-                                    
-                                    # Effectiveness decreases with both distance and altitude
-                                    distance_factor = (1.0 - distance / suppression_radius)
-                                    effectiveness = base_effectiveness * distance_factor * altitude_factor
-                                    suppression_assignments[(i, j)].append(effectiveness)
+                                # Accumulate water from multiple drones
+                                if (i, j) not in water_drops:
+                                    water_drops[(i, j)] = 0.0
+                                water_drops[(i, j)] += water_amount
         
-        return suppression_assignments
+        return water_drops
     
     def _check_collisions(self):
         """Check for collisions between drones and environment."""
