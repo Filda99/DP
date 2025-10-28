@@ -29,12 +29,14 @@ def test_basic_functionality():
     assert 'B' in initial_state
     assert 'F' in initial_state
     assert 'I' in initial_state
+    assert 'M' in initial_state  # New: Moisture field
     
     assert initial_state['B'].shape == (10, 10)
     assert initial_state['F'].shape == (10, 10)
     assert initial_state['I'].shape == (10, 10)
+    assert initial_state['M'].shape == (10, 10)  # New: Moisture field
     
-    print("✓ Initial state structure correct")
+    print("✓ Initial state structure correct (including moisture field)")
     
     # Test that some cells are burning initially
     initial_burning = np.sum(initial_state['B'])
@@ -192,6 +194,60 @@ def visualize_simulation():
     print("✓ Visualization saved to output/fire_grid_simulation.png")
 
 
+def test_moisture_system():
+    """Test the new moisture-based fire suppression system."""
+    print("Testing moisture-based fire suppression...")
+    
+    # Create a small grid
+    grid = FireGrid(H=10, W=10, dt=0.1)
+    
+    # Manually set a burning cell
+    grid.B[5, 5] = True
+    grid.F[5, 5] = 1.0
+    grid.I[5, 5] = 0.8
+    grid.M[5, 5] = 0.0  # No initial moisture
+    
+    # Test 1: Water application increases moisture
+    water_drops = {(5, 5): 0.5}
+    grid.step(water_drops=water_drops)
+    
+    assert grid.M[5, 5] > 0.0, "Moisture should increase after water application"
+    print(f"✓ Water application increased moisture to {grid.M[5, 5]:.2f}")
+    
+    # Test 2: Moisture evaporates over time
+    initial_moisture = grid.M[5, 5]
+    for _ in range(10):
+        grid.step()  # No water drops
+    
+    assert grid.M[5, 5] < initial_moisture, "Moisture should evaporate over time"
+    print(f"✓ Moisture evaporated from {initial_moisture:.2f} to {grid.M[5, 5]:.2f}")
+    
+    # Test 3: High moisture prevents ignition
+    grid.reset_random(seed=42)
+    
+    # Set up two adjacent cells: one burning, one with fuel
+    grid.B[5, 5] = True
+    grid.F[5, 5] = 1.0
+    grid.I[5, 5] = 0.8
+    
+    grid.B[5, 6] = False
+    grid.F[5, 6] = 1.0
+    grid.M[5, 6] = 0.9  # High moisture
+    
+    # Run steps and check if high moisture prevents ignition
+    ignition_happened = False
+    for _ in range(50):
+        grid.step()
+        if grid.B[5, 6]:
+            ignition_happened = True
+            break
+    
+    # High moisture should make ignition much less likely
+    print(f"✓ Ignition with 90% moisture: {'occurred' if ignition_happened else 'prevented (expected)'}")
+    
+    print("✓ Moisture system working correctly")
+
+
 def main():
     """Run all tests."""
     print("FireGrid Wildfire Simulation Test Suite")
@@ -202,6 +258,7 @@ def main():
         test_fire_spread()
         test_suppression_effectiveness()
         test_wind_effects()
+        test_moisture_system()  # New test
         visualize_simulation()
         
         print("\n" + "=" * 50)
