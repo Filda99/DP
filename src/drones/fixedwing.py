@@ -182,3 +182,30 @@ class FixedWing(BaseDrone):
             'lift_coefficient': self.lift_coefficient,
             'drag_coefficient': self.drag_coefficient
         }
+    
+    def apply_environmental_effects(self, local_airflow: np.ndarray):
+        """Apply drag force based on air relative velocity, incorporating the paper's concept of airflow."""
+        
+        local_density = 1.225 # kg/m³ (Simplified, a full implementation would use the paper's density model)
+        
+        # Aircraft velocity relative to the air (v_air_relative = v_aircraft - u_air)
+        aircraft_velocity = self.get_velocity()
+        air_relative_velocity = aircraft_velocity - local_airflow
+        v_air = np.linalg.norm(air_relative_velocity)
+        
+        # Drag Force: F_drag = 0.5 * rho_a * v_air^2 * C_D * A * (-v_air_relative / v_air)
+        drag_magnitude = 0.5 * local_density * (v_air ** 2) * self.drag_coefficient * self.wing_area
+        
+        # Drag acts opposite to the direction of relative air velocity
+        drag_force = -drag_magnitude * (air_relative_velocity / v_air) if v_air > 0.1 else np.array([0., 0., 0.])
+
+        # Apply the total external force
+        p.applyExternalForce(
+            self.drone_id,
+            -1,
+            drag_force.tolist(),
+            [0, 0, 0],
+            p.WORLD_FRAME
+        )
+        # Note: For full accuracy, Lift calculation (part of apply_control) should also 
+        # use v_air and local_density, as per the paper.

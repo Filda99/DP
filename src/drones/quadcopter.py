@@ -125,6 +125,30 @@ class Quadcopter(BaseDrone):
         
         return wind_force
     
+    def apply_environmental_effects(self, local_airflow: np.ndarray):
+        """
+        Apply environmental forces (convection, wind) based on local airflow.
+        
+        Args:
+            local_airflow: [vx, vy, vz] velocity vector from environment (m/s)
+        """
+        # Convert airflow velocity to force
+        # For quadcopters, use drag-based model
+        drag_coefficient = 0.5  # Simplified drag coefficient
+        airflow_force = local_airflow * drag_coefficient
+        
+        # Apply the environmental force
+        if np.linalg.norm(airflow_force) > 0.05:
+            p.applyExternalForce(
+                self.drone_id,
+                -1,
+                airflow_force.tolist(),
+                [0, 0, 0],
+                p.WORLD_FRAME
+            )
+        
+        return airflow_force
+    
     def get_drone_type(self):
         """Get drone type string."""
         return "Quadcopter"

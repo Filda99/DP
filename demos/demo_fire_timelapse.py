@@ -50,9 +50,9 @@ def save_fire_snapshot(sim, step_num, fire_starts=None, output_dir='output/timel
     # Create composite image
     img = np.zeros((H, W, 3))
     
-    # Unburned fuel as green
+    # Unburned fuel as dark green (forest)
     unburned_mask = (final_state['F'] > 0.5)
-    img[unburned_mask] = [0.0, 0.5, 0.0]  # Dark green
+    img[unburned_mask] = [0.18, 0.49, 0.20]  # Dark green (#2E7D32)
     
     # Partially burned as yellow/orange
     partial_mask = (final_state['F'] > 0.1) & (final_state['F'] <= 0.5)
@@ -104,9 +104,9 @@ def save_fire_snapshot(sim, step_num, fire_starts=None, output_dir='output/timel
                                 is_building = True
                                 break
                 
-                # Default gray for open terrain with no fuel
+                # Default light green for grass/open terrain with no fuel
                 if not is_lake and not is_building:
-                    img[i, j] = [0.6, 0.6, 0.6]
+                    img[i, j] = [0.91, 0.96, 0.91]  # Very light green (#E8F5E9)
     
     # Create figure
     fig, ax = plt.subplots(1, 1, figsize=(12, 12))

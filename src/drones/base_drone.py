@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 class BaseDrone(ABC):
     """Abstract base class for all drone types."""
     
-    def __init__(self, drone_id, position=[0, 0, 5], mass=0.5):
+    def __init__(self, drone_id, position=[0, 0, 5], mass=0.5, environment=None):
         """Initialize base drone with PyBullet physics."""
         self.drone_id = drone_id
         self.position = np.array(position)
@@ -81,4 +81,9 @@ class BaseDrone(ABC):
     @abstractmethod
     def get_drone_type(self):
         """Get drone type string. Must be implemented by subclasses."""
+        pass
+
+    @abstractmethod
+    def apply_environmental_effects(self, local_airflow: np.ndarray):
+        """Apply environmental forces (convection, wind) based on local airflow."""
         pass

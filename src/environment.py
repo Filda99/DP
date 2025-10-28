@@ -366,7 +366,7 @@ class Environment:
         
         self.fire_grid = FireGrid(
             H=H, W=W, dt=dt, alpha=alpha, 
-            k_wind=k_wind, k_slope=0.5,
+            k_wind=k_wind, k_slope=1.0,
             wind_dir=wind_angle, l_base=l_base
         )
         
