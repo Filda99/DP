@@ -229,21 +229,21 @@ def save_frame(sim, state, frame_num, time, output_dir):
     wind_x, wind_y = wind_vel[0], wind_vel[1]
     wind_speed = np.sqrt(wind_x**2 + wind_y**2)
     
-    # Draw wind arrow in top-right corner
-    arrow_start_x = x_max - 15
-    arrow_start_y = y_max - 10
-    arrow_scale = 3.0  # Scale factor for visibility
+    # Draw wind arrow in top-right corner (with visible colors)
+    arrow_start_x = x_max - 200
+    arrow_start_y = y_max - 150
+    arrow_scale = 20.0  # Scale factor for visibility
     
     ax1.arrow(arrow_start_x, arrow_start_y, 
              wind_x * arrow_scale, wind_y * arrow_scale,
-             head_width=3, head_length=2, fc='cyan', ec='white', 
-             linewidth=3, alpha=0.9, zorder=10)
+             head_width=50, head_length=40, fc='yellow', ec='black', 
+             linewidth=2, alpha=0.95, zorder=10)
     
-    # Add wind speed label
-    ax1.text(arrow_start_x, arrow_start_y - 5, 
+    # Add wind speed label with contrasting background - ABOVE the arrow
+    ax1.text(arrow_start_x, arrow_start_y + 100, 
             f'Wind: {wind_speed:.1f} m/s',
-            color='white', fontsize=10, fontweight='bold',
-            bbox=dict(boxstyle='round', facecolor='black', alpha=0.7),
+            color='yellow', fontsize=11, fontweight='bold',
+            bbox=dict(boxstyle='round', facecolor='black', alpha=0.8, edgecolor='yellow', linewidth=2),
             ha='center', zorder=10)
     
     ax1.set_title(f'Fire State (Burning Cells)', fontweight='bold')

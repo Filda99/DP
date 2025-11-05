@@ -16,6 +16,13 @@ Thumbs.db
 # Logy a dočasné věci
 *.log
 
+cache/
+
+# Prefetched OSM data (large files)
+data/*.gpkg
+data/*.geojson
+!data/.gitkeep
+
 # Soukromé proměnné
 .env
 

@@ -172,24 +172,24 @@ def save_suppression_frame(sim, state, drone_pos, frame_num, time, water_remaini
     ax1.plot(drone_pos[0], drone_pos[1], 'c^', markersize=15, 
             markeredgecolor='white', markeredgewidth=2, label='Drone', zorder=10)
     
-    # Add wind arrow
+    # Add wind arrow (with visible colors)
     wind_vel = sim.environment.weather['wind_velocity']
     wind_x, wind_y = wind_vel[0], wind_vel[1]
     wind_speed = np.sqrt(wind_x**2 + wind_y**2)
     
-    arrow_start_x = x_max - 15
-    arrow_start_y = y_max - 10
-    arrow_scale = 3.0
+    arrow_start_x = x_max - 200
+    arrow_start_y = y_max - 150
+    arrow_scale = 20.0
     
     ax1.arrow(arrow_start_x, arrow_start_y, 
              wind_x * arrow_scale, wind_y * arrow_scale,
-             head_width=3, head_length=2, fc='cyan', ec='white', 
-             linewidth=3, alpha=0.9, zorder=10)
+             head_width=50, head_length=40, fc='yellow', ec='black', 
+             linewidth=2, alpha=0.95, zorder=10)
     
-    ax1.text(arrow_start_x, arrow_start_y - 5, 
+    ax1.text(arrow_start_x, arrow_start_y - 100, 
             f'Wind: {wind_speed:.1f} m/s',
-            color='white', fontsize=10, fontweight='bold',
-            bbox=dict(boxstyle='round', facecolor='black', alpha=0.7),
+            color='yellow', fontsize=11, fontweight='bold',
+            bbox=dict(boxstyle='round', facecolor='black', alpha=0.8, edgecolor='yellow', linewidth=2),
             ha='center', zorder=11)
     
     ax1.set_title(f'Fire State (t={time:.1f}s)', fontsize=14, fontweight='bold')

@@ -213,6 +213,82 @@ class Environment:
         self.terrain_zones.append(lake)
         return lake_id
     
+    def add_water_rectangle(self, center, length, width, angle):
+        """
+        Add a rectangular water body (for rivers/streams).
+        
+        Args:
+            center: [x, y] center position
+            length: Length along the flow direction (m)
+            width: Width perpendicular to flow (m)
+            angle: Rotation angle in radians (flow direction)
+        """
+        # Create rectangular water body
+        water_collision = p.createCollisionShape(
+            p.GEOM_BOX,
+            halfExtents=[length/2, width/2, 0.05]
+        )
+        water_visual = p.createVisualShape(
+            p.GEOM_BOX,
+            halfExtents=[length/2, width/2, 0.05],
+            rgbaColor=[0.1, 0.5, 0.9, 0.8]  # Blue water
+        )
+        
+        # Calculate quaternion from angle (rotation around Z-axis)
+        cos_half = np.cos(angle / 2)
+        sin_half = np.sin(angle / 2)
+        quaternion = [0, 0, sin_half, cos_half]  # [x, y, z, w]
+        
+        water_id = p.createMultiBody(
+            baseMass=0,
+            baseCollisionShapeIndex=water_collision,
+            baseVisualShapeIndex=water_visual,
+            basePosition=[center[0], center[1], 0.05],
+            baseOrientation=quaternion
+        )
+        
+        # Calculate bounding box (rotated rectangle)
+        # For fire grid purposes, we'll use a conservative axis-aligned bounding box
+        cos_a = np.cos(angle)
+        sin_a = np.sin(angle)
+        
+        # Corner offsets in local frame
+        corners_local = [
+            [-length/2, -width/2],
+            [length/2, -width/2],
+            [length/2, width/2],
+            [-length/2, width/2]
+        ]
+        
+        # Rotate corners to world frame
+        corners_world = []
+        for lx, ly in corners_local:
+            wx = center[0] + lx * cos_a - ly * sin_a
+            wy = center[1] + lx * sin_a + ly * cos_a
+            corners_world.append([wx, wy])
+        
+        # Find axis-aligned bounding box
+        x_coords = [c[0] for c in corners_world]
+        y_coords = [c[1] for c in corners_world]
+        
+        water = {
+            'id': water_id,
+            'type': 'lake',  # Treated as lake for fire purposes
+            'center': center,
+            'length': length,
+            'width': width,
+            'angle': angle,
+            'shape': 'rectangle',
+            'corners': corners_world,  # For precise collision detection
+            'bounds': {
+                'min': [min(x_coords), min(y_coords), 0],
+                'max': [max(x_coords), max(y_coords), 0.1]
+            }
+        }
+        
+        self.terrain_zones.append(water)
+        return water_id
+    
     def set_wind(self, wind_velocity, turbulence=0.0):
         """Set wind conditions."""
         self.weather['wind_velocity'] = np.array(wind_velocity)
@@ -262,11 +338,33 @@ class Environment:
                     return 'forest'
             
             elif zone['type'] == 'lake':
-                center = zone['center']
-                radius = zone['radius']
-                distance = np.sqrt((position[0] - center[0])**2 + (position[1] - center[1])**2)
-                if distance <= radius and position[2] <= 5:  # Low altitude over water
-                    return 'lake'
+                # Check if it's a rectangle or circle
+                if zone.get('shape') == 'rectangle':
+                    # Point-in-polygon test for rotated rectangle
+                    point = np.array([position[0], position[1]])
+                    corners = zone['corners']
+                    
+                    # Use ray casting algorithm
+                    inside = False
+                    n = len(corners)
+                    for i in range(n):
+                        j = (i + 1) % n
+                        xi, yi = corners[i]
+                        xj, yj = corners[j]
+                        
+                        if ((yi > position[1]) != (yj > position[1])) and \
+                           (position[0] < (xj - xi) * (position[1] - yi) / (yj - yi) + xi):
+                            inside = not inside
+                    
+                    if inside and position[2] <= 5:  # Low altitude over water
+                        return 'lake'
+                else:
+                    # Original circular lake
+                    center = zone['center']
+                    radius = zone['radius']
+                    distance = np.sqrt((position[0] - center[0])**2 + (position[1] - center[1])**2)
+                    if distance <= radius and position[2] <= 5:  # Low altitude over water
+                        return 'lake'
         
         return 'open'
     
@@ -368,28 +466,66 @@ class Environment:
                             break
                 
                 # Only check terrain zones if not in a building
+                # PRIORITY ORDER: Water > Forest > Grass
+                # Water should override everything (fire break)
                 if not in_building:
+                    # First pass: Check for water (HIGHEST PRIORITY for terrain)
+                    in_water = False
                     for zone in self.terrain_zones:
-                        if zone['type'] == 'forest':
-                            center = zone['center']
-                            radius = zone['radius']
-                            distance = np.sqrt((world_pos[0] - center[0])**2 + 
-                                             (world_pos[1] - center[1])**2)
-                            if distance <= radius:
-                                fuel_level = 0.8  # High fuel in forests
-                                burn_rate = 0.03  # Forest burns slowly but longer
-                                terrain_type = 'forest'
-                                break
-                        elif zone['type'] == 'lake':
-                            center = zone['center']
-                            radius = zone['radius']
-                            distance = np.sqrt((world_pos[0] - center[0])**2 + 
-                                             (world_pos[1] - center[1])**2)
-                            if distance <= radius:
-                                fuel_level = 0.0  # No fuel in water
-                                burn_rate = 0.0   # Water doesn't burn
-                                terrain_type = 'lake'
-                                break
+                        if zone['type'] == 'lake':
+                            # Check if it's a rectangle or circle
+                            if zone.get('shape') == 'rectangle':
+                                # Point-in-polygon test for rotated rectangle
+                                point = [world_pos[0], world_pos[1]]
+                                corners = zone['corners']
+                                
+                                # Use ray casting algorithm for point-in-polygon
+                                inside = False
+                                n = len(corners)
+                                for k in range(n):
+                                    k_next = (k + 1) % n
+                                    xi, yi = corners[k]
+                                    xj, yj = corners[k_next]
+                                    
+                                    if ((yi > point[1]) != (yj > point[1])) and \
+                                       (point[0] < (xj - xi) * (point[1] - yi) / (yj - yi) + xi):
+                                        inside = not inside
+                                
+                                if inside:
+                                    fuel_level = 0.0  # No fuel in water
+                                    burn_rate = 0.0   # Water doesn't burn
+                                    terrain_type = 'lake'
+                                    in_water = True
+                                    break
+                            else:
+                                # Original circular lake
+                                center = zone['center']
+                                radius = zone['radius']
+                                distance = np.sqrt((world_pos[0] - center[0])**2 + 
+                                                 (world_pos[1] - center[1])**2)
+                                if distance <= radius:
+                                    fuel_level = 0.0  # No fuel in water
+                                    burn_rate = 0.0   # Water doesn't burn
+                                    terrain_type = 'lake'
+                                    in_water = True
+                                    break
+                        
+                        if in_water:
+                            break
+                    
+                    # Second pass: Check for forest (ONLY if not in water)
+                    if not in_water:
+                        for zone in self.terrain_zones:
+                            if zone['type'] == 'forest':
+                                center = zone['center']
+                                radius = zone['radius']
+                                distance = np.sqrt((world_pos[0] - center[0])**2 + 
+                                                 (world_pos[1] - center[1])**2)
+                                if distance <= radius:
+                                    fuel_level = 0.8  # High fuel in forests
+                                    burn_rate = 0.03  # Forest burns slowly but longer
+                                    terrain_type = 'forest'
+                                    break
                 
                 self.fire_grid.F[i, j] = fuel_level
                 self.fire_grid.fuel_burn_rate[i, j] = burn_rate
@@ -614,11 +750,33 @@ class Environment:
                         # Check if this position is in a lake
                         for zone in self.terrain_zones:
                             if zone['type'] == 'lake':
-                                center = zone['center']
-                                radius = zone['radius']
-                                distance = np.sqrt((world_pos[0] - center[0])**2 + 
-                                                 (world_pos[1] - center[1])**2)
-                                if distance <= radius:
+                                is_in_water = False
+                                
+                                # Check if it's a rectangle or circle
+                                if zone.get('shape') == 'rectangle':
+                                    # Point-in-polygon test
+                                    corners = zone['corners']
+                                    inside = False
+                                    n = len(corners)
+                                    for k in range(n):
+                                        k_next = (k + 1) % n
+                                        xi, yi = corners[k]
+                                        xj, yj = corners[k_next]
+                                        
+                                        if ((yi > world_pos[1]) != (yj > world_pos[1])) and \
+                                           (world_pos[0] < (xj - xi) * (world_pos[1] - yi) / (yj - yi) + xi):
+                                            inside = not inside
+                                    
+                                    is_in_water = inside
+                                else:
+                                    # Original circular lake
+                                    center = zone['center']
+                                    radius = zone['radius']
+                                    distance = np.sqrt((world_pos[0] - center[0])**2 + 
+                                                     (world_pos[1] - center[1])**2)
+                                    is_in_water = (distance <= radius)
+                                
+                                if is_in_water:
                                     # It's water! Color it blue
                                     colored_fuel[i, j] = [0.2, 0.5, 0.9, 1.0]  # Blue for water
                                     break
@@ -686,14 +844,22 @@ class Environment:
                 sampled_lakes = lake_zones
             
             for zone in sampled_lakes:
-                center = zone['center']
-                radius = zone['radius']
-                
-                circle = mpatches.Circle(
-                    center, radius,
-                    linewidth=0.3, edgecolor='darkblue', facecolor='blue', alpha=0.4
-                )
-                ax.add_patch(circle)
+                if zone.get('shape') == 'rectangle':
+                    # Draw rectangle for rivers
+                    from matplotlib.patches import Polygon
+                    corners = zone['corners']
+                    poly = Polygon(corners, linewidth=0.3, edgecolor='darkblue', 
+                                  facecolor='blue', alpha=0.4)
+                    ax.add_patch(poly)
+                else:
+                    # Draw circle for lakes
+                    center = zone['center']
+                    radius = zone['radius']
+                    circle = mpatches.Circle(
+                        center, radius,
+                        linewidth=0.3, edgecolor='darkblue', facecolor='blue', alpha=0.4
+                    )
+                    ax.add_patch(circle)
         
         # --- 3. Set up the plot ---
         if self.fire_grid is not None:
