@@ -182,15 +182,43 @@ class FireGrid:
         """
         Calculate ignition probabilities for all cells using vectorized operations where possible.
         Returns array of ignition probabilities for non-burning cells.
+        
+        OPTIMIZATION: Only check cells within 'burn_radius' of active fires to avoid
+        checking all 40,000+ cells when most are far from any fire.
         """
         ignition_probs = np.zeros((self.H, self.W))
         
         # Only calculate for non-burning cells with fuel
         non_burning_mask = ~self.B & (self.F > 0)
         
+        # Find all burning cells
+        burning_cells = np.argwhere(self.B)
+        
+        if len(burning_cells) == 0:
+            return ignition_probs  # No fires, no ignition
+        
+        # Define burn radius: fire can only spread ~5-10 cells in reasonable conditions
+        # (based on 3x3 neighborhood in _calculate_ignition_probability)
+        burn_radius = 10  # cells
+        
+        # Create active region mask: cells within burn_radius of any fire
+        active_region = np.zeros((self.H, self.W), dtype=bool)
+        
+        for fire_i, fire_j in burning_cells:
+            i_min = max(0, fire_i - burn_radius)
+            i_max = min(self.H, fire_i + burn_radius + 1)
+            j_min = max(0, fire_j - burn_radius)
+            j_max = min(self.W, fire_j + burn_radius + 1)
+            active_region[i_min:i_max, j_min:j_max] = True
+        
+        # Only check cells that are:
+        # 1. Non-burning with fuel (non_burning_mask)
+        # 2. Within burn_radius of active fire (active_region)
+        cells_to_check = non_burning_mask & active_region
+        
         for i in range(self.H):
             for j in range(self.W):
-                if non_burning_mask[i, j]:
+                if cells_to_check[i, j]:
                     ignition_probs[i, j] = self._calculate_ignition_probability(i, j)
         
         return ignition_probs

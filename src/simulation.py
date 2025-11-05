@@ -12,10 +12,12 @@ try:
     from .environment import Environment
     from .drones import Quadcopter, FixedWing
     from .visualizer import SimulationVisualizer
+    from .map_importer import load_environment_from_osm
 except ImportError:
     from src.environment import Environment
     from src.drones import Quadcopter, FixedWing
     from src.visualizer import SimulationVisualizer
+    from src.map_importer import load_environment_from_osm
 
 
 class Simulation:
@@ -115,17 +117,34 @@ class Simulation:
         print(f"✅ Added fixed-wing '{name}' at {position} (water: {water_capacity}L)")
         return fw
     
-    def setup_city_environment(self):
-        """Setup city environment with buildings."""
-        self.environment.create_city_environment()
+    # Deprecated: Use setup_osm_environment() instead
+    # def setup_city_environment(self):
+    #     """Setup city environment with buildings."""
+    #     self.environment.create_city_environment()
+    
+    # Deprecated: Use setup_osm_environment() instead
+    # def setup_natural_environment(self):
+    #     """Setup natural environment with forests and lakes."""
+    #     self.environment.create_natural_environment()
+    
+    # Deprecated: Use setup_osm_environment() instead
+    # def setup_mixed_environment(self):
+    #     """Setup mixed urban/natural environment."""
+    #     self.environment.create_mixed_environment()
+    
+    def setup_osm_environment(self, location_query: str, default_building_height: float = 10.0,
+                            distance_m: float = 2000, use_city_boundaries: bool = True):
+        """
+        Setup environment from OpenStreetMap data.
         
-    def setup_natural_environment(self):
-        """Setup natural environment with forests and lakes."""
-        self.environment.create_natural_environment()
-        
-    def setup_mixed_environment(self):
-        """Setup mixed urban/natural environment."""
-        self.environment.create_mixed_environment()
+        Args:
+            location_query: Location to load (e.g., "Prague, Czech Republic")
+            default_building_height: Default height for buildings without height data (meters)
+            distance_m: Radius in meters to download around the location (default: 2000m = 2km)
+            use_city_boundaries: If True, use city/residential boundaries instead of individual buildings (MUCH faster!)
+        """
+        print(f"🌍 Loading environment from OSM: {location_query}")
+        load_environment_from_osm(self.environment, location_query, default_building_height, distance_m, use_city_boundaries)
     
     def enable_fire_simulation(self, grid_width_m=100, grid_height_m=100, cell_size_m=2.0):
         """Enable wildfire simulation in the environment."""

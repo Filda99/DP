@@ -18,34 +18,42 @@ from src.simulation import Simulation
 
 
 def run_suppression_demo():
-    """Run firefighting demonstration with frame-by-frame output."""
+    """Run firefighting demonstration with frame-by-frame output using REAL map data."""
     print("=" * 70)
-    print("💧 DEMO 2: WATER SUPPRESSION")
+    print("💧 DEMO 2: WATER SUPPRESSION (Real OSM Data)")
     print("=" * 70)
     
     # Create simulation
     sim = Simulation(gui=False)
     sim.start_simulation()
     
-    # Setup DENSE forest environment (entire area is forest)
-    sim.environment.add_forest_area(center=[0, 0], radius=60)
+    # Load REAL environment from OpenStreetMap
+    # Using a forested area for realistic wildfire scenario
+    sim.setup_osm_environment("Brno, Czech Republic", default_building_height=10.0)
+    print("  Using real map data from Brno - forests will be actual forest locations!")
     
     # Enable fire
     sim.enable_fire_simulation(
-        grid_width_m=100,
-        grid_height_m=100,
-        cell_size_m=2.0
+        grid_width_m=800,  # Larger area to cover real terrain
+        grid_height_m=800,
+        cell_size_m=5.0
     )
     
     sim.set_wind([5.0, 0.0, 0.0])
     
-    # Start MULTIPLE fires to create larger burning area
-    sim.start_fire((0, 0), intensity=0.5)
-    sim.start_fire((-10, -10), intensity=0.5)
-    sim.start_fire((10, 10), intensity=0.5)
-    sim.start_fire((-10, 10), intensity=0.5)
-    sim.start_fire((10, -10), intensity=0.5)
-    print("  🔥 Started 5 fires in large pattern")
+    # Save initial environment visualization
+    print("\n📸 Saving initial environment map...")
+    sim.environment.save_environment_map('output/demo_02_environment.png', 
+                                        show_fire_grid=True,
+                                        detailed=False)  # Fast mode
+    
+    # Start fires in forested areas (adjust coordinates based on real map)
+    # You may need to run once to see where forests are, then adjust
+    sim.start_fire((100, 100), intensity=0.5)
+    sim.start_fire((120, 80), intensity=0.5)
+    sim.start_fire((80, 120), intensity=0.5)
+    print("  🔥 Started 3 fires in different locations")
+    print("      Note: Fire will only spread in forested areas from the real map!")
     
     # Add FIXED-WING firefighting drone with 5000L water tank (5 cubic meters - realistic)
     # Start on the LEFT side of the map

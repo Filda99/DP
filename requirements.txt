@@ -1,3 +1,7 @@
 numpy
 matplotlib
 pybullet
+osmnx 
+geopandas 
+shapely
+contextily

@@ -18,41 +18,49 @@ from src.simulation import Simulation
 
 
 def run_physics_demo():
-    """Run physics demonstration with frame-by-frame output."""
+    """Run physics demonstration with frame-by-frame output using REAL map data."""
     print("=" * 70)
-    print("🌡️  DEMO 3: ADVANCED PHYSICS")
+    print("🌡️  DEMO 3: ADVANCED PHYSICS (Real OSM Data)")
     print("=" * 70)
     print()
     print("Physics features:")
-    print("  • Terrain-dependent fuel burn rates")
+    print("  • Terrain-dependent fuel burn rates (from real map!)")
     print("  • Temperature grid (fire heats air)")
     print("  • Air density: ρ = ρ₀ × (T₀ / T)")
     print("  • Moisture prevents ignition")
+    print("  • Real buildings and forests from OpenStreetMap")
     print()
     
     # Create simulation
     sim = Simulation(gui=False)
     sim.start_simulation()
     
-    # NO special terrain - all open (fast burning)
-    # sim.environment.add_forest_area(center=[0, 0], radius=25)
+    # Load REAL environment from OpenStreetMap
+    # Using a location with mixed terrain (buildings, forests, open areas)
+    sim.setup_osm_environment("Tišnov, Czech Republic", default_building_height=8.0)
+    print("  Using real terrain data - fires will spread realistically!")
     
-    # Enable fire - SMALLER grid
+    # Enable fire - adjust grid size for real area
     sim.enable_fire_simulation(
-        grid_width_m=60,
-        grid_height_m=60,
-        cell_size_m=2.0
+        grid_width_m=400,
+        grid_height_m=400,
+        cell_size_m=5.0
     )
     
     sim.set_wind([4.0, 0.0, 0.0])
     
-    # Start MULTIPLE fires to ensure it spreads - HIGHER INTENSITY
-    sim.start_fire((0, 0), intensity=0.8)
-    sim.start_fire((4, 0), intensity=0.8)
-    sim.start_fire((-4, 0), intensity=0.8)
-    sim.start_fire((0, 4), intensity=0.8)
-    sim.start_fire((0, -4), intensity=0.8)
-    print("  🔥 5 intense fires started in center area")
+    # Save initial environment visualization
+    print("\n📸 Saving initial environment map...")
+    sim.environment.save_environment_map('output/demo_03_environment.png', 
+                                        show_fire_grid=True,
+                                        detailed=False)  # Fast mode
+    
+    # Start fires - adjust positions based on real map
+    sim.start_fire((50, 50), intensity=0.8)
+    sim.start_fire((60, 50), intensity=0.8)
+    sim.start_fire((40, 50), intensity=0.8)
+    print("  🔥 3 intense fires started - will spread based on real terrain!")
+    print("      Buildings will block fire, forests will burn faster")
     
     # Add drones SIDE BY SIDE closer to fire (offset so both visible from above)
     sim.add_quadcopter("Low_Altitude", position=[-2, 0, 8])

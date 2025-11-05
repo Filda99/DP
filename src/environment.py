@@ -605,3 +605,190 @@ class Environment:
                     )
                     
                     self.fire_visual_objects.append(fire_obj)
+    
+    def save_environment_map(self, filename="environment_map.png", show_fire_grid=True, 
+                           detailed=False):
+        """
+        Save a top-down visualization of the environment showing:
+        - Buildings (gray rectangles)
+        - Forests (green circles)
+        - Water bodies (blue circles)
+        - Fire grid overlay (fuel levels as color map)
+        
+        Args:
+            filename: Output filename
+            show_fire_grid: Whether to show the fire grid fuel levels
+            detailed: If True, draw individual buildings/forests (SLOW for large areas).
+                     If False, only show fire grid colors (FAST).
+        """
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        
+        fig, ax = plt.subplots(1, 1, figsize=(16, 16))
+        
+        print(f"   Creating visualization (detailed={detailed})...")
+        
+        # --- 1. Show fire grid if enabled and available ---
+        if show_fire_grid and self.fire_grid is not None:
+            # Get fire grid bounds and fuel data
+            x_min, x_max, y_min, y_max = self.grid_mapper.get_grid_bounds()
+            fuel_map = self.fire_grid.fuel_burn_rate
+            
+            # Create colored fuel map - OPTIMIZED VERSION
+            H, W = fuel_map.shape
+            colored_fuel = np.zeros((H, W, 4))  # RGBA
+            
+            # Vectorized fuel coloring (NO LOOPS - much faster!)
+            # Default: grass/open (light yellow-green)
+            colored_fuel[:, :] = [0.8, 0.9, 0.6, 1.0]
+            
+            # Zero fuel mask - could be buildings OR water
+            zero_mask = (fuel_map == 0.0)
+            
+            # First, mark all zero-fuel as gray (buildings)
+            colored_fuel[zero_mask] = [0.5, 0.5, 0.5, 1.0]
+            
+            # Now check which zero-fuel cells are actually water (lakes)
+            # This requires checking terrain_zones
+            for i in range(H):
+                for j in range(W):
+                    if zero_mask[i, j]:  # Only check zero-fuel cells
+                        # Convert cell to world coordinates
+                        world_x = (j - W // 2) * self.grid_mapper.cell_size_m
+                        world_y = (i - H // 2) * self.grid_mapper.cell_size_m
+                        world_pos = [world_x, world_y]
+                        
+                        # Check if this position is in a lake
+                        for zone in self.terrain_zones:
+                            if zone['type'] == 'lake':
+                                center = zone['center']
+                                radius = zone['radius']
+                                distance = np.sqrt((world_pos[0] - center[0])**2 + 
+                                                 (world_pos[1] - center[1])**2)
+                                if distance <= radius:
+                                    # It's water! Color it blue
+                                    colored_fuel[i, j] = [0.2, 0.5, 0.9, 1.0]  # Blue for water
+                                    break
+            
+            # High fuel: dark green (forests)
+            forest_mask = (fuel_map >= 0.05)
+            colored_fuel[forest_mask] = [0.2, 0.5, 0.15, 1.0]
+            
+            # Display the fuel map
+            ax.imshow(colored_fuel, extent=[x_min, x_max, y_min, y_max], 
+                     origin='lower', interpolation='nearest', alpha=0.8)
+        
+        # --- 2. Draw individual objects (ONLY if detailed mode - can be slow) ---
+        if detailed:
+            # Instead of drawing ALL buildings, sample a representative set
+            if len(self.obstacles) > 500:
+                print(f"   Sampling {min(500, len(self.obstacles))} of {len(self.obstacles)} buildings (too many to draw all)...")
+                # Sample evenly distributed buildings
+                step = max(1, len(self.obstacles) // 500)
+                sampled_obstacles = self.obstacles[::step][:500]
+            else:
+                print(f"   Drawing {len(self.obstacles)} buildings...")
+                sampled_obstacles = self.obstacles
+            
+            for obstacle in sampled_obstacles:
+                if obstacle['type'] == 'city_block':
+                    pos = obstacle['position']
+                    size = obstacle['size']
+                    
+                    rect = mpatches.Rectangle(
+                        (pos[0] - size[0]/2, pos[1] - size[1]/2),
+                        size[0], size[1],
+                        linewidth=0.3, edgecolor='black', facecolor='darkgray', alpha=0.5
+                    )
+                    ax.add_patch(rect)
+            
+            # Draw forests (limit if too many)
+            forest_zones = [z for z in self.terrain_zones if z['type'] == 'forest']
+            if len(forest_zones) > 200:
+                print(f"   Sampling {min(200, len(forest_zones))} of {len(forest_zones)} forests...")
+                step = max(1, len(forest_zones) // 200)
+                sampled_forests = forest_zones[::step][:200]
+            else:
+                print(f"   Drawing {len(forest_zones)} forests...")
+                sampled_forests = forest_zones
+            
+            for zone in sampled_forests:
+                center = zone['center']
+                radius = zone['radius']
+                
+                circle = mpatches.Circle(
+                    center, radius,
+                    linewidth=0.3, edgecolor='darkgreen', facecolor='green', alpha=0.3
+                )
+                ax.add_patch(circle)
+            
+            # Draw water bodies (limit if too many)
+            lake_zones = [z for z in self.terrain_zones if z['type'] == 'lake']
+            if len(lake_zones) > 100:
+                print(f"   Sampling {min(100, len(lake_zones))} of {len(lake_zones)} water bodies...")
+                step = max(1, len(lake_zones) // 100)
+                sampled_lakes = lake_zones[::step][:100]
+            else:
+                print(f"   Drawing {len(lake_zones)} water bodies...")
+                sampled_lakes = lake_zones
+            
+            for zone in sampled_lakes:
+                center = zone['center']
+                radius = zone['radius']
+                
+                circle = mpatches.Circle(
+                    center, radius,
+                    linewidth=0.3, edgecolor='darkblue', facecolor='blue', alpha=0.4
+                )
+                ax.add_patch(circle)
+        
+        # --- 3. Set up the plot ---
+        if self.fire_grid is not None:
+            x_min, x_max, y_min, y_max = self.grid_mapper.get_grid_bounds()
+            ax.set_xlim(x_min, x_max)
+            ax.set_ylim(y_min, y_max)
+        else:
+            # Auto-scale to show all objects
+            ax.autoscale()
+        
+        ax.set_aspect('equal')
+        ax.set_xlabel('X (meters)', fontsize=12)
+        ax.set_ylabel('Y (meters)', fontsize=12)
+        ax.set_title('Environment Map (Top-Down View)', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        
+        # Add legend
+        legend_elements = [
+            mpatches.Patch(facecolor='darkgray', edgecolor='black', label='Buildings'),
+            mpatches.Patch(facecolor='green', alpha=0.4, edgecolor='darkgreen', label='Forests'),
+            mpatches.Patch(facecolor='blue', alpha=0.6, edgecolor='darkblue', label='Water'),
+        ]
+        
+        if show_fire_grid and self.fire_grid is not None:
+            legend_elements.extend([
+                mpatches.Patch(facecolor=[0.8, 0.9, 0.6, 1.0], label='Grass/Open (Low Fuel)'),
+                mpatches.Patch(facecolor=[0.4, 0.6, 0.1, 1.0], label='Forest (High Fuel)')
+            ])
+        
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=10)
+        
+        # Add info text
+        info_text = f"Buildings: {len(self.obstacles)}\n"
+        forests = sum(1 for z in self.terrain_zones if z['type'] == 'forest')
+        lakes = sum(1 for z in self.terrain_zones if z['type'] == 'lake')
+        info_text += f"Forest areas: {forests}\n"
+        info_text += f"Water bodies: {lakes}"
+        
+        if self.fire_grid is not None:
+            H, W = self.fire_grid.H, self.fire_grid.W
+            info_text += f"\nFire grid: {H}×{W} cells"
+        
+        ax.text(0.02, 0.98, info_text, transform=ax.transAxes,
+               fontsize=10, verticalalignment='top',
+               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
+        plt.tight_layout()
+        plt.savefig(filename, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"✅ Environment map saved to: {filename}")
