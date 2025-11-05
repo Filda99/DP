@@ -285,53 +285,6 @@ class Environment:
             'weather': self.weather.copy()
         }
     
-    def create_city_environment(self):
-        """Create a pre-configured city environment."""
-        # Create buildings in a grid pattern
-        building_positions = [
-            [-20, -10], [-10, -10], [10, -10], [20, -10],
-            [-20, 10], [-10, 10], [10, 10], [20, 10],
-            [-15, 0], [0, 0], [15, 0]
-        ]
-        
-        for pos in building_positions:
-            height = random.uniform(15, 25)
-            width = random.uniform(4, 8)
-            self.add_city_block(pos, [width, width, height])
-        
-        # Add some parks (small forest areas)
-        self.add_forest_area([-5, -20], 8, 10)
-        self.add_forest_area([25, 15], 6, 8)
-        
-        print(f"✅ City environment created with {len(self.obstacles)} buildings")
-    
-    def create_natural_environment(self):
-        """Create a pre-configured natural environment."""
-        # Large forest areas
-        self.add_forest_area([0, 0], 15, 30)
-        self.add_forest_area([30, 20], 12, 25)
-        self.add_forest_area([-25, -15], 10, 20)
-        
-        # Lakes
-        self.add_lake([15, -20], 8)
-        self.add_lake([-10, 25], 6)
-        
-        print(f"✅ Natural environment created with {len(self.terrain_zones)} terrain zones")
-    
-    def create_mixed_environment(self):
-        """Create a mixed urban/natural environment."""
-        # Small city center
-        for x in [-10, 0, 10]:
-            for y in [-5, 5]:
-                self.add_city_block([x, y], [6, 6, random.uniform(12, 20)])
-        
-        # Surrounding nature
-        self.add_forest_area([20, 20], 12, 20)
-        self.add_forest_area([-25, 0], 10, 15)
-        self.add_lake([0, -25], 10)
-        
-        print(f"✅ Mixed environment created with {len(self.obstacles)} buildings and {len(self.terrain_zones)} natural zones")
-    
     def enable_fire_simulation(self, grid_width_m=100, grid_height_m=100, cell_size_m=2.0, 
                              dt=0.1, alpha=1.0, k_wind=1.5, wind_dir=0.0):
         """

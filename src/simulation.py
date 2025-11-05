@@ -117,21 +117,6 @@ class Simulation:
         print(f"✅ Added fixed-wing '{name}' at {position} (water: {water_capacity}L)")
         return fw
     
-    # Deprecated: Use setup_osm_environment() instead
-    # def setup_city_environment(self):
-    #     """Setup city environment with buildings."""
-    #     self.environment.create_city_environment()
-    
-    # Deprecated: Use setup_osm_environment() instead
-    # def setup_natural_environment(self):
-    #     """Setup natural environment with forests and lakes."""
-    #     self.environment.create_natural_environment()
-    
-    # Deprecated: Use setup_osm_environment() instead
-    # def setup_mixed_environment(self):
-    #     """Setup mixed urban/natural environment."""
-    #     self.environment.create_mixed_environment()
-    
     def setup_osm_environment(self, location_query: str, default_building_height: float = 10.0,
                             distance_m: float = 2000, use_city_boundaries: bool = True):
         """
