@@ -28,4 +28,4 @@ data/*.geojson
 
 *.png
 *.gif
-*.html
+*.htmllogs/

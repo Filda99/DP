@@ -41,7 +41,7 @@ def run_physics_demo():
     RADIUS_M = 400  # Smaller area for physics demo
     
     # Create simulation
-    sim = Simulation(gui=False)
+    sim = Simulation()
     sim.start_simulation()
     
     # Load environment - use cache if available

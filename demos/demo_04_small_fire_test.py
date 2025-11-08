@@ -34,7 +34,7 @@ def run_small_fire_test():
     RADIUS_M = 1500
     
     # Create simulation
-    sim = Simulation(gui=False)
+    sim = Simulation()
     sim.start_simulation()
     
     # Load environment - use cache if available

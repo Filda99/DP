@@ -34,7 +34,7 @@ def run_suppression_demo():
     RADIUS_M = 1500  # Same as demo 01 to get identical environment
     
     # Create simulation
-    sim = Simulation(gui=False)
+    sim = Simulation()
     sim.start_simulation()
     
     # Load environment - use cache if available

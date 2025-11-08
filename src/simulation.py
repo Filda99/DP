@@ -3,6 +3,24 @@ Simulation Manager
 
 Manages the complete simulation with multiple drones, environment, and physics.
 """
+import pybullet as p
+import pybullet_data
+import numpy as np
+import matplotlib.pyplot as plt
+import json
+import os
+from datetime import datetime
+
+try:
+    from .environment import Environment
+    from .drones import Quadcopter, FixedWing
+    from .visualizer import SimulationVisualizer
+    from .map_importer import load_environment_from_osm
+except ImportError:
+    from src.environment import Environment
+    from src.drones import Quadcopter, FixedWing
+    from src.visualizer import SimulationVisualizer
+    from src.map_importer import load_environment_from_osm
 
 import pybullet as p
 import pybullet_data
@@ -19,7 +37,6 @@ except ImportError:
     from src.visualizer import SimulationVisualizer
     from src.map_importer import load_environment_from_osm
 
-
 class Simulation:
     """Complete simulation manager."""
     
@@ -27,11 +44,17 @@ class Simulation:
     # INITIALIZATION & LIFECYCLE
     # ============================================================================
     
-    def __init__(self, gui=False):
-        """Initialize simulation."""
-        self.gui = gui
+    def __init__(self, log_file=None):
+        """Initialize simulation.
+        
+        Args:
+            gui: Whether to run with GUI
+            log_file: Path to log file (if None, auto-generated in logs/ directory)
+        """
+        self.gui = False
         self.physics_client = None
         self.drones = {}
+        self.destroyed_drones = []  # Track destroyed drones
         self.environment = Environment()
         self.simulation_time = 0.0
         self.fps = 60  # Simulation FPS
@@ -46,24 +69,43 @@ class Simulation:
         self.temperature_grid = None  # Will be initialized when fire is enabled
         self.base_temperature = 293.15  # 20°C in Kelvin
         
-        # Initialize visualizer
+        # Initialize visualizer (for manual graph generation later)
         self.visualizer = SimulationVisualizer()
         
-        # Simulation data
+        # Simulation data logging
         self.simulation_log = {
             'drones': {},
             'environment_effects': [],
             'collisions': [],
+            'destroyed_drones': [],
             'fire_states': [],  # Add fire state logging
             'times': []
         }
         
+        # Setup file logging
+        self._setup_logging(log_file)
+    
+    def _setup_logging(self, log_file):
+        """Setup file logging for simulation events.
+        
+        Args:
+            log_file: Path to log file (if None, auto-generated)
+        """
+        # Create logs directory if it doesn't exist
+        os.makedirs('logs', exist_ok=True)
+        
+        if log_file is None:
+            # Auto-generate log filename with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            log_file = f'logs/simulation_{timestamp}.json'
+        
+        self.log_file = log_file
+        self.log_entries = []  # Store all log entries
+        print(f"📝 Logging to: {self.log_file}")
+        
     def start_simulation(self):
         """Start PyBullet simulation."""
-        if self.gui:
-            self.physics_client = p.connect(p.GUI)
-        else:
-            self.physics_client = p.connect(p.DIRECT)
+        self.physics_client = p.connect(p.DIRECT)
         
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -9.81)
@@ -72,13 +114,49 @@ class Simulation:
         self.environment.create_ground()
         
         print(f"✅ Simulation started ({'GUI' if self.gui else 'headless'} mode)")
+        self._log_event('simulation_start', {'gui': self.gui})
         
     def stop_simulation(self):
         """Stop PyBullet simulation."""
         if self.physics_client is not None:
             p.disconnect()
             self.physics_client = None
+        
+        # Save log to file
+        self._save_log()
         print("✅ Simulation stopped")
+    
+    def _log_event(self, event_type, data):
+        """Log an event to the log file.
+        
+        Args:
+            event_type: Type of event (e.g., 'collision', 'drone_destroyed', 'fire_start')
+            data: Dictionary with event data
+        """
+        log_entry = {
+            'time': self.simulation_time,
+            'event': event_type,
+            'data': data
+        }
+        self.log_entries.append(log_entry)
+    
+    def _save_log(self):
+        """Save all log entries to file."""
+        log_data = {
+            'metadata': {
+                'timestep': self.timestep,
+                'total_time': self.simulation_time,
+                'drones': list(self.drones.keys()),
+                'destroyed_drones': self.destroyed_drones
+            },
+            'events': self.log_entries,
+            'simulation_log': self.simulation_log
+        }
+        
+        with open(self.log_file, 'w') as f:
+            json.dump(log_data, f, indent=2, default=str)
+        
+        print(f"📝 Log saved to: {self.log_file}")
     
     # ============================================================================
     # DRONE MANAGEMENT
@@ -500,20 +578,114 @@ class Simulation:
         self.simulation_log['fire_states'].append(fire_state)
         
         # Check for collisions with environment
+        self._check_collisions()
+    
+    def _check_collisions(self):
+        """Check for collisions between drones and environment."""
+        drones_to_destroy = []
+        
         for drone_name, drone in self.drones.items():
             position = drone.get_position()
             
-            # Check obstacle collision
+            # 1. Check obstacle collision
             collision, obstacle = self.environment.is_position_in_obstacle(position)
             if collision:
                 collision_data = {
                     'time': self.simulation_time,
                     'drone': drone_name,
                     'obstacle': obstacle['type'],
-                    'position': position.copy()
+                    'position': position.copy(),
+                    'type': 'environment'
                 }
                 self.simulation_log['collisions'].append(collision_data)
-                print(f"⚠️ Collision detected: {drone_name} hit {obstacle['type']} at {position}")
+                print(f"💥 COLLISION: {drone_name} hit {obstacle['type']} at ({position[0]:.1f}, {position[1]:.1f}, {position[2]:.1f})")
+                
+                drones_to_destroy.append(drone_name)
+                self._log_event('collision', collision_data)
+                continue
+            
+            # 2. Check ground crash (altitude too low)
+            if position[2] < 0.5:  # Less than 0.5m altitude
+                collision_data = {
+                    'time': self.simulation_time,
+                    'drone': drone_name,
+                    'obstacle': 'ground',
+                    'position': position.copy(),
+                    'type': 'ground_crash'
+                }
+                self.simulation_log['collisions'].append(collision_data)
+                print(f"💥 GROUND CRASH: {drone_name} at ({position[0]:.1f}, {position[1]:.1f}, {position[2]:.1f})")
+                
+                drones_to_destroy.append(drone_name)
+                self._log_event('ground_crash', collision_data)
+                continue
+            
+            # 3. Check drone-to-drone collisions
+            for other_name, other_drone in self.drones.items():
+                if other_name == drone_name or other_name in drones_to_destroy:
+                    continue
+                
+                other_pos = other_drone.get_position()
+                distance = np.linalg.norm(position - other_pos)
+                
+                # Collision radius (conservative estimate)
+                collision_radius = 2.0  # meters
+                
+                if distance < collision_radius:
+                    collision_data = {
+                        'time': self.simulation_time,
+                        'drone': drone_name,
+                        'obstacle': f'drone_{other_name}',
+                        'position': position.copy(),
+                        'type': 'drone_collision',
+                        'distance': distance
+                    }
+                    self.simulation_log['collisions'].append(collision_data)
+                    print(f"💥 DRONE COLLISION: {drone_name} and {other_name} (distance: {distance:.2f}m)")
+                    
+                    drones_to_destroy.append(drone_name)
+                    drones_to_destroy.append(other_name)
+                    self._log_event('drone_collision', collision_data)
+                    break
+        
+        # Destroy all collided drones
+        for drone_name in set(drones_to_destroy):  # Use set to avoid duplicates
+            self._destroy_drone(drone_name)
+    
+    def _destroy_drone(self, drone_name):
+        """Destroy a drone and remove it from simulation.
+        
+        Args:
+            drone_name: Name of the drone to destroy
+        """
+        if drone_name not in self.drones:
+            return
+        
+        drone = self.drones[drone_name]
+        position = drone.get_position()
+        
+        # Remove from PyBullet
+        try:
+            p.removeBody(drone.drone_id)
+        except:
+            pass  # May already be removed
+        
+        # Track destruction
+        destruction_data = {
+            'time': self.simulation_time,
+            'drone': drone_name,
+            'position': position.copy(),
+            'type': drone.get_drone_type()
+        }
+        
+        self.destroyed_drones.append(drone_name)
+        self.simulation_log['destroyed_drones'].append(destruction_data)
+        self._log_event('drone_destroyed', destruction_data)
+        
+        # Remove from active drones
+        del self.drones[drone_name]
+        
+        print(f"🔥 DESTROYED: {drone_name} removed from simulation")
     
     def run_scenario(self, scenario_function, steps=1000):
         """Run a complete scenario."""
@@ -533,12 +705,16 @@ class Simulation:
         print(f"✅ Scenario completed after {steps} steps ({self.simulation_time:.2f}s)")
     
     # ============================================================================
-    # VISUALIZATION & ANALYSIS
+    # VISUALIZATION & ANALYSIS (Manual - use separate script)
     # ============================================================================
     
     def create_multi_drone_visualization(self, title="Multi-Drone Analysis"):
-        """Create visualization showing all drones together."""
-        # Delegate to visualizer
+        """Create visualization showing all drones together.
+        
+        NOTE: This should be called manually or from a separate analysis script.
+        Not automatically called during simulation.
+        """
+        print("📊 Generating multi-drone visualization...")
         self.visualizer.create_multi_drone_visualization(
             self.simulation_log, 
             self.drones, 
@@ -553,10 +729,15 @@ class Simulation:
                 self.environment, 
                 "multi_drone_combined"
             )
+        print("✅ Visualization complete")
 
     def create_visualization(self, drone_name=None, title="Simulation Analysis"):
-        """Create comprehensive visualization of simulation results."""
-        # Delegate to visualizer
+        """Create comprehensive visualization of simulation results.
+        
+        NOTE: This should be called manually or from a separate analysis script.
+        Not automatically called during simulation.
+        """
+        print("📊 Generating visualization...")
         self.visualizer.create_single_drone_visualization(
             self.simulation_log,
             self.drones,
@@ -564,13 +745,15 @@ class Simulation:
             drone_name,
             title
         )
+        print("✅ Visualization complete")
     
     def get_simulation_summary(self):
         """Get complete simulation summary."""
         summary = {
             'total_time': self.simulation_time,
             'total_steps': len(self.simulation_log['times']),
-            'drones': {name: self.get_drone_status(name) for name in self.drones.keys()},
+            'active_drones': list(self.drones.keys()),
+            'destroyed_drones': self.destroyed_drones,
             'environment': self.environment.get_environment_info(),
             'collisions': len(self.simulation_log['collisions'])
         }

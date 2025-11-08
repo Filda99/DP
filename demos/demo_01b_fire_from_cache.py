@@ -135,7 +135,7 @@ print(f"   Radius: {RADIUS_M}m")
 print()
 
 # Create simulation
-sim = Simulation(gui=False)
+sim = Simulation()
 sim.start_simulation()
 
 # Load environment from CACHE (instead of downloading)

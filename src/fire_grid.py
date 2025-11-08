@@ -1,7 +1,6 @@
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 
-
 class FireGrid:
     """
     Simulates wildfire spread on a 2D grid using NumPy arrays.
@@ -15,6 +14,10 @@ class FireGrid:
     
     Based on the MDP formulation from Griffith et al. (2017)
     """
+    
+    # ============================================================================
+    # INITIALIZATION & CONFIGURATION
+    # ============================================================================
     
     def __init__(self, H: int, W: int, dt: float = 0.1, alpha: float = 1.0,
                  k_wind: float = 1.0, k_slope: float = 1.0, wind_dir: float = 0.0,
@@ -97,6 +100,10 @@ class FireGrid:
         self.lazy_fuel_enabled = True
         print("   ✅ Lazy fuel loading enabled - fuel will be loaded on-demand")
     
+    # ============================================================================
+    # FUEL MANAGEMENT & TERRAIN INTERACTION
+    # ============================================================================
+    
     def _get_fuel_at_cell(self, i, j):
         """Get fuel value for cell, loading lazily from environment if needed.
         
@@ -126,8 +133,8 @@ class FireGrid:
                 bounds = obstacle['bounds']
                 if (bounds['min'][0] <= world_pos[0] <= bounds['max'][0] and
                     bounds['min'][1] <= world_pos[1] <= bounds['max'][1]):
-                    fuel_level = 0.0
-                    burn_rate = 0.0
+                    fuel_level = 0.9
+                    burn_rate = 0.0001  # Buildings burn very slowly
                     in_building = True
                     break
         
@@ -182,6 +189,10 @@ class FireGrid:
         # Cache the result
         self.fuel_cache[(i, j)] = (fuel_level, burn_rate)
         return fuel_level, burn_rate
+    
+    # ============================================================================
+    # FIRE SPREAD CALCULATIONS
+    # ============================================================================
     
     def _calculate_distance(self, x1: int, y1: int, x2: int, y2: int) -> float:
         """Calculate Euclidean distance between two grid points."""
@@ -242,6 +253,10 @@ class FireGrid:
         # It is derived from the rate lambda_xy and the time step dt.
         lambda_xy = self._calculate_lambda_xy(from_i, from_j, to_i, to_j)
         return 1.0 - np.exp(-lambda_xy * self.dt)
+    
+    # ============================================================================
+    # IGNITION PROBABILITY CALCULATIONS
+    # ============================================================================
     
     def _calculate_ignition_probability(self, target_i: int, target_j: int) -> float:
         """
@@ -327,6 +342,10 @@ class FireGrid:
         
         return ignition_probs
     
+    # ============================================================================
+    # SUPPRESSION CALCULATIONS
+    # ============================================================================
+    
     def _calculate_suppression_probability(self, i: int, j: int, 
                                          suppression_assignments: Dict[Tuple[int, int], List[float]]) -> float:
         """
@@ -352,6 +371,10 @@ class FireGrid:
             product_term *= (1.0 - max(0.0, min(1.0, Q_i)))  # Clamp to [0, 1]
         
         return 1.0 - product_term
+    
+    # ============================================================================
+    # SIMULATION STEPPING
+    # ============================================================================
     
     def step(self, suppression_assignments: Optional[Dict[Tuple[int, int], List[float]]] = None,
              water_drops: Optional[Dict[Tuple[int, int], float]] = None) -> None:
@@ -446,6 +469,10 @@ class FireGrid:
         self.F = new_F
         self.I = new_I
         self.M = new_M
+    
+    # ============================================================================
+    # STATE QUERIES & STATISTICS
+    # ============================================================================
     
     def get_state(self) -> Dict[str, np.ndarray]:
         """

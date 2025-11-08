@@ -40,7 +40,7 @@ def visualize_environment(location, grid_size=6000, cell_size=20.0, distance_m=3
     print("=" * 70)
     
     # Create simulation
-    sim = Simulation(gui=False)
+    sim = Simulation()
     sim.start_simulation()
     
     # Load OSM data

@@ -9,7 +9,6 @@ import pybullet as p
 import numpy as np
 from .base_drone import BaseDrone
 
-
 class FixedWing(BaseDrone):
     """Fixed-wing aircraft with forward flight requirements."""
     

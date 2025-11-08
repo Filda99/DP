@@ -99,7 +99,7 @@ def run_debug_demo():
     save_real_satellite_imagery(LOCATION, RADIUS_M)
     
     # Step 2: Create simulation
-    sim = Simulation(gui=False)
+    sim = Simulation()
     sim.start_simulation()
     
     # Step 3: Load environment - use cache if available, otherwise download

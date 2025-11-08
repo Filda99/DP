@@ -36,7 +36,7 @@ def analyze_simulation_performance():
     
     # 1. Create simulation
     def create_sim():
-        sim = Simulation(gui=False)
+        sim = Simulation()
         sim.start_simulation()
         return sim
     
