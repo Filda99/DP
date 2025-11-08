@@ -11,6 +11,7 @@ import numpy as np
 import random
 import sys
 import os
+import time
 
 # Add project root to path for imports
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -33,7 +34,6 @@ class Environment:
         
         self.weather = {
             'wind_velocity': self.wind_velocity,
-            'wind_turbulence': self.wind_turbulence,
             'visibility': 1000.0,  # meters
             'precipitation': 0.0   # 0.0 = none, 1.0 = heavy
         }
@@ -46,7 +46,7 @@ class Environment:
         # Fire simulation components
         self.fire_grid = None
         self.grid_mapper = None
-        self.fire_enabled = False
+        self.fire_time_accumulator = 0.0  # Accumulates real time for fire updates
     
     def _initialize_random_wind(self):
         """Initialize random wind direction and speed."""
@@ -62,10 +62,8 @@ class Environment:
         wind_z = 0.0  # No vertical wind
         
         self.wind_velocity = np.array([wind_x, wind_y, wind_z])
-        self.wind_turbulence = random.uniform(0.2, 0.5)  # Random turbulence
         
         print(f"🌬️  Initial wind: {wind_speed:.1f} m/s at {np.degrees(wind_angle):.0f}°")
-        print(f"   Vector: [{wind_x:.1f}, {wind_y:.1f}, {wind_z:.1f}] m/s, turbulence: {self.wind_turbulence:.2f}")
         self.fire_visual_objects = []
         
     def create_ground(self):
@@ -292,7 +290,6 @@ class Environment:
     def set_wind(self, wind_velocity, turbulence=0.0):
         """Set wind conditions."""
         self.weather['wind_velocity'] = np.array(wind_velocity)
-        self.weather['wind_turbulence'] = turbulence
     
     def set_weather(self, visibility=1000.0, precipitation=0.0):
         """Set weather conditions."""
@@ -302,14 +299,6 @@ class Environment:
     def get_wind_at_position(self, position):
         """Get wind velocity at a specific position with turbulence."""
         base_wind = self.weather['wind_velocity'].copy()
-        
-        # Add turbulence (primarily horizontal, minimal vertical)
-        if self.weather['wind_turbulence'] > 0:
-            # Realistic turbulence: 90% horizontal, 10% vertical intensity
-            horizontal_turbulence = np.random.normal(0, self.weather['wind_turbulence'], 2)
-            vertical_turbulence = np.random.normal(0, self.weather['wind_turbulence'] * 0.1, 1)
-            turbulence = np.array([horizontal_turbulence[0], horizontal_turbulence[1], vertical_turbulence[0]])
-            base_wind += turbulence
         
         # Height effect - wind increases with altitude (reduced effect)
         height_factor = 1.0 + position[2] * 0.01  # Reduced from 0.05 to 0.01
@@ -384,7 +373,7 @@ class Environment:
         }
     
     def enable_fire_simulation(self, grid_width_m=100, grid_height_m=100, cell_size_m=2.0, 
-                             dt=0.1, alpha=1.0, k_wind=1.5, wind_dir=0.0):
+                             dt=0.1, alpha=1.0, k_wind=1.5, wind_dir=0.0, lazy_fuel=True):
         """
         Enable wildfire simulation in the environment.
         
@@ -396,14 +385,22 @@ class Environment:
             alpha: Distance decay factor for fire spread
             k_wind: Wind influence factor
             wind_dir: Wind direction in radians
+            lazy_fuel: If True, load fuel on-demand (fast startup). If False, preload all fuel (slow startup)
         """
+        t_total_start = time.time()
+        
         # Create grid mapper
+        print("   ⏱️  Creating grid mapper...")
+        t_start = time.time()
         self.grid_mapper = GridMapper(grid_width_m, grid_height_m, cell_size_m)
+        print(f"      ✅ Grid mapper created in {time.time() - t_start:.3f}s")
         
         # Get grid dimensions
         H, W = self.grid_mapper.get_grid_dimensions()
         
         # Create fire grid with wind from weather system
+        print("   ⏱️  Calculating wind parameters...")
+        t_start = time.time()
         wind_velocity = self.weather['wind_velocity'][:2]  # Only x,y components
         wind_speed = np.linalg.norm(wind_velocity)
         
@@ -413,32 +410,42 @@ class Environment:
             wind_angle = 0.0
         
         # Create base lambda values for fire spread
-        l_base = np.ones(H) * 0.5  # Base fire spread rate (probability ~20% per 0.5s step)
+        # REDUCED from 0.5 to 0.1 for much slower spread
+        l_base = np.ones(H) * 0.1  # Base fire spread rate (SLOW - realistic wildfire)
+        print(f"      ✅ Wind parameters calculated in {time.time() - t_start:.3f}s")
         
+        print(f"   ⏱️  Initializing FireGrid ({H}x{W} cells, dt={dt:.4f}s)...")
+        t_start = time.time()
         self.fire_grid = FireGrid(
             H=H, W=W, dt=dt, alpha=alpha, 
             k_wind=k_wind, k_slope=1.0,
             wind_dir=wind_angle, l_base=l_base
         )
+        print(f"      ✅ FireGrid initialized in {time.time() - t_start:.3f}s")
         
-        # Enable fire BEFORE initializing fuel from terrain
-        self.fire_enabled = True
-        
-        # Modify fuel based on terrain
-        self._initialize_fire_fuel_from_terrain()
+        # Choose fuel loading strategy
+        if lazy_fuel:
+            # LAZY LOADING: Load fuel on-demand (fast startup)
+            print("   ⏱️  Enabling lazy fuel loading (on-demand)...")
+            t_start = time.time()
+            self.fire_grid.enable_lazy_fuel_loading(self, self.grid_mapper)
+            print(f"      ✅ Lazy fuel loading enabled in {time.time() - t_start:.3f}s")
+        else:
+            # EAGER LOADING: Preload all fuel (slow startup)
+            print("   ⏱️  Mapping fuel from terrain (buildings, forests, water)...")
+            t_start = time.time()
+            self._initialize_fire_fuel_from_terrain()
+            print(f"      ✅ Fuel mapping completed in {time.time() - t_start:.3f}s")
         
         # IMPORTANT: Clear any random fires that were started in reset_random()
         # We want to start fires manually, not have random initial fires
         self.fire_grid.B[:] = False
         self.fire_grid.I[:] = 0.0
         
-        print(f"✅ Fire simulation enabled: {H}x{W} grid, {cell_size_m}m cells")
+        print(f"✅ Fire simulation enabled: {H}x{W} grid, {cell_size_m}m cells (total: {time.time() - t_total_start:.3f}s)")
     
     def _initialize_fire_fuel_from_terrain(self):
         """Initialize fire fuel levels based on terrain zones."""
-        if not self.fire_enabled or self.fire_grid is None:
-            return
-        
         H, W = self.grid_mapper.get_grid_dimensions()
         
         # Debug counters
@@ -536,7 +543,6 @@ class Environment:
         print(f"   Forests: {debug_counts['forest']} cells")
         print(f"   Lakes: {debug_counts['lake']} cells")
         print(f"   Open terrain: {debug_counts['default']} cells")
-
     
     def start_fire_at_position(self, world_pos, intensity=0.2):
         """
@@ -546,11 +552,13 @@ class Environment:
             world_pos: (x, y) position in world coordinates
             intensity: Initial fire intensity (used for visualization only)
         """
-        if not self.fire_enabled:
-            print("❌ Fire simulation not enabled")
-            return False
-        
         i, j = self.grid_mapper.world_to_cell(world_pos)
+        
+        # LAZY FUEL LOADING: Load fuel for starting cell
+        if self.fire_grid.lazy_fuel_enabled:
+            fuel_level, burn_rate = self.fire_grid._get_fuel_at_cell(i, j)
+            self.fire_grid.F[i, j] = fuel_level
+            self.fire_grid.fuel_burn_rate[i, j] = burn_rate
         
         if self.fire_grid.F[i, j] > 0:  # Only if there's fuel
             self.fire_grid.B[i, j] = True
@@ -584,9 +592,6 @@ class Environment:
             # Reset timer with new random interval
             self.wind_change_timer = 0.0
             self.wind_change_interval = random.uniform(5.0, 15.0)
-            
-            # Also vary turbulence
-            self.wind_turbulence = random.uniform(0.2, 0.5)
         
         # Smoothly interpolate current wind toward target (takes ~2-3 seconds to transition)
         blend_factor = 0.02  # Smooth interpolation rate
@@ -594,18 +599,28 @@ class Environment:
         
         # Update weather dictionary
         self.weather['wind_velocity'] = self.wind_velocity
-        self.weather['wind_turbulence'] = self.wind_turbulence
     
-    def update_fire_simulation(self, suppression_assignments=None, water_drops=None):
+    def update_fire_simulation(self, suppression_assignments=None, water_drops=None, real_dt=None):
         """
         Update the fire simulation by one step.
         
         Args:
             suppression_assignments: Dict mapping (i,j) to list of suppression probabilities (deprecated)
             water_drops: Dict mapping (i,j) to water amount (0.0 to 1.0+)
+            real_dt: Real time step in seconds (if None, uses fire_grid.dt)
         """
-        if not self.fire_enabled:
-            return
+        # Accumulate time - only update fire grid when enough time has passed
+        if real_dt is None:
+            real_dt = self.fire_grid.dt
+        
+        self.fire_time_accumulator += real_dt
+        
+        # Only update fire if accumulated time >= fire grid timestep
+        if self.fire_time_accumulator < self.fire_grid.dt:
+            return  # Skip this update - not enough time has passed
+        
+        # Reset accumulator (keep remainder for next time)
+        self.fire_time_accumulator -= self.fire_grid.dt
         
         # Update wind dynamics (gradual changes over time)
         self._update_wind_dynamics(dt=0.1)
@@ -632,9 +647,6 @@ class Environment:
     
     def get_fire_state(self):
         """Get current fire simulation state."""
-        if not self.fire_enabled:
-            return None
-        
         return {
             'fire_grid_state': self.fire_grid.get_state(),
             'fire_stats': self.fire_grid.get_stats(),
@@ -644,9 +656,6 @@ class Environment:
     
     def visualize_fire_in_simulation(self):
         """Create visual objects for fire in PyBullet simulation."""
-        if not self.fire_enabled:
-            return
-        
         # Remove old fire visualizations
         for obj_id in self.fire_visual_objects:
             try:

@@ -7,6 +7,7 @@ Demonstrates temperature-dependent density, terrain-dependent fuel, and moisture
 import numpy as np
 import sys
 import os
+import glob
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -15,6 +16,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 from src.simulation import Simulation
+from src.map_importer import load_environment_from_osm_cache
 
 
 def run_physics_demo():
@@ -31,14 +33,39 @@ def run_physics_demo():
     print("  • Real buildings and forests from OpenStreetMap")
     print()
     
+    # Configuration - Pec pod Sněžkou in Krkonoše
+    LOCATION = "Pec pod Sněžkou, Czech Republic"
+    CACHE_PREFIX = "Pec_pod_Sněžkou_Czechia"
+    CENTER_LAT = 50.6868
+    CENTER_LON = 15.7361
+    RADIUS_M = 400  # Smaller area for physics demo
+    
     # Create simulation
     sim = Simulation(gui=False)
     sim.start_simulation()
     
-    # Load REAL environment from OpenStreetMap
-    # Using a location with mixed terrain (buildings, forests, open areas)
-    sim.setup_osm_environment("Tišnov, Czech Republic", default_building_height=8.0)
-    print("  Using real terrain data - fires will spread realistically!")
+    # Load environment - use cache if available
+    cache_dir = "data"
+    cache_pattern = f"{cache_dir}/{CACHE_PREFIX}_building_*.gpkg"
+    use_cache = len(glob.glob(cache_pattern)) > 0
+    
+    if use_cache:
+        print(f"📂 Loading from cache: {CACHE_PREFIX}")
+        load_environment_from_osm_cache(
+            environment=sim.environment,
+            cache_dir=cache_dir,
+            region_prefix=CACHE_PREFIX,
+            center_lat=CENTER_LAT,
+            center_lon=CENTER_LON,
+            radius_m=RADIUS_M,
+            default_height_m=8.0,
+            use_city_boundaries=True
+        )
+    else:
+        print(f"🌍 No cache found, downloading from OSM...")
+        sim.setup_osm_environment(LOCATION, default_building_height=8.0, distance_m=RADIUS_M)
+    
+    print(f"  Using real terrain data from {LOCATION} - fires will spread realistically!")
     
     # Enable fire - adjust grid size for real area
     sim.enable_fire_simulation(

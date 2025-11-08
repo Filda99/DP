@@ -49,6 +49,12 @@ class FireGrid:
         
         # Initialize state arrays
         self.reset_random()
+        
+        # Lazy fuel loading
+        self.fuel_cache = {}  # Cache for already-loaded fuel values
+        self.environment = None  # Will be set later for lazy loading
+        self.grid_mapper = None
+        self.lazy_fuel_enabled = False  # Whether to use lazy loading
     
     def reset_random(self, seed: Optional[int] = None) -> None:
         """Reset the grid to a random initial state."""
@@ -78,6 +84,104 @@ class FireGrid:
             if self.F[i, j] > 0:
                 self.B[i, j] = True
                 self.I[i, j] = np.minimum(1.0, self.F[i, j])
+    
+    def enable_lazy_fuel_loading(self, environment, grid_mapper):
+        """Enable lazy fuel loading - fuel values loaded on-demand when fire reaches cells.
+        
+        Args:
+            environment: Environment object with terrain data
+            grid_mapper: GridMapper for coordinate conversion
+        """
+        self.environment = environment
+        self.grid_mapper = grid_mapper
+        self.lazy_fuel_enabled = True
+        print("   ✅ Lazy fuel loading enabled - fuel will be loaded on-demand")
+    
+    def _get_fuel_at_cell(self, i, j):
+        """Get fuel value for cell, loading lazily from environment if needed.
+        
+        Args:
+            i, j: Cell coordinates
+            
+        Returns:
+            tuple: (fuel_level, burn_rate)
+        """
+        if not self.lazy_fuel_enabled:
+            return self.F[i, j], self.fuel_burn_rate[i, j]
+        
+        # Check cache first
+        if (i, j) in self.fuel_cache:
+            return self.fuel_cache[(i, j)]
+        
+        # Convert cell to world coordinates
+        world_pos = self.grid_mapper.cell_to_world(i, j)
+        
+        fuel_level = 0.3  # Default fuel level (open terrain)
+        burn_rate = 0.08  # Default burn rate (grass burns fast)
+        
+        # Check if position is inside a building - NO FUEL
+        in_building = False
+        for obstacle in self.environment.obstacles:
+            if obstacle['type'] == 'city_block':
+                bounds = obstacle['bounds']
+                if (bounds['min'][0] <= world_pos[0] <= bounds['max'][0] and
+                    bounds['min'][1] <= world_pos[1] <= bounds['max'][1]):
+                    fuel_level = 0.0
+                    burn_rate = 0.0
+                    in_building = True
+                    break
+        
+        if not in_building:
+            # Check for water (highest priority)
+            in_water = False
+            for zone in self.environment.terrain_zones:
+                if zone['type'] == 'lake':
+                    if zone.get('shape') == 'rectangle':
+                        # Point-in-polygon test for rotated rectangle
+                        point = [world_pos[0], world_pos[1]]
+                        corners = zone['corners']
+                        inside = False
+                        n = len(corners)
+                        for k in range(n):
+                            k_next = (k + 1) % n
+                            xi, yi = corners[k]
+                            xj, yj = corners[k_next]
+                            if ((yi > point[1]) != (yj > point[1])) and \
+                               (point[0] < (xj - xi) * (point[1] - yi) / (yj - yi) + xi):
+                                inside = not inside
+                        if inside:
+                            fuel_level = 0.0
+                            burn_rate = 0.0
+                            in_water = True
+                            break
+                    else:
+                        # Circular lake
+                        center = zone['center']
+                        radius = zone['radius']
+                        distance = np.sqrt((world_pos[0] - center[0])**2 + 
+                                         (world_pos[1] - center[1])**2)
+                        if distance <= radius:
+                            fuel_level = 0.0
+                            burn_rate = 0.0
+                            in_water = True
+                            break
+            
+            # Check for forest (only if not in water)
+            if not in_water:
+                for zone in self.environment.terrain_zones:
+                    if zone['type'] == 'forest':
+                        center = zone['center']
+                        radius = zone['radius']
+                        distance = np.sqrt((world_pos[0] - center[0])**2 + 
+                                         (world_pos[1] - center[1])**2)
+                        if distance <= radius:
+                            fuel_level = 0.8  # High fuel in forests
+                            burn_rate = 0.03  # Forest burns slowly but longer
+                            break
+        
+        # Cache the result
+        self.fuel_cache[(i, j)] = (fuel_level, burn_rate)
+        return fuel_level, burn_rate
     
     def _calculate_distance(self, x1: int, y1: int, x2: int, y2: int) -> float:
         """Calculate Euclidean distance between two grid points."""
@@ -293,6 +397,14 @@ class FireGrid:
         
         # Cells ignite if random value < ignition probability
         ignition_mask = (ignition_probs > ignition_random) & (~self.B) & (self.F > 0)
+        
+        # LAZY FUEL LOADING: Load fuel for cells about to ignite
+        if self.lazy_fuel_enabled:
+            igniting_cells = np.argwhere(ignition_mask)
+            for i, j in igniting_cells:
+                fuel_level, burn_rate = self._get_fuel_at_cell(i, j)
+                self.F[i, j] = fuel_level
+                self.fuel_burn_rate[i, j] = burn_rate
         
         new_B[ignition_mask] = True
         # Set initial intensity for newly ignited cells based on fuel

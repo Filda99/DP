@@ -131,9 +131,13 @@ class Simulation:
         print(f"🌍 Loading environment from OSM: {location_query}")
         load_environment_from_osm(self.environment, location_query, default_building_height, distance_m, use_city_boundaries)
     
-    def enable_fire_simulation(self, grid_width_m=100, grid_height_m=100, cell_size_m=2.0):
+    def enable_fire_simulation(self, grid_width_m=100, grid_height_m=100, cell_size_m=2.0, dt=None):
         """Enable wildfire simulation in the environment."""
-        self.environment.enable_fire_simulation(grid_width_m, grid_height_m, cell_size_m)
+        # Use simulation timestep if dt not specified
+        if dt is None:
+            dt = self.timestep
+        
+        self.environment.enable_fire_simulation(grid_width_m, grid_height_m, cell_size_m, dt=dt)
         
         # Initialize temperature grid (3D: height × rows × cols)
         if hasattr(self.environment, 'fire_grid') and self.environment.fire_grid is not None:
@@ -167,7 +171,7 @@ class Simulation:
         - Heat diffuses to neighbors (simple 3D diffusion)
         - Heat rises (convection approximated by vertical diffusion bias)
         """
-        if self.temperature_grid is None or not self.environment.fire_enabled:
+        if self.temperature_grid is None:
             return
         
         height_levels, H, W = self.temperature_grid.shape
@@ -227,24 +231,22 @@ class Simulation:
         self.simulation_time += self.timestep
         self.simulation_log['times'].append(self.simulation_time)
         
-        # Update fire simulation if enabled
-        if self.environment.fire_enabled:
-            # Calculate water drops from drones (if any)
-            water_drops = self._calculate_water_drops()
-            
-            # Update fire simulation with water drops
-            self.environment.update_fire_simulation(water_drops=water_drops)
-            
-            # Update temperature grid from fire (for physics demos)
-            self._update_temperature_grid()
-            
-            # Visualize less frequently
-            if len(self.simulation_log['times']) % 10 == 0:
-                self.environment.visualize_fire_in_simulation()
-            
-            # Log fire state
-            fire_state = self.environment.get_fire_state()
-            self.simulation_log['fire_states'].append(fire_state)
+        # Calculate water drops from drones (if any)
+        water_drops = self._calculate_water_drops()
+        
+        # Update fire simulation with water drops (pass real timestep)
+        self.environment.update_fire_simulation(water_drops=water_drops, real_dt=self.timestep)
+        
+        # Update temperature grid from fire (for physics demos)
+        self._update_temperature_grid()
+        
+        # Visualize less frequently
+        if len(self.simulation_log['times']) % 10 == 0:
+            self.environment.visualize_fire_in_simulation()
+        
+        # Log fire state
+        fire_state = self.environment.get_fire_state()
+        self.simulation_log['fire_states'].append(fire_state)
         
         # Check for collisions with environment
         self._check_collisions()
@@ -258,9 +260,6 @@ class Simulation:
         Returns:
             Dict mapping (i, j) cell coordinates to total water amount (0.0 to 1.0+)
         """
-        if not self.environment.fire_enabled:
-            return {}
-        
         water_drops = {}
         
         # Realistic water drop model:
@@ -413,7 +412,7 @@ class Simulation:
         local_density = 1.225  # kg/m³ at sea level, 20°C
         
         # Get temperature from grid if available
-        if self.temperature_grid is not None and self.environment.fire_enabled:
+        if self.temperature_grid is not None:
             # Map world position to temperature grid
             try:
                 center_i, center_j = self.environment.grid_mapper.world_to_cell((world_pos[0], world_pos[1]))
@@ -434,7 +433,7 @@ class Simulation:
                 pass  # Use default values
         
         # Only apply convection effects below convection height and if fire enabled
-        if not self.environment.fire_enabled or world_pos[2] >= self.airflow_H:
+        if world_pos[2] >= self.airflow_H:
             return {
                 'velocity': local_airflow,
                 'temperature': local_temp,
@@ -530,7 +529,7 @@ class Simulation:
         )
         
         # Generate fire analysis if enabled
-        if self.environment.fire_enabled and self.simulation_log['fire_states']:
+        if self.simulation_log['fire_states']:
             self.visualizer.generate_fire_analysis(
                 self.simulation_log, 
                 self.environment, 
@@ -559,9 +558,8 @@ class Simulation:
         }
         
         # Add fire information if enabled
-        if self.environment.fire_enabled:
-            fire_state = self.environment.get_fire_state()
-            if fire_state:
-                summary['fire'] = fire_state['fire_stats']
+        fire_state = self.environment.get_fire_state()
+        if fire_state:
+            summary['fire'] = fire_state['fire_stats']
         
         return summary

@@ -6,6 +6,7 @@ Demo 1 DEBUG: Save every step for detailed analysis
 import numpy as np
 import sys
 import os
+import glob
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -14,6 +15,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 from src.simulation import Simulation
+from src.map_importer import load_environment_from_osm_cache
 
 
 def save_real_satellite_imagery(location, radius_m):
@@ -86,10 +88,12 @@ def run_debug_demo():
     print("🔬 DEBUG: FIRE SPREAD FRAME-BY-FRAME (Real OSM Data)")
     print("=" * 70)
     
-    # Configuration - Using a forest area instead of a town
-    # Using coordinates near a forest area
-    LOCATION = "Křivoklát, Czech Republic"  # Historic castle in large forest area
-    RADIUS_M = 1500  # Increased from 1000m to capture the big river on the east side
+    # Configuration - Pec pod Sněžkou in Krkonoše mountains
+    LOCATION = "Pec pod Sněžkou, Czech Republic"
+    CACHE_PREFIX = "Pec_pod_Sněžkou_Czechia"
+    CENTER_LAT = 50.6868
+    CENTER_LON = 15.7361
+    RADIUS_M = 1500
     
     # Step 1: Save real satellite imagery FIRST
     save_real_satellite_imagery(LOCATION, RADIUS_M)
@@ -98,11 +102,29 @@ def run_debug_demo():
     sim = Simulation(gui=False)
     sim.start_simulation()
     
-    # Step 3: Load environment from OpenStreetMap
-    sim.setup_osm_environment(LOCATION, 
-                              default_building_height=8.0,
-                              distance_m=RADIUS_M,
-                              use_city_boundaries=True)
+    # Step 3: Load environment - use cache if available, otherwise download
+    cache_dir = "data"
+    cache_pattern = f"{cache_dir}/{CACHE_PREFIX}_building_*.gpkg"
+    use_cache = len(glob.glob(cache_pattern)) > 0
+    
+    if use_cache:
+        print(f"📂 Loading from cache: {CACHE_PREFIX}")
+        load_environment_from_osm_cache(
+            environment=sim.environment,
+            cache_dir=cache_dir,
+            region_prefix=CACHE_PREFIX,
+            center_lat=CENTER_LAT,
+            center_lon=CENTER_LON,
+            radius_m=RADIUS_M,
+            default_height_m=8.0,
+            use_city_boundaries=True
+        )
+    else:
+        print(f"🌍 No cache found, downloading from OSM...")
+        sim.setup_osm_environment(LOCATION, 
+                                  default_building_height=8.0,
+                                  distance_m=RADIUS_M,
+                                  use_city_boundaries=True)
     
     # Enable fire
     sim.enable_fire_simulation(
@@ -120,8 +142,8 @@ def run_debug_demo():
                                         show_fire_grid=True, 
                                         detailed=False)  # Fast mode for large areas
     
-    # Find a location with fuel to start the fire
-    print("\n🔍 Finding forested area to start fire...")
+    # Find a location with fuel to start the fire - BOTTOM MIDDLE area
+    print("\n🔍 Finding forested area in bottom middle to start fire...")
     fire_started = False
     fire_state = sim.environment.get_fire_state()
     
@@ -129,13 +151,20 @@ def run_debug_demo():
         state = fire_state['fire_grid_state']
         fuel_grid = state['F']
         
-        # Find cells with high fuel (forests have fuel > 0.8)
-        high_fuel_cells = np.argwhere(fuel_grid > 0.7)
+        # Find cells with high fuel in BOTTOM MIDDLE area
+        # Bottom half: cell_i < H/2, Middle: cell_j near W/2
+        H, W = fuel_grid.shape
+        bottom_middle_cells = []
         
-        if len(high_fuel_cells) > 0:
-            # Choose a random high-fuel cell
-            idx = np.random.randint(len(high_fuel_cells))
-            cell_i, cell_j = high_fuel_cells[idx]
+        for cell_i in range(H // 4, H // 2):  # Bottom quarter to middle
+            for cell_j in range(W // 3, 2 * W // 3):  # Middle third horizontally
+                if fuel_grid[cell_i, cell_j] > 0.7:  # High fuel
+                    bottom_middle_cells.append((cell_i, cell_j))
+        
+        if len(bottom_middle_cells) > 0:
+            # Choose a random high-fuel cell in bottom middle
+            idx = np.random.randint(len(bottom_middle_cells))
+            cell_i, cell_j = bottom_middle_cells[idx]
             
             # Convert cell coordinates to world coordinates
             grid_mapper = sim.environment.grid_mapper
@@ -144,29 +173,29 @@ def run_debug_demo():
             
             sim.start_fire((world_x, world_y), intensity=0.3)
             fire_started = True
-            print(f"  ✅ Started fire at ({world_x:.0f}, {world_y:.0f}) in forested area")
+            print(f"✅ Started fire at world pos ({world_x:.0f}, {world_y:.0f}) -> cell ({cell_i}, {cell_j})")
             print(f"     Cell: ({cell_i}, {cell_j}), Fuel: {fuel_grid[cell_i, cell_j]:.2f}")
         else:
-            print("  ⚠️  No high-fuel areas found! Starting fire at edge...")
-            sim.start_fire((800, 800), intensity=0.3)
+            print("  ⚠️  No high-fuel areas found in bottom middle! Using fallback...")
+            sim.start_fire((-1470, -150), intensity=0.3)
             fire_started = True
     
     if not fire_started:
         print("  ⚠️  Could not access fire state. Starting fire at default location...")
-        sim.start_fire((500, 500), intensity=0.3)
+        sim.start_fire((-1470, -150), intensity=0.3)
     
     # Create output directory
     output_dir = 'output/debug_frames'
     os.makedirs(output_dir, exist_ok=True)
     
-    print("\nRunning simulation for 10 seconds, saving every 0.5s...")
+    print("\nRunning simulation for 30 seconds, saving every 0.5s...")
     print()
     
     # Run simulation
     frame = 0
     save_interval = 30  # Save every 0.5 seconds (30 steps at 60 FPS)
     
-    for step in range(int(10 / sim.timestep)):
+    for step in range(int(30 / sim.timestep)):
         sim.step_simulation({})
         
         # Save frame every 0.5s

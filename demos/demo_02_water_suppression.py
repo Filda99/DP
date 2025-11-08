@@ -7,6 +7,8 @@ Shows how drone water drops increase moisture and prevent fire spread.
 import numpy as np
 import sys
 import os
+import glob
+import time
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -15,6 +17,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 from src.simulation import Simulation
+from src.map_importer import load_environment_from_osm_cache
 
 
 def run_suppression_demo():
@@ -23,54 +26,133 @@ def run_suppression_demo():
     print("💧 DEMO 2: WATER SUPPRESSION (Real OSM Data)")
     print("=" * 70)
     
+    # Configuration - Pec pod Sněžkou in Krkonoše (SAME AS DEMO 01)
+    LOCATION = "Pec pod Sněžkou, Czech Republic"
+    CACHE_PREFIX = "Pec_pod_Sněžkou_Czechia"
+    CENTER_LAT = 50.6868
+    CENTER_LON = 15.7361
+    RADIUS_M = 1500  # Same as demo 01 to get identical environment
+    
     # Create simulation
     sim = Simulation(gui=False)
     sim.start_simulation()
     
-    # Load REAL environment from OpenStreetMap
-    # Using a forested area for realistic wildfire scenario
-    sim.setup_osm_environment("Brno, Czech Republic", default_building_height=10.0)
-    print("  Using real map data from Brno - forests will be actual forest locations!")
+    # Load environment - use cache if available
+    cache_dir = "data"
+    cache_pattern = f"{cache_dir}/{CACHE_PREFIX}_building_*.gpkg"
+    use_cache = len(glob.glob(cache_pattern)) > 0
     
-    # Enable fire
+    if use_cache:
+        print(f"📂 Loading from cache: {CACHE_PREFIX}")
+        load_environment_from_osm_cache(
+            environment=sim.environment,
+            cache_dir=cache_dir,
+            region_prefix=CACHE_PREFIX,
+            center_lat=CENTER_LAT,
+            center_lon=CENTER_LON,
+            radius_m=RADIUS_M,
+            default_height_m=10.0,
+            use_city_boundaries=True
+        )
+    else:
+        print(f"🌍 No cache found, downloading from OSM...")
+        sim.setup_osm_environment(LOCATION, default_building_height=10.0, distance_m=RADIUS_M)
+    
+    print(f"  Using real map data from {LOCATION} - forests will be actual forest locations!")
+    
+    # Enable fire - SAME AS DEMO 01
+    print("\n⏱️  Initializing fire simulation grid...")
+    t_start = time.time()
+    
+    # SLOW FIRE SPREAD: Use larger dt and lower spread rate
+    # Instead of fire spreading every 0.016s (60 FPS), make it spread every 1s
+    fire_dt = 1.0  # Fire simulation runs at 1 Hz instead of 60 Hz
+    
     sim.enable_fire_simulation(
-        grid_width_m=800,  # Larger area to cover real terrain
-        grid_height_m=800,
-        cell_size_m=5.0
+        grid_width_m=3000,  # Same as demo 01
+        grid_height_m=3000,
+        cell_size_m=15.0,
+        dt=fire_dt  # Fire spreads much slower!
     )
+    t_fire_init = time.time() - t_start
+    print(f"✅ Fire grid initialized in {t_fire_init:.2f}s (fire_dt={fire_dt:.4f}s)")
     
-    sim.set_wind([5.0, 0.0, 0.0])
+    print("\n⏱️  Setting wind and mapping fuel from environment...")
+    t_start = time.time()
+    sim.set_wind([8.0, 0.0, 0.0])  # Same wind as demo 01
+    t_wind = time.time() - t_start
+    print(f"✅ Wind and fuel mapping done in {t_wind:.2f}s")
     
     # Save initial environment visualization
     print("\n📸 Saving initial environment map...")
+    t_start = time.time()
     sim.environment.save_environment_map('output/demo_02_environment.png', 
                                         show_fire_grid=True,
                                         detailed=False)  # Fast mode
+    t_viz = time.time() - t_start
+    print(f"✅ Environment map saved in {t_viz:.2f}s")
     
-    # Start fires in forested areas (adjust coordinates based on real map)
-    # You may need to run once to see where forests are, then adjust
-    sim.start_fire((100, 100), intensity=0.5)
-    sim.start_fire((120, 80), intensity=0.5)
-    sim.start_fire((80, 120), intensity=0.5)
-    print("  🔥 Started 3 fires in different locations")
-    print("      Note: Fire will only spread in forested areas from the real map!")
+    # Find a location with fuel to start the fire - BOTTOM MIDDLE area (SAME AS DEMO 01)
+    print("\n🔍 Finding forested area in bottom middle to start fire...")
+    fire_started = False
+    fire_state = sim.environment.get_fire_state()
     
-    # Add FIXED-WING firefighting drone with 5000L water tank (5 cubic meters - realistic)
-    # Start on the LEFT side of the map
-    # Higher max_thrust for faster flight
-    sim.add_fixedwing("Firefighter", position=[-40, 0, 12], water_capacity=5000.0, max_thrust=80.0)
+    if fire_state:
+        state = fire_state['fire_grid_state']
+        fuel_grid = state['F']
+        
+        # Find cells with high fuel in BOTTOM MIDDLE area
+        # Bottom half: cell_i < H/2, Middle: cell_j near W/2
+        H, W = fuel_grid.shape
+        bottom_middle_cells = []
+        
+        for cell_i in range(H // 4, H // 2):  # Bottom quarter to middle
+            for cell_j in range(W // 3, 2 * W // 3):  # Middle third horizontally
+                if fuel_grid[cell_i, cell_j] > 0.7:  # High fuel
+                    bottom_middle_cells.append((cell_i, cell_j))
+        
+        if len(bottom_middle_cells) > 0:
+            # Choose a random high-fuel cell in bottom middle
+            idx = np.random.randint(len(bottom_middle_cells))
+            cell_i, cell_j = bottom_middle_cells[idx]
+            
+            # Convert cell coordinates to world coordinates
+            grid_mapper = sim.environment.grid_mapper
+            world_x = (cell_j - grid_mapper.grid_width_cells // 2) * grid_mapper.cell_size_m
+            world_y = (cell_i - grid_mapper.grid_height_cells // 2) * grid_mapper.cell_size_m
+            
+            sim.start_fire((world_x, world_y), intensity=0.3)
+            fire_started = True
+            print(f"✅ Started fire at world pos ({world_x:.0f}, {world_y:.0f}) -> cell ({cell_i}, {cell_j})")
+            print(f"     Cell: ({cell_i}, {cell_j}), Fuel: {fuel_grid[cell_i, cell_j]:.2f}")
+        else:
+            print("  ⚠️  No high-fuel areas found in bottom middle! Using fallback...")
+            sim.start_fire((-1470, -150), intensity=0.3)
+            fire_started = True
+    
+    if not fire_started:
+        print("  ⚠️  Could not access fire state. Starting fire at default location...")
+        sim.start_fire((-1470, -150), intensity=0.3)
+    
+    print("  🔥 Fire started in bottom middle - same location as demo 01")
+    
+    # Add FIXED-WING firefighting drone with 5000L water tank
+    # Start ABOVE the fire area in bottom middle - LOWER altitude for better water coverage
+    sim.add_fixedwing("Firefighter", position=[0, -800, 20], water_capacity=5000.0, max_thrust=300.0)
     sim.drones["Firefighter"].open_water_valve()  # OPEN VALVE IMMEDIATELY
     print("  ✈️  Fixed-wing firefighter deployed with 5000L water tank (5 m³)")
     print("      Water valve: OPEN from start (full firefighting mode)")
-    print("      Starting position: LEFT side (-40, 0, 12)")
+    print("      Starting position: Above fire (0, -800, 20m)")
     print("      Water flow rate: 200 L/s (realistic aerial firefighting)")
-    print("      Max thrust: 80N (fast response aircraft)")
+    print("      Max thrust: 300N (high-speed firefighting aircraft)")
     
     print()
-    print("Running simulation for 20 seconds...")
-    print("  Large circular patrol covering entire map")
-    print("  Radius: 40m (covers most of the fire area)")
+    print("Running simulation for 120 seconds...")
+    print("  Circular patrol over fire area in bottom middle (LOW ALTITUDE)")
     print()
+    print("=" * 140)
+    print(f"{'Frame':>6} | {'Time':>6} | {'Phase':^12} | {'Burn':>5} | {'Moisture':^20} | {'Water':>8} | {'Position (X,Y,Z)':^24} | {'Valve':^5} | {'Save':>6}")
+    print("=" * 140)
     
     # Create output directory
     output_dir = 'output/demo_02_frames'
@@ -78,69 +160,100 @@ def run_suppression_demo():
     
     # Run simulation
     frame = 0
-    save_interval = 30  # Save every 0.5 seconds (30 steps at 60 FPS)
+    save_interval = 300  # Save every 5 seconds (300 steps at 60 FPS) for slower, more realistic progression
     
-    total_steps = int(20 / sim.timestep)
+    total_steps = int(120 / sim.timestep)  # 120 seconds for more realistic fire spread
+    
+    # Timing variables
+    t_simulation_start = time.time()
+    t_step_total = 0.0
+    t_save_total = 0.0
+    
     for step in range(total_steps):
+        t_step_start = time.time()
         current_time = sim.simulation_time
         
-        # Large circular patrol pattern - covers entire map
-        # Period: 6 seconds for one complete circle (VERY FAST)
-        phase = (current_time / 6.0) * 2 * np.pi
+        # SIMPLIFIED circular patrol - just send the drone in a circle
+        # Period: 30 seconds for one complete circle (adjusted for 120s total simulation)
+        phase = (current_time / 30.0) * 2 * np.pi
         
-        # Start at LEFT (-40, 0) when phase=0, then go in a circle
-        patrol_radius = 40.0  # Larger radius
-        x = patrol_radius * np.cos(phase)
-        y = patrol_radius * np.sin(phase)
+        # Circle centered at (0, 0) with radius 2000m
+        center_x, center_y = 0.0, 0.0
+        radius = 2000.0
+
+        target_x = center_x + radius * np.cos(phase)
+        target_y = center_y + radius * np.sin(phase)
         
         drone_pos = sim.drones["Firefighter"].get_position()
-        target = np.array([x, y, 10])  # Target altitude: 10m for good coverage
-        direction = target - drone_pos
-        direction_norm = np.linalg.norm(direction[:2])
         
-        # Calculate altitude error for better control
-        altitude_error = target[2] - drone_pos[2]
+        # Calculate direction to target
+        dx = target_x - drone_pos[0]
+        dy = target_y - drone_pos[1]
         
-        # Fixed-wing joystick: [turn, throttle, elevator]
-        # Turn towards target, MAXIMUM SPEED for fast coverage
-        if direction_norm > 0.1:
-            turn_command = direction[1] / max(direction_norm, 1.0)  # Y direction for turning
-            turn_command = np.clip(turn_command, -1.0, 1.0)
-        else:
-            turn_command = 0.0
+        # Simple turn control - just turn towards the target
+        # Positive turn = turn left (counterclockwise)
+        # Negative turn = turn right (clockwise)
+        cross_product = dx * np.sin(sim.drones["Firefighter"].current_heading) - dy * np.cos(sim.drones["Firefighter"].current_heading)
+        turn_command = np.clip(cross_product * 0.1, -1.0, 1.0)  # Proportional control
         
-        # STRONG elevator control to maintain altitude
-        # Positive elevator = climb, Negative = dive
-        # When drone is too high (altitude_error < 0), we need NEGATIVE elevator to dive down
-        elevator_command = np.clip(altitude_error * 2.0, -1.0, 1.0)  # Strong correction
+        # Keep constant throttle and altitude
+        throttle_command = 1.0  # Full throttle
+        
+        # Altitude control - maintain 20m
+        target_altitude = 20.0
+        altitude_error = target_altitude - drone_pos[2]
+        elevator_command = np.clip(altitude_error * 0.5, -1.0, 1.0)
         
         controls = {
-            "Firefighter": [turn_command, 1.0, elevator_command]  # FULL THROTTLE, altitude-controlled elevator
+            "Firefighter": [turn_command, throttle_command, elevator_command]
         }
         
         sim.step_simulation(controls)
+        t_step_total += time.time() - t_step_start
         
         # Save frame
         if step % save_interval == 0:
+            t_save_start = time.time()
             fire_state = sim.environment.get_fire_state()
             if fire_state:
                 state = fire_state['fire_grid_state']
                 burning = np.sum(state['B'])
-                moisture = np.mean(state['M'])
+                # Calculate moisture stats: mean of wet cells (M > 0) and count
+                wet_cells = np.sum(state['M'] > 0)
+                if wet_cells > 0:
+                    moisture_mean = np.mean(state['M'][state['M'] > 0])
+                    moisture_str = f"{moisture_mean:.3f} ({wet_cells} cells)"
+                else:
+                    moisture_str = "0.000 (0 cells)"
+                
                 drone_pos = sim.drones["Firefighter"].get_position()
                 water_remaining = sim.drones["Firefighter"].current_water
                 
                 save_suppression_frame(sim, state, drone_pos, frame, current_time, water_remaining, output_dir)
                 
+                t_save_elapsed = time.time() - t_save_start
+                t_save_total += t_save_elapsed
+                
                 phase_label = "FIREFIGHTING"
-                print(f"  Frame {frame:03d} | t={current_time:4.1f}s | {phase_label:12s} | "
-                      f"Burning: {burning:4d} | Moisture: {moisture:.3f} | Water: {water_remaining:.1f}L | "
-                      f"Pos: ({drone_pos[0]:5.1f}, {drone_pos[1]:5.1f}, {drone_pos[2]:5.1f}) | "
-                      f"Valve: {'OPEN' if sim.drones['Firefighter'].water_valve_open else 'CLOSED'}")
+                print(f"  {frame:>4d} | {current_time:6.1f}s | {phase_label:^12s} | "
+                      f"{burning:5d} | {moisture_str:^20s} | "
+                      f"{water_remaining:7.1f}L | "
+                      f"({drone_pos[0]:6.1f}, {drone_pos[1]:6.1f}, {drone_pos[2]:4.1f}) | "
+                      f"{'OPEN' if sim.drones['Firefighter'].water_valve_open else 'SHUT':^5s} | "
+                      f"{t_save_elapsed:5.1f}s")
                 frame += 1
     
-    print()
+    t_simulation_total = time.time() - t_simulation_start
+    avg_step_time = t_step_total / total_steps if total_steps > 0 else 0
+    
+    print("=" * 140)
     print(f"✅ Saved {frame} frames to {output_dir}/")
+    print()
+    print(f"⏱️  Timing Summary:")
+    print(f"   Total simulation time: {t_simulation_total:.2f}s")
+    print(f"   Physics steps: {t_step_total:.2f}s (avg: {avg_step_time*1000:.2f}ms/step)")
+    print(f"   Frame saving: {t_save_total:.2f}s (avg: {t_save_total/frame if frame > 0 else 0:.2f}s/frame)")
+    print(f"   Overhead: {t_simulation_total - t_step_total - t_save_total:.2f}s")
     print("=" * 70)
 
 
@@ -157,6 +270,11 @@ def save_suppression_frame(sim, state, drone_pos, frame_num, time, water_remaini
     # Base terrain (forest green)
     img[:, :] = [0.1, 0.4, 0.1]
     
+    # Show burned-out areas (grey) - where fuel was consumed
+    fuel = state['F']
+    burned_out = (fuel < 0.3) & (~state['B'])  # Low fuel and not burning
+    img[burned_out] = [0.4, 0.4, 0.4]  # Grey for burned-out areas
+    
     # Overlay burning cells (RED)
     burning = state['B']
     intensity = state['I']
@@ -169,8 +287,8 @@ def save_suppression_frame(sim, state, drone_pos, frame_num, time, water_remaini
     ax1.imshow(img, origin='lower', extent=[x_min, x_max, y_min, y_max])
     
     # Add drone position marker
-    ax1.plot(drone_pos[0], drone_pos[1], 'c^', markersize=15, 
-            markeredgecolor='white', markeredgewidth=2, label='Drone', zorder=10)
+    ax1.plot(drone_pos[0], drone_pos[1], 'o', markersize=3, 
+            markeredgecolor='white', markeredgewidth=1, label='Drone', zorder=10)
     
     # Add wind arrow (with visible colors)
     wind_vel = sim.environment.weather['wind_velocity']
@@ -205,8 +323,8 @@ def save_suppression_frame(sim, state, drone_pos, frame_num, time, water_remaini
                      vmin=0, vmax=1.0)
     
     # Add drone position
-    ax2.plot(drone_pos[0], drone_pos[1], 'c^', markersize=15, 
-            markeredgecolor='white', markeredgewidth=2, zorder=10)
+    ax2.plot(drone_pos[0], drone_pos[1], 'o', markersize=3, 
+            markeredgecolor='white', markeredgewidth=1, zorder=10)
     
     ax2.set_title(f'Moisture Field (mean={np.mean(moisture):.3f})', fontsize=14, fontweight='bold')
     ax2.set_xlabel('X (m)')
