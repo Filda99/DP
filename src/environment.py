@@ -24,6 +24,10 @@ from src.grid_mapper import GridMapper
 class Environment:
     """Environment system with obstacles, terrain, and weather."""
     
+    # ============================================================================
+    # INITIALIZATION
+    # ============================================================================
+    
     def __init__(self):
         """Initialize environment."""
         self.obstacles = []
@@ -66,6 +70,10 @@ class Environment:
         print(f"🌬️  Initial wind: {wind_speed:.1f} m/s at {np.degrees(wind_angle):.0f}°")
         self.fire_visual_objects = []
         
+    # ============================================================================
+    # BASIC TERRAIN CREATION
+    # ============================================================================
+    
     def create_ground(self):
         """Create ground plane."""
         ground_id = p.loadURDF("plane.urdf")
@@ -287,6 +295,10 @@ class Environment:
         self.terrain_zones.append(water)
         return water_id
     
+    # ============================================================================
+    # WEATHER & WIND SYSTEM
+    # ============================================================================
+    
     def set_wind(self, wind_velocity, turbulence=0.0):
         """Set wind conditions."""
         self.weather['wind_velocity'] = np.array(wind_velocity)
@@ -305,6 +317,41 @@ class Environment:
         base_wind *= height_factor
         
         return base_wind
+    
+    def _update_wind_dynamics(self, dt=0.1):
+        """
+        Update wind velocity over time with smooth transitions.
+        Wind changes gradually to create realistic temporal variation.
+        
+        Args:
+            dt: Time step in seconds (default 0.1s per simulation step)
+        """
+        self.wind_change_timer += dt
+        
+        # Check if it's time to set a new target wind
+        if self.wind_change_timer >= self.wind_change_interval:
+            # Generate new target wind
+            wind_speed = random.uniform(3.0, 12.0)  # 3-12 m/s
+            wind_angle = random.uniform(0, 2 * np.pi)
+            
+            self.target_wind[0] = wind_speed * np.cos(wind_angle)
+            self.target_wind[1] = wind_speed * np.sin(wind_angle)
+            self.target_wind[2] = 0.0
+            
+            # Reset timer with new random interval
+            self.wind_change_timer = 0.0
+            self.wind_change_interval = random.uniform(5.0, 15.0)
+        
+        # Smoothly interpolate current wind toward target (takes ~2-3 seconds to transition)
+        blend_factor = 0.02  # Smooth interpolation rate
+        self.wind_velocity = (1 - blend_factor) * self.wind_velocity + blend_factor * self.target_wind
+        
+        # Update weather dictionary
+        self.weather['wind_velocity'] = self.wind_velocity
+    
+    # ============================================================================
+    # SPATIAL QUERIES & COLLISION DETECTION
+    # ============================================================================
     
     def is_position_in_obstacle(self, position):
         """Check if position collides with any obstacle."""
@@ -371,6 +418,10 @@ class Environment:
             'terrain_zones': len(self.terrain_zones),
             'weather': self.weather.copy()
         }
+    
+    # ============================================================================
+    # FIRE SIMULATION - INITIALIZATION
+    # ============================================================================
     
     def enable_fire_simulation(self, grid_width_m=100, grid_height_m=100, cell_size_m=2.0, 
                              dt=0.1, alpha=1.0, k_wind=1.5, wind_dir=0.0, lazy_fuel=True):
@@ -544,6 +595,10 @@ class Environment:
         print(f"   Lakes: {debug_counts['lake']} cells")
         print(f"   Open terrain: {debug_counts['default']} cells")
     
+    # ============================================================================
+    # FIRE SIMULATION - RUNTIME CONTROL
+    # ============================================================================
+    
     def start_fire_at_position(self, world_pos, intensity=0.2):
         """
         Start a fire at a specific world position.
@@ -568,37 +623,6 @@ class Environment:
         else:
             print(f"❌ Cannot start fire at {world_pos} - no fuel")
             return False
-    
-    def _update_wind_dynamics(self, dt=0.1):
-        """
-        Update wind velocity over time with smooth transitions.
-        Wind changes gradually to create realistic temporal variation.
-        
-        Args:
-            dt: Time step in seconds (default 0.1s per simulation step)
-        """
-        self.wind_change_timer += dt
-        
-        # Check if it's time to set a new target wind
-        if self.wind_change_timer >= self.wind_change_interval:
-            # Generate new target wind
-            wind_speed = random.uniform(3.0, 12.0)  # 3-12 m/s
-            wind_angle = random.uniform(0, 2 * np.pi)
-            
-            self.target_wind[0] = wind_speed * np.cos(wind_angle)
-            self.target_wind[1] = wind_speed * np.sin(wind_angle)
-            self.target_wind[2] = 0.0
-            
-            # Reset timer with new random interval
-            self.wind_change_timer = 0.0
-            self.wind_change_interval = random.uniform(5.0, 15.0)
-        
-        # Smoothly interpolate current wind toward target (takes ~2-3 seconds to transition)
-        blend_factor = 0.02  # Smooth interpolation rate
-        self.wind_velocity = (1 - blend_factor) * self.wind_velocity + blend_factor * self.target_wind
-        
-        # Update weather dictionary
-        self.weather['wind_velocity'] = self.wind_velocity
     
     def update_fire_simulation(self, suppression_assignments=None, water_drops=None, real_dt=None):
         """
@@ -653,6 +677,10 @@ class Environment:
             'grid_bounds': self.grid_mapper.get_grid_bounds(),
             'cell_size': self.grid_mapper.cell_size_m
         }
+    
+    # ============================================================================
+    # VISUALIZATION & DEBUGGING
+    # ============================================================================
     
     def visualize_fire_in_simulation(self):
         """Create visual objects for fire in PyBullet simulation."""

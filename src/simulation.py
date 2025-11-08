@@ -23,6 +23,10 @@ except ImportError:
 class Simulation:
     """Complete simulation manager."""
     
+    # ============================================================================
+    # INITIALIZATION & LIFECYCLE
+    # ============================================================================
+    
     def __init__(self, gui=False):
         """Initialize simulation."""
         self.gui = gui
@@ -76,6 +80,10 @@ class Simulation:
             self.physics_client = None
         print("✅ Simulation stopped")
     
+    # ============================================================================
+    # DRONE MANAGEMENT
+    # ============================================================================
+    
     def add_quadcopter(self, name, position=[0, 0, 5], mass=0.5):
         """Add a quadcopter to the simulation."""
         quad = Quadcopter(position, mass)
@@ -117,6 +125,29 @@ class Simulation:
         print(f"✅ Added fixed-wing '{name}' at {position} (water: {water_capacity}L)")
         return fw
     
+    def get_drone_status(self, drone_name):
+        """Get current status of a drone."""
+        if drone_name not in self.drones:
+            return None
+        
+        drone = self.drones[drone_name]
+        return {
+            'name': drone_name,
+            'type': drone.get_drone_type(),
+            'position': drone.get_position(),
+            'velocity': drone.get_velocity(),
+            'speed': drone.get_speed(),
+            'characteristics': drone.get_flight_characteristics()
+        }
+    
+    def get_all_drone_status(self):
+        """Get status of all drones."""
+        return {name: self.get_drone_status(name) for name in self.drones.keys()}
+    
+    # ============================================================================
+    # ENVIRONMENT SETUP
+    # ============================================================================
+    
     def setup_osm_environment(self, location_query: str, default_building_height: float = 10.0,
                             distance_m: float = 2000, use_city_boundaries: bool = True):
         """
@@ -130,6 +161,20 @@ class Simulation:
         """
         print(f"🌍 Loading environment from OSM: {location_query}")
         load_environment_from_osm(self.environment, location_query, default_building_height, distance_m, use_city_boundaries)
+    
+    def set_wind(self, wind_velocity, turbulence=0.0):
+        """Set wind conditions."""
+        self.environment.set_wind(wind_velocity, turbulence)
+        print(f"✅ Wind set to {wind_velocity} m/s, turbulence: {turbulence}")
+    
+    def set_weather(self, visibility=1000.0, precipitation=0.0):
+        """Set weather conditions."""
+        self.environment.set_weather(visibility, precipitation)
+        print(f"✅ Weather set - visibility: {visibility}m, precipitation: {precipitation}")
+    
+    # ============================================================================
+    # FIRE SIMULATION
+    # ============================================================================
     
     def enable_fire_simulation(self, grid_width_m=100, grid_height_m=100, cell_size_m=2.0, dt=None):
         """Enable wildfire simulation in the environment."""
@@ -151,16 +196,6 @@ class Simulation:
     def start_fire(self, world_pos, intensity=0.2):
         """Start a fire at a world position."""
         return self.environment.start_fire_at_position(world_pos, intensity)
-    
-    def set_wind(self, wind_velocity, turbulence=0.0):
-        """Set wind conditions."""
-        self.environment.set_wind(wind_velocity, turbulence)
-        print(f"✅ Wind set to {wind_velocity} m/s, turbulence: {turbulence}")
-    
-    def set_weather(self, visibility=1000.0, precipitation=0.0):
-        """Set weather conditions."""
-        self.environment.set_weather(visibility, precipitation)
-        print(f"✅ Weather set - visibility: {visibility}m, precipitation: {precipitation}")
     
     def _update_temperature_grid(self):
         """
@@ -192,64 +227,6 @@ class Simulation:
         new_temp = np.clip(new_temp, self.base_temperature, self.base_temperature + 1000.0)
         
         self.temperature_grid = new_temp
-    
-    def step_simulation(self, drone_controls):
-        """
-        Step the simulation forward.
-        
-        Args:
-            drone_controls: Dict with drone names as keys and joystick inputs as values
-                          e.g., {'drone1': [0.5, 0.0, 0.1], 'drone2': [-0.3, 1.0, 0.0]}
-        """
-        # Apply controls to each drone
-        for drone_name, control_input in drone_controls.items():
-            if drone_name in self.drones:
-                drone = self.drones[drone_name]
-                
-                # 1. Get local atmospheric conditions (Fire -> Temperature -> Density + Airflow)
-                atmospheric_conditions = self.get_local_atmospheric_conditions(drone.get_position())
-                
-                # 2. Apply environmental effects (Atmospheric conditions -> Aircraft)
-                drone.apply_environmental_effects(atmospheric_conditions)
-
-                # Apply drone control
-                forces = drone.apply_control(control_input)
-                
-                # Apply environmental effects
-                position = drone.get_position()
-                wind = self.environment.get_wind_at_position(position)
-                wind_forces = drone.apply_wind_effect(wind)
-                
-                # Log data
-                self.simulation_log['drones'][drone_name]['positions'].append(position.copy())
-                self.simulation_log['drones'][drone_name]['forces'].append(forces.copy())
-                self.simulation_log['drones'][drone_name]['velocities'].append(drone.get_velocity().copy())
-                self.simulation_log['drones'][drone_name]['control_inputs'].append(control_input.copy())
-        
-        # Step physics
-        p.stepSimulation()
-        self.simulation_time += self.timestep
-        self.simulation_log['times'].append(self.simulation_time)
-        
-        # Calculate water drops from drones (if any)
-        water_drops = self._calculate_water_drops()
-        
-        # Update fire simulation with water drops (pass real timestep)
-        self.environment.update_fire_simulation(water_drops=water_drops, real_dt=self.timestep)
-        
-        # Update temperature grid from fire (for physics demos)
-        self._update_temperature_grid()
-        
-        # Visualize less frequently
-        if len(self.simulation_log['times']) % 10 == 0:
-            self.environment.visualize_fire_in_simulation()
-        
-        # Log fire state
-        fire_state = self.environment.get_fire_state()
-        self.simulation_log['fire_states'].append(fire_state)
-        
-        # Check for collisions with environment
-        self._check_collisions()
     
     def _calculate_water_drops(self):
         """
@@ -327,61 +304,11 @@ class Simulation:
                                 water_drops[(i, j)] += water_amount
         
         return water_drops
-    
-    def _check_collisions(self):
-        """Check for collisions between drones and environment."""
-        for drone_name, drone in self.drones.items():
-            position = drone.get_position()
-            
-            # Check obstacle collision
-            collision, obstacle = self.environment.is_position_in_obstacle(position)
-            if collision:
-                collision_data = {
-                    'time': self.simulation_time,
-                    'drone': drone_name,
-                    'obstacle': obstacle['type'],
-                    'position': position.copy()
-                }
-                self.simulation_log['collisions'].append(collision_data)
-                print(f"⚠️ Collision detected: {drone_name} hit {obstacle['type']} at {position}")
-    
-    def run_scenario(self, scenario_function, steps=1000):
-        """Run a complete scenario."""
-        print(f"🚁 Running scenario for {steps} steps...")
-        
-        for step in range(steps):
-            # Get control inputs from scenario function
-            controls = scenario_function(step, self.simulation_time, self.drones)
-            
-            # Step simulation
-            self.step_simulation(controls)
-            
-            # Progress reporting
-            if step % 100 == 0:
-                print(f"  Step {step}/{steps} - Time: {self.simulation_time:.2f}s")
-        
-        print(f"✅ Scenario completed after {steps} steps ({self.simulation_time:.2f}s)")
-    
-    def get_drone_status(self, drone_name):
-        """Get current status of a drone."""
-        if drone_name not in self.drones:
-            return None
-        
-        drone = self.drones[drone_name]
-        return {
-            'name': drone_name,
-            'type': drone.get_drone_type(),
-            'position': drone.get_position(),
-            'velocity': drone.get_velocity(),
-            'speed': drone.get_speed(),
-            'characteristics': drone.get_flight_characteristics()
-        }
-    
-    def get_all_drone_status(self):
-        """Get status of all drones."""
-        return {name: self.get_drone_status(name) for name in self.drones.keys()}
-    
 
+    # ============================================================================
+    # ATMOSPHERIC PHYSICS
+    # ============================================================================
+    
     def get_local_atmospheric_conditions(self, world_pos: np.ndarray) -> dict:
         """
         Calculates the local atmospheric conditions including airflow, temperature, and air density.
@@ -517,6 +444,97 @@ class Simulation:
             'temperature': local_temp,
             'density': local_density
         }
+    
+    # ============================================================================
+    # SIMULATION STEPPING & COLLISION DETECTION
+    # ============================================================================
+
+    def step_simulation(self, drone_controls):
+        """
+        Step the simulation forward.
+        
+        Args:
+            drone_controls: Dict with drone names as keys and joystick inputs as values
+                          e.g., {'drone1': [0.5, 0.0, 0.1], 'drone2': [-0.3, 1.0, 0.0]}
+        """
+        # Apply controls to each drone
+        for drone_name, control_input in drone_controls.items():
+            if drone_name in self.drones:
+                drone = self.drones[drone_name]
+                
+                # 1. Get local atmospheric conditions (Fire -> Temperature -> Density + Airflow)
+                atmospheric_conditions = self.get_local_atmospheric_conditions(drone.get_position())
+                
+                # 2. Apply environmental effects (Atmospheric conditions -> Aircraft)
+                drone.apply_environmental_effects(atmospheric_conditions)
+
+                # Apply drone control
+                forces = drone.apply_control(control_input)
+                
+                # Log data
+                self.simulation_log['drones'][drone_name]['positions'].append(position.copy())
+                self.simulation_log['drones'][drone_name]['forces'].append(forces.copy())
+                self.simulation_log['drones'][drone_name]['velocities'].append(drone.get_velocity().copy())
+                self.simulation_log['drones'][drone_name]['control_inputs'].append(control_input.copy())
+        
+        # Step physics
+        p.stepSimulation()
+        self.simulation_time += self.timestep
+        self.simulation_log['times'].append(self.simulation_time)
+        
+        # Calculate water drops from drones (if any)
+        water_drops = self._calculate_water_drops()
+        
+        # Update fire simulation with water drops (pass real timestep)
+        self.environment.update_fire_simulation(water_drops=water_drops, real_dt=self.timestep)
+        
+        # Update temperature grid from fire (for physics demos)
+        self._update_temperature_grid()
+        
+        # Visualize less frequently
+        if len(self.simulation_log['times']) % 10 == 0:
+            self.environment.visualize_fire_in_simulation()
+        
+        # Log fire state
+        fire_state = self.environment.get_fire_state()
+        self.simulation_log['fire_states'].append(fire_state)
+        
+        # Check for collisions with environment
+        for drone_name, drone in self.drones.items():
+            position = drone.get_position()
+            
+            # Check obstacle collision
+            collision, obstacle = self.environment.is_position_in_obstacle(position)
+            if collision:
+                collision_data = {
+                    'time': self.simulation_time,
+                    'drone': drone_name,
+                    'obstacle': obstacle['type'],
+                    'position': position.copy()
+                }
+                self.simulation_log['collisions'].append(collision_data)
+                print(f"⚠️ Collision detected: {drone_name} hit {obstacle['type']} at {position}")
+    
+    def run_scenario(self, scenario_function, steps=1000):
+        """Run a complete scenario."""
+        print(f"🚁 Running scenario for {steps} steps...")
+        
+        for step in range(steps):
+            # Get control inputs from scenario function
+            controls = scenario_function(step, self.simulation_time, self.drones)
+            
+            # Step simulation
+            self.step_simulation(controls)
+            
+            # Progress reporting
+            if step % 100 == 0:
+                print(f"  Step {step}/{steps} - Time: {self.simulation_time:.2f}s")
+        
+        print(f"✅ Scenario completed after {steps} steps ({self.simulation_time:.2f}s)")
+    
+    # ============================================================================
+    # VISUALIZATION & ANALYSIS
+    # ============================================================================
     
     def create_multi_drone_visualization(self, title="Multi-Drone Analysis"):
         """Create visualization showing all drones together."""
