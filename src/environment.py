@@ -32,6 +32,7 @@ class Environment:
         """Initialize environment."""
         self.obstacles = []
         self.terrain_zones = []
+        self.fire_visual_objects = []
         
         # Initialize random wind (will vary over time)
         self._initialize_random_wind()
@@ -51,6 +52,191 @@ class Environment:
         self.fire_grid = None
         self.grid_mapper = None
         self.fire_time_accumulator = 0.0  # Accumulates real time for fire updates
+        
+        # Spatial index for fast terrain lookups (populated when needed)
+        self.spatial_hash = None  # Will be dict: (grid_x, grid_y) -> list of objects
+        self.spatial_hash_cell_size = 10.0  # meters per hash cell
+    
+    # ============================================================================
+    # SPATIAL INDEX FOR PERFORMANCE
+    # ============================================================================
+    
+    def _build_spatial_hash(self, cell_size=10.0):
+        """
+        Build a spatial hash for fast terrain lookups.
+        Converts O(N) lookup to O(1) by pre-indexing objects into grid cells.
+        
+        Args:
+            cell_size: Size of hash grid cells in meters (default 10m)
+        """
+        print(f"   ⏱️  Building spatial index (cell size: {cell_size}m)...")
+        t_start = time.time()
+        
+        self.spatial_hash = {}
+        self.spatial_hash_cell_size = cell_size
+        
+        # Index obstacles (buildings)
+        for obstacle in self.obstacles:
+            if obstacle['type'] == 'city_block':
+                bounds = obstacle['bounds']
+                # Find all hash cells this obstacle overlaps
+                x_min, x_max = bounds['min'][0], bounds['max'][0]
+                y_min, y_max = bounds['min'][1], bounds['max'][1]
+                
+                # Calculate hash cell range
+                hx_min = int(np.floor(x_min / cell_size))
+                hx_max = int(np.ceil(x_max / cell_size))
+                hy_min = int(np.floor(y_min / cell_size))
+                hy_max = int(np.ceil(y_max / cell_size))
+                
+                # Add obstacle to all overlapping cells
+                for hx in range(hx_min, hx_max + 1):
+                    for hy in range(hy_min, hy_max + 1):
+                        key = (hx, hy)
+                        if key not in self.spatial_hash:
+                            self.spatial_hash[key] = []
+                        self.spatial_hash[key].append(('obstacle', obstacle))
+        
+        # Index terrain zones (forests, lakes)
+        for zone in self.terrain_zones:
+            if zone['type'] in ['forest', 'lake']:
+                bounds = zone['bounds']
+                x_min, x_max = bounds['min'][0], bounds['max'][0]
+                y_min, y_max = bounds['min'][1], bounds['max'][1]
+                
+                # Calculate hash cell range
+                hx_min = int(np.floor(x_min / cell_size))
+                hx_max = int(np.ceil(x_max / cell_size))
+                hy_min = int(np.floor(y_min / cell_size))
+                hy_max = int(np.ceil(y_max / cell_size))
+                
+                # Add zone to all overlapping cells
+                for hx in range(hx_min, hx_max + 1):
+                    for hy in range(hy_min, hy_max + 1):
+                        key = (hx, hy)
+                        if key not in self.spatial_hash:
+                            self.spatial_hash[key] = []
+                        self.spatial_hash[key].append(('zone', zone))
+        
+        num_cells = len(self.spatial_hash)
+        total_objects = len(self.obstacles) + len(self.terrain_zones)
+        print(f"      ✅ Spatial index built in {time.time() - t_start:.3f}s")
+        print(f"         {total_objects} objects indexed into {num_cells} hash cells")
+    
+    def _get_hash_cell(self, world_pos):
+        """Get the spatial hash cell coordinates for a world position."""
+        hx = int(np.floor(world_pos[0] / self.spatial_hash_cell_size))
+        hy = int(np.floor(world_pos[1] / self.spatial_hash_cell_size))
+        return (hx, hy)
+    
+    def get_fuel_at_position(self, world_pos):
+        """
+        Get fuel properties at a world position using spatial index for O(1) lookup.
+        
+        This method is the single source of truth for fuel properties.
+        It encapsulates all terrain logic and provides a clean interface.
+        
+        Args:
+            world_pos: (x, y) position in world coordinates
+            
+        Returns:
+            tuple: (fuel_level, burn_rate) 
+                   fuel_level: 0.0 to 1.0
+                   burn_rate: rate at which fuel is consumed
+        """
+        # Fuel type constants (matching FireGrid constants)
+        FUEL_WATER = (0.0, 0.0)
+        FUEL_BUILDING = (0.9, 0.0001)
+        FUEL_FOREST = (0.8, 0.03)
+        FUEL_GRASS = (0.3, 0.08)
+        
+        # If no spatial hash, fall back to linear search (slow but works)
+        if self.spatial_hash is None:
+            return self._get_fuel_at_position_slow(world_pos)
+        
+        # Get hash cell and retrieve nearby objects (O(1) lookup!)
+        hash_key = self._get_hash_cell(world_pos)
+        nearby_objects = self.spatial_hash.get(hash_key, [])
+        
+        # Priority 1: Check for buildings (buildings can burn, but very slowly)
+        for obj_type, obj in nearby_objects:
+            if obj_type == 'obstacle' and obj['type'] == 'city_block':
+                bounds = obj['bounds']
+                if (bounds['min'][0] <= world_pos[0] <= bounds['max'][0] and
+                    bounds['min'][1] <= world_pos[1] <= bounds['max'][1]):
+                    return FUEL_BUILDING
+        
+        # Priority 2: Check for water (complete fire break)
+        for obj_type, obj in nearby_objects:
+            if obj_type == 'zone' and obj['type'] == 'lake':
+                if obj.get('shape') == 'rectangle':
+                    # Rotated rectangle - use point-in-polygon test
+                    if self._point_in_rectangle_env(world_pos, obj['corners']):
+                        return FUEL_WATER
+                else:
+                    # Circular lake
+                    if self._point_in_circle_env(world_pos, obj['center'], obj['radius']):
+                        return FUEL_WATER
+        
+        # Priority 3: Check for forest (high fuel)
+        for obj_type, obj in nearby_objects:
+            if obj_type == 'zone' and obj['type'] == 'forest':
+                if self._point_in_circle_env(world_pos, obj['center'], obj['radius']):
+                    return FUEL_FOREST
+        
+        # Default: Open terrain (grass)
+        return FUEL_GRASS
+    
+    def _get_fuel_at_position_slow(self, world_pos):
+        """Fallback method when spatial hash is not available (slow O(N) version)."""
+        FUEL_WATER = (0.0, 0.0)
+        FUEL_BUILDING = (0.9, 0.0001)
+        FUEL_FOREST = (0.8, 0.03)
+        FUEL_GRASS = (0.3, 0.08)
+        
+        # Check buildings
+        for obstacle in self.obstacles:
+            if obstacle['type'] == 'city_block':
+                bounds = obstacle['bounds']
+                if (bounds['min'][0] <= world_pos[0] <= bounds['max'][0] and
+                    bounds['min'][1] <= world_pos[1] <= bounds['max'][1]):
+                    return FUEL_BUILDING
+        
+        # Check water
+        for zone in self.terrain_zones:
+            if zone['type'] == 'lake':
+                if zone.get('shape') == 'rectangle':
+                    if self._point_in_rectangle_env(world_pos, zone['corners']):
+                        return FUEL_WATER
+                else:
+                    if self._point_in_circle_env(world_pos, zone['center'], zone['radius']):
+                        return FUEL_WATER
+        
+        # Check forest
+        for zone in self.terrain_zones:
+            if zone['type'] == 'forest':
+                if self._point_in_circle_env(world_pos, zone['center'], zone['radius']):
+                    return FUEL_FOREST
+        
+        return FUEL_GRASS
+    
+    def _point_in_circle_env(self, point, center, radius):
+        """Check if point is inside a circle."""
+        distance = np.sqrt((point[0] - center[0])**2 + (point[1] - center[1])**2)
+        return distance <= radius
+    
+    def _point_in_rectangle_env(self, point, corners):
+        """Check if point is inside a rotated rectangle using ray casting algorithm."""
+        inside = False
+        n = len(corners)
+        for k in range(n):
+            k_next = (k + 1) % n
+            xi, yi = corners[k]
+            xj, yj = corners[k_next]
+            if ((yi > point[1]) != (yj > point[1])) and \
+               (point[0] < (xj - xi) * (point[1] - yi) / (yj - yi) + xi):
+                inside = not inside
+        return inside
     
     def _initialize_random_wind(self):
         """Initialize random wind direction and speed."""
@@ -68,7 +254,6 @@ class Environment:
         self.wind_velocity = np.array([wind_x, wind_y, wind_z])
         
         print(f"🌬️  Initial wind: {wind_speed:.1f} m/s at {np.degrees(wind_angle):.0f}°")
-        self.fire_visual_objects = []
         
     # ============================================================================
     # BASIC TERRAIN CREATION
@@ -321,34 +506,43 @@ class Environment:
     def _update_wind_dynamics(self, dt=0.1):
         """
         Update wind velocity over time with smooth transitions.
-        Wind changes gradually to create realistic temporal variation.
+        Wind changes gradually by small increments to create realistic temporal variation.
         
         Args:
             dt: Time step in seconds (default 0.1s per simulation step)
         """
         self.wind_change_timer += dt
         
-        # Check if it's time to set a new target wind
+        # Check if it's time to make a small wind adjustment
         if self.wind_change_timer >= self.wind_change_interval:
-            # Generate new target wind
-            wind_speed = random.uniform(3.0, 12.0)  # 3-12 m/s
-            wind_angle = random.uniform(0, 2 * np.pi)
+            # Generate SMALL changes to current wind instead of new random wind
+            current_speed = np.linalg.norm(self.target_wind[:2])
+            current_angle = np.arctan2(self.target_wind[1], self.target_wind[0])
             
-            self.target_wind[0] = wind_speed * np.cos(wind_angle)
-            self.target_wind[1] = wind_speed * np.sin(wind_angle)
+            # Small random changes (±10-20% speed, ±15 degrees direction)
+            speed_change = random.uniform(-0.15, 0.15) * current_speed  # ±15% speed change
+            angle_change = random.uniform(-np.pi/12, np.pi/12)  # ±15 degrees
+            
+            # Apply changes with bounds
+            new_speed = np.clip(current_speed + speed_change, 2.0, 15.0)  # Keep in realistic range
+            new_angle = current_angle + angle_change
+            
+            # Update target wind
+            self.target_wind[0] = new_speed * np.cos(new_angle)
+            self.target_wind[1] = new_speed * np.sin(new_angle)
             self.target_wind[2] = 0.0
             
-            # Reset timer with new random interval
+            # Reset timer with new random interval (change every 3-8 seconds)
             self.wind_change_timer = 0.0
-            self.wind_change_interval = random.uniform(5.0, 15.0)
+            self.wind_change_interval = random.uniform(3.0, 8.0)  # More frequent, smaller changes
         
-        # Smoothly interpolate current wind toward target (takes ~2-3 seconds to transition)
+        # Smoothly interpolate current wind toward target
         blend_factor = 0.02  # Smooth interpolation rate
         self.wind_velocity = (1 - blend_factor) * self.wind_velocity + blend_factor * self.target_wind
         
         # Update weather dictionary
         self.weather['wind_velocity'] = self.wind_velocity
-    
+        
     # ============================================================================
     # SPATIAL QUERIES & COLLISION DETECTION
     # ============================================================================
@@ -439,6 +633,9 @@ class Environment:
             lazy_fuel: If True, load fuel on-demand (fast startup). If False, preload all fuel (slow startup)
         """
         t_total_start = time.time()
+        
+        # Build spatial hash for fast terrain lookups
+        self._build_spatial_hash(cell_size=10.0)
         
         # Create grid mapper
         print("   ⏱️  Creating grid mapper...")
@@ -647,7 +844,7 @@ class Environment:
         self.fire_time_accumulator -= self.fire_grid.dt
         
         # Update wind dynamics (gradual changes over time)
-        self._update_wind_dynamics(dt=0.1)
+        self._update_wind_dynamics(dt=1)
         
         # Update wind from unified weather system
         wind_velocity = self.weather['wind_velocity'][:2]  # Only x, y components

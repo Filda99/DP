@@ -31,7 +31,7 @@ def run_small_fire_test():
     CACHE_PREFIX = "Pec_pod_Sněžkou_Czechia"
     CENTER_LAT = 50.6868
     CENTER_LON = 15.7361
-    RADIUS_M = 1500
+    RADIUS_M = 100
     
     # Create simulation
     sim = Simulation()
@@ -70,7 +70,7 @@ def run_small_fire_test():
     sim.enable_fire_simulation(
         grid_width_m=200,  # Full width
         grid_height_m=200,  # HALF height - only bottom portion
-        cell_size_m=15.0,
+        cell_size_m=2.0,
         dt=fire_dt
     )
     t_fire_init = time.time() - t_start
@@ -94,65 +94,24 @@ def run_small_fire_test():
     
     # Start SMALL FIRE in center-bottom area
     # Position at (0, -200) - bottom middle of the reduced grid
-    fire_position = (0, -200)
+    fire_position = (0, 0)
     
     print(f"\n🔥 Starting SMALL fire in bottom center area...")
     print(f"   Target fire position: {fire_position}")
     
     # Find nearby forest cell to start fire
     fire_state = sim.environment.get_fire_state()
-    fire_started = False
-    actual_fire_pos = (0, -200)  # Default to (0, -200) if no fuel found
     
+    actual_fire_pos = (0, 0)
     if fire_state:
-        state = fire_state['fire_grid_state']
-        fuel_grid = state['F']
-        H, W = fuel_grid.shape
-        
-        # Convert desired fire position to cell coordinates
-        grid_mapper = sim.environment.grid_mapper
-        fire_cell_i, fire_cell_j = grid_mapper.world_to_cell(fire_position)
-        
-        # Search for nearby high-fuel cell (within 10 cell radius)
-        best_cell = None
-        best_fuel = 0
-        
-        for di in range(-10, 11):
-            for dj in range(-10, 11):
-                test_i = fire_cell_i + di
-                test_j = fire_cell_j + dj
-                
-                if 0 <= test_i < H and 0 <= test_j < W:
-                    if fuel_grid[test_i, test_j] > best_fuel:
-                        best_fuel = fuel_grid[test_i, test_j]
-                        best_cell = (test_i, test_j)
-        
-        if best_cell and best_fuel > 0.3:
-            cell_i, cell_j = best_cell
-            world_x = (cell_j - grid_mapper.grid_width_cells // 2) * grid_mapper.cell_size_m
-            world_y = (cell_i - grid_mapper.grid_height_cells // 2) * grid_mapper.cell_size_m
-            
-            sim.start_fire((world_x, world_y), intensity=0.3)
-            fire_started = True
-            actual_fire_pos = (world_x, world_y)
-            
-            print(f"✅ Fire started at ({world_x:.0f}, {world_y:.0f}) -> cell ({cell_i}, {cell_j})")
-            print(f"   Fuel: {fuel_grid[cell_i, cell_j]:.2f}")
-        else:
-            print("  ⚠️  No fuel found near target! Starting at default (0, -200)...")
-            sim.start_fire((0, -200), intensity=0.3)
-            fire_started = True
-            actual_fire_pos = (0, -200)
-    
-    if not fire_started:
-        print("  ⚠️  Could not access fire state. Starting fire at default...")
-        sim.start_fire((0, -200), intensity=0.3)
-        actual_fire_pos = (0, -200)
+        sim.start_fire(actual_fire_pos, intensity=0.3)
+        sim.start_fire((actual_fire_pos[0]+10, actual_fire_pos[1]), intensity=0.3)
+        fire_started = True
     
     # Add TWO FIXED-WING firefighting drones
     # Drone 1: Circles around the fire (direct suppression)
     drone1_start_pos = [actual_fire_pos[0] + 10, actual_fire_pos[1], 20]
-    sim.add_fixedwing("Circler", position=drone1_start_pos, water_capacity=5000.0, max_thrust=300.0)
+    sim.add_fixedwing("Circler", position=drone1_start_pos, water_capacity=10000.0, max_thrust=300.0)
     sim.drones["Circler"].open_water_valve()
     print("\n  ✈️  Drone 1 'Circler' deployed with 5000L water tank")
     print(f"      Starting position: ({drone1_start_pos[0]:.1f}, {drone1_start_pos[1]:.1f}, {drone1_start_pos[2]:.1f})")
@@ -160,10 +119,9 @@ def run_small_fire_test():
     print("      Water valve: OPEN from start")
     
     # Drone 2: Flies straight toward fire from the right
-    firebreak_distance = 50  # meters to the right of fire
-    drone2_start_pos = [actual_fire_pos[0] + firebreak_distance, actual_fire_pos[1], 20]
+    drone2_start_pos = [actual_fire_pos[0] - 10, actual_fire_pos[1], 20]
     
-    sim.add_fixedwing("Firebreak", position=drone2_start_pos, water_capacity=5000.0, max_thrust=300.0)
+    sim.add_fixedwing("Firebreak", position=drone2_start_pos, water_capacity=10000.0, max_thrust=300.0)
     sim.drones["Firebreak"].open_water_valve()
     print("\n  ✈️  Drone 2 'Firebreak' deployed with 5000L water tank")
     print(f"      Starting position: ({drone2_start_pos[0]:.1f}, {actual_fire_pos[1]:.1f}, 20.0)")
@@ -182,6 +140,9 @@ def run_small_fire_test():
     # Create output directory
     output_dir = 'output/demo_04_frames'
     os.makedirs(output_dir, exist_ok=True)
+    
+    # Set trajectory sampling rate for smooth paths
+    sim.trajectory_sample_rate = 1  # Store every step for smooth visualization
     
     # Run simulation
     frame = 0
@@ -290,7 +251,11 @@ def run_small_fire_test():
                 
                 # Pass list of drone positions to save function
                 drone_positions = [drone1_pos_save, drone2_pos_save]
-                save_suppression_frame(sim, state, drone_positions, frame, current_time, water1 + water2, output_dir)
+                
+                # Get trajectories from simulation
+                trajectories = sim.get_all_trajectories(flatten_2d=True)
+                
+                save_suppression_frame(sim, state, drone_positions, frame, current_time, water1 + water2, output_dir, trajectories)
                 
                 t_save_elapsed = time.time() - t_save_start
                 t_save_total += t_save_elapsed
@@ -319,18 +284,19 @@ def run_small_fire_test():
     print("=" * 70)
 
 
-def save_suppression_frame(sim, state, drone_positions, frame_num, time, water_remaining, output_dir):
+def save_suppression_frame(sim, state, drone_positions, frame_num, time, water_remaining, output_dir, drone_trajectories):
     """Save a single frame with 3 panels: fire state, moisture, water level.
     
     Args:
         drone_positions: List of (x, y, z) tuples for each drone
+        drone_trajectories: Dict of drone_name -> np.array of (x, y) positions
     """
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6))
     
     x_min, x_max, y_min, y_max = sim.environment.grid_mapper.get_grid_bounds()
     H, W = state['B'].shape
     
-    # === PANEL 1: Fire state with drones ===
+    # === PANEL 1: Fire state with drones AND TRAJECTORIES ===
     img = np.zeros((H, W, 3))
     
     # Base terrain (forest green)
@@ -352,50 +318,64 @@ def save_suppression_frame(sim, state, drone_positions, frame_num, time, water_r
     
     ax1.imshow(img, origin='lower', extent=[x_min, x_max, y_min, y_max])
     
-    # Add drone position markers
-    colors = ['cyan', 'magenta']  # Different colors for each drone
+    # Plot trajectories with fade effect
+    colors = ['cyan', 'magenta']
     labels = ['Circler', 'Firebreak']
-    for i, drone_pos in enumerate(drone_positions):
-        color = colors[i] if i < len(colors) else 'white'
-        label = labels[i] if i < len(labels) else f'Drone {i+1}'
-        ax1.plot(drone_pos[0], drone_pos[1], 'o', markersize=3, color=color,
-                markeredgecolor='white', markeredgewidth=1, label=label, zorder=10)
+    drone_names = list(drone_trajectories.keys())
     
-    # Add wind arrow
-    wind_vel = sim.environment.weather['wind_velocity']
-    wind_x, wind_y = wind_vel[0], wind_vel[1]
-    wind_speed = np.sqrt(wind_x**2 + wind_y**2)
+    for i, drone_name in enumerate(drone_names):
+        trajectory = drone_trajectories[drone_name]
+        if len(trajectory) > 1:
+            traj_array = np.array(trajectory)
+            color = colors[i] if i < len(colors) else 'white'
+            
+            # Fading trajectory (last 100 points bright, rest faded)
+            if len(traj_array) > 100:
+                # Old trajectory (faded)
+                ax1.plot(traj_array[:-100, 0], traj_array[:-100, 1], 
+                        '-', linewidth=1, color=color, alpha=0.2, zorder=4)
+                # Recent trajectory (bright)
+                ax1.plot(traj_array[-100:, 0], traj_array[-100:, 1], 
+                        '-', linewidth=2, color=color, alpha=0.7, zorder=5)
+            else:
+                # All trajectory bright if short
+                ax1.plot(traj_array[:, 0], traj_array[:, 1], 
+                        '-', linewidth=2, color=color, alpha=0.7, zorder=5)
+            
+            # Current position (larger marker)
+            drone_pos = drone_positions[i]
+            ax1.plot(drone_pos[0], drone_pos[1], 'o', markersize=10, color=color,
+                    markeredgecolor='white', markeredgewidth=2, 
+                    label=f'{labels[i]} (path)', zorder=10)
     
-    arrow_start_x = x_max - 200
-    arrow_start_y = y_max - 150
-    arrow_scale = 20.0
-    
-    ax1.arrow(arrow_start_x, arrow_start_y, 
-             wind_x * arrow_scale, wind_y * arrow_scale,
-             head_width=50, head_length=40, fc='yellow', ec='black', 
-             linewidth=2, alpha=0.95, zorder=10)
-    
-    ax1.text(arrow_start_x, arrow_start_y - 100, 
-            f'Wind: {wind_speed:.1f} m/s',
-            color='yellow', fontsize=11, fontweight='bold',
-            bbox=dict(boxstyle='round', facecolor='black', alpha=0.8, edgecolor='yellow', linewidth=2),
-            ha='center', zorder=11)
-    
-    ax1.set_title(f'Fire State (t={time:.1f}s)', fontsize=14, fontweight='bold')
+    ax1.set_title(f'Fire State + Drone Trajectories (t={time:.1f}s)', 
+                 fontsize=14, fontweight='bold')
     ax1.set_xlabel('X (m)')
     ax1.set_ylabel('Y (m)')
-    ax1.legend(loc='upper left')
+    ax1.legend(loc='upper right', fontsize=10)
     ax1.grid(True, alpha=0.3)
     
-    # === PANEL 2: Moisture field ===
+    # === PANEL 2: Moisture field with trajectories ===
     moisture = state['M']
     im2 = ax2.imshow(moisture, origin='lower', cmap='Blues', 
                      extent=[x_min, x_max, y_min, y_max], 
                      vmin=0, vmax=1.0)
     
-    # Add drone position
-    ax2.plot(drone_pos[0], drone_pos[1], 'o', markersize=3, 
-            markeredgecolor='white', markeredgewidth=1, zorder=10)
+    # Plot trajectories on moisture panel too (simplified)
+    for i, drone_name in enumerate(drone_names):
+        trajectory = drone_trajectories[drone_name]
+        if len(trajectory) > 1:
+            traj_array = np.array(trajectory)
+            color = colors[i] if i < len(colors) else 'white'
+            
+            # Just recent path on moisture view
+            recent_points = min(50, len(traj_array))
+            ax2.plot(traj_array[-recent_points:, 0], traj_array[-recent_points:, 1], 
+                    '-', linewidth=1.5, color=color, alpha=0.5, zorder=5)
+            
+            drone_pos = drone_positions[i]
+            ax2.plot(drone_pos[0], drone_pos[1], 'o', markersize=6, color=color,
+                    markeredgecolor='white', markeredgewidth=1.5, zorder=10)
     
     ax2.set_title(f'Moisture Field (mean={np.mean(moisture):.3f})', fontsize=14, fontweight='bold')
     ax2.set_xlabel('X (m)')

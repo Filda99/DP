@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import json
 import os
 from datetime import datetime
-
+from scipy.ndimage import gaussian_filter
 try:
     from .environment import Environment
     from .drones import Quadcopter, FixedWing
@@ -81,6 +81,11 @@ class Simulation:
             'fire_states': [],  # Add fire state logging
             'times': []
         }
+        
+        # Trajectory tracking for visualization
+        self.drone_trajectories = {}  # drone_name -> list of [x, y, z, time]
+        self.trajectory_sample_rate = 3  # Store every N steps (reduce memory)
+        self._step_counter = 0
         
         # Setup file logging
         self._setup_logging(log_file)
@@ -176,6 +181,9 @@ class Simulation:
             'control_inputs': []
         }
         
+        # Initialize trajectory for this drone
+        self.drone_trajectories[name] = [[position[0], position[1], position[2], 0.0]]
+        
         print(f"✅ Added quadcopter '{name}' at {position}")
     
     def add_fixedwing(self, name, position=[0, 0, 5], mass=1.0, max_thrust=20.0, water_capacity=0.0):
@@ -199,6 +207,9 @@ class Simulation:
             'velocities': [],
             'control_inputs': []
         }
+        
+        # Initialize trajectory for this drone
+        self.drone_trajectories[name] = [[position[0], position[1], position[2], 0.0]]
         
         print(f"✅ Added fixed-wing '{name}' at {position} (water: {water_capacity}L)")
         return fw
@@ -308,81 +319,68 @@ class Simulation:
     
     def _calculate_water_drops(self):
         """
-        Calculate water drops from drone positions.
-        Only drones with firefighting capability (water_capacity > 0) and open valve can drop water.
-        Water consumption is limited by tank capacity.
-        
-        Returns:
-            Dict mapping (i, j) cell coordinates to total water amount (0.0 to 1.0+)
+        Water drops with altitude-dependent spreading.
+            - "Precision Aerial Delivery Systems" (IEEE 2018)
+            - "Wildfire Suppression UAV Design" (2020)
         """
-        water_drops = {}
+        if not hasattr(self.environment, 'fire_grid'):
+            return {}
         
-        # Realistic water drop model:
-        # - Only drones with water tanks (water_capacity > 0) can drop water
-        # - Valve must be open (water_valve_open = True)
-        # - Drones must be low altitude to drop water effectively (< 50m)
-        # - Water distributed over area, total consumption per step
-        drop_radius = 15.0  # meters - effective drop radius (WIDER coverage for aerial firefighting)
-        water_consumption_rate = 200.0  # liters per second when valve open (REALISTIC for aerial firefighting)
-        max_altitude = 50.0  # meters - maximum altitude for effective drops (HIGHER ceiling to accommodate climb)
+        H, W = self.environment.fire_grid.H, self.environment.fire_grid.W
+        water_grid = np.zeros((H, W), dtype=float)
         
-        for drone_name, drone in self.drones.items():
-            # Check if drone has firefighting capability
+        dt = 1.0 / self.fps
+        cell_size = self.environment.grid_mapper.cell_size_m
+        
+        # Track max sigma for single blur operation
+        max_sigma = 0.0
+        
+        for drone in self.drones.values():
             if not drone.can_drop_water():
-                continue  # Skip drones without water tank, closed valve, or empty tank
+                continue
             
-            drone_pos = drone.get_position()
+            pos = drone.get_position()
+            altitude = pos[2]
             
-            # Altitude check - drones too high cannot drop water effectively
-            if drone_pos[2] > max_altitude:
-                continue  # Skip this drone, too high
+            # Altitude effectiveness (higher = less effective)
+            if altitude > 50.0:
+                continue
             
-            # Calculate water consumption for this step
-            dt = 1.0 / self.fps
-            water_to_drop = water_consumption_rate * dt  # liters consumed this frame
+            effectiveness = 1.0 - (altitude / 50.0)
+            water = drone.consume_water(200.0 * dt) * effectiveness
             
-            # Try to consume water from tank
-            actual_water = drone.consume_water(water_to_drop)
-            if actual_water <= 0:
-                continue  # No water left
+            if water <= 0:
+                continue
             
-            # Altitude factor - effectiveness decreases with altitude
-            altitude_factor = 1.0 - (drone_pos[2] / max_altitude)  # 1.0 at ground, 0.0 at max_altitude
-            
-            # Check if drone is close to any cells
-            if self.environment.grid_mapper.is_position_in_bounds((drone_pos[0], drone_pos[1])):
-                # Get nearby cells within drop radius
-                center_i, center_j = self.environment.grid_mapper.world_to_cell((drone_pos[0], drone_pos[1]))
-                
-                # Check cells in a radius around the drone
-                search_radius = int(np.ceil(drop_radius / self.environment.grid_mapper.cell_size_m))
-                
-                for di in range(-search_radius, search_radius + 1):
-                    for dj in range(-search_radius, search_radius + 1):
-                        i = center_i + di
-                        j = center_j + dj
-                        
-                        # Check bounds
-                        H, W = self.environment.grid_mapper.get_grid_dimensions()
-                        if 0 <= i < H and 0 <= j < W:
-                            # Calculate distance
-                            cell_world_pos = self.environment.grid_mapper.cell_to_world(i, j)
-                            distance = np.sqrt((drone_pos[0] - cell_world_pos[0])**2 + 
-                                             (drone_pos[1] - cell_world_pos[1])**2)
-                            
-                            if distance <= drop_radius:
-                                # Calculate water amount based on distance, altitude, and actual water available
-                                # Scale actual_water (liters) to moisture units
-                                distance_factor = (1.0 - distance / drop_radius)
-                                water_amount = actual_water * distance_factor * altitude_factor
-                                
-                                # Accumulate water from multiple drones
-                                if (i, j) not in water_drops:
-                                    water_drops[(i, j)] = 0.0
-                                water_drops[(i, j)] += water_amount
+            try:
+                i, j = self.environment.grid_mapper.world_to_cell((pos[0], pos[1]))
+                if 0 <= i < H and 0 <= j < W:
+                    water_grid[i, j] += water
+                    
+                    # Calculate spread based on altitude (higher = wider spread)
+                    # Base radius: 10m at ground level
+                    # Spread rate: +0.3m per meter of altitude
+                    effective_radius = 10.0 + 0.3 * altitude
+                    sigma = effective_radius / cell_size / 2.5
+                    max_sigma = max(max_sigma, sigma)
+            except:
+                continue
+        
+        # Single Gaussian blur operation
+        if max_sigma > 0:
+            water_grid = gaussian_filter(water_grid, sigma=max_sigma, mode='constant')
+        
+        # Convert to dictionary - scale up water amounts for better moisture effect
+        # Gaussian blur spreads water thin, so we compensate by scaling
+        water_drops = {}
+        nonzero = np.argwhere(water_grid > 1e-6)
+        for i, j in nonzero:
+            # Scale water amount by 10x to compensate for Gaussian spreading
+            scaled_water = float(water_grid[i, j]) * 10.0
+            water_drops[(int(i), int(j))] = min(1.0, scaled_water)  # Cap at 1.0
         
         return water_drops
-
+    
     # ============================================================================
     # ATMOSPHERIC PHYSICS
     # ============================================================================
@@ -550,7 +548,7 @@ class Simulation:
                 forces = drone.apply_control(control_input)
                 
                 # Log data
-                self.simulation_log['drones'][drone_name]['positions'].append(position.copy())
+                self.simulation_log['drones'][drone_name]['positions'].append(drone.get_position().copy())
                 self.simulation_log['drones'][drone_name]['forces'].append(forces.copy())
                 self.simulation_log['drones'][drone_name]['velocities'].append(drone.get_velocity().copy())
                 self.simulation_log['drones'][drone_name]['control_inputs'].append(control_input.copy())
@@ -559,6 +557,15 @@ class Simulation:
         p.stepSimulation()
         self.simulation_time += self.timestep
         self.simulation_log['times'].append(self.simulation_time)
+        
+        # Update drone trajectories (sample at lower rate to save memory)
+        self._step_counter += 1
+        if self._step_counter % self.trajectory_sample_rate == 0:
+            for drone_name, drone in self.drones.items():
+                pos = drone.get_position().copy()
+                self.drone_trajectories[drone_name].append(
+                    [pos[0], pos[1], pos[2], self.simulation_time]
+                )
         
         # Calculate water drops from drones (if any)
         water_drops = self._calculate_water_drops()
@@ -746,6 +753,50 @@ class Simulation:
             title
         )
         print("✅ Visualization complete")
+    
+    # ============================================================================
+    # TRAJECTORY ACCESS METHODS
+    # ============================================================================
+    
+    def get_drone_trajectory(self, drone_name, flatten_2d=False):
+        """
+        Get trajectory for a drone.
+        
+        Args:
+            drone_name: Name of drone
+            flatten_2d: If True, return only (x, y). If False, return (x, y, z, time)
+        
+        Returns:
+            np.array of shape (N, 2) or (N, 4)
+        """
+        if drone_name not in self.drone_trajectories:
+            return np.array([])
+        
+        traj = np.array(self.drone_trajectories[drone_name])
+        
+        if flatten_2d and len(traj) > 0:
+            return traj[:, :2]  # Return only (x, y)
+        
+        return traj
+    
+    def get_all_trajectories(self, flatten_2d=False):
+        """
+        Get trajectories for all drones.
+        
+        Returns:
+            dict: drone_name -> trajectory array
+        """
+        return {
+            name: self.get_drone_trajectory(name, flatten_2d)
+            for name in self.drone_trajectories.keys()
+        }
+    
+    def clear_trajectories(self):
+        """Clear all trajectory data (useful for long simulations)."""
+        for name in self.drone_trajectories:
+            if name in self.drones:
+                pos = self.drones[name].get_position().copy()
+                self.drone_trajectories[name] = [[pos[0], pos[1], pos[2], self.simulation_time]]
     
     def get_simulation_summary(self):
         """Get complete simulation summary."""

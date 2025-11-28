@@ -93,7 +93,7 @@ def run_debug_demo():
     CACHE_PREFIX = "Pec_pod_Sněžkou_Czechia"
     CENTER_LAT = 50.6868
     CENTER_LON = 15.7361
-    RADIUS_M = 1500
+    RADIUS_M = 100
     
     # Step 1: Save real satellite imagery FIRST
     save_real_satellite_imagery(LOCATION, RADIUS_M)
@@ -128,9 +128,9 @@ def run_debug_demo():
     
     # Enable fire
     sim.enable_fire_simulation(
-        grid_width_m=3000,  # 3km grid to match 1.5km radius (±1500m)
-        grid_height_m=3000,
-        cell_size_m=15.0  # Increased cell size to keep grid manageable (200×200 cells)
+        grid_width_m=200,  # 3km grid to match 1.5km radius (±1500m)
+        grid_height_m=200,
+        cell_size_m=2.0  # Increased cell size to keep grid manageable (200×200 cells)
     )
     
     # Set wind
@@ -261,11 +261,11 @@ def save_frame(sim, state, frame_num, time, output_dir):
     # Draw wind arrow in top-right corner (with visible colors)
     arrow_start_x = x_max - 200
     arrow_start_y = y_max - 150
-    arrow_scale = 20.0  # Scale factor for visibility
+    arrow_scale = 5.0  # Scale factor for visibility
     
     ax1.arrow(arrow_start_x, arrow_start_y, 
              wind_x * arrow_scale, wind_y * arrow_scale,
-             head_width=50, head_length=40, fc='yellow', ec='black', 
+             head_width=10, head_length=20, fc='yellow', ec='black', 
              linewidth=2, alpha=0.95, zorder=10)
     
     # Add wind speed label with contrasting background - ABOVE the arrow

@@ -16,6 +16,16 @@ class FireGrid:
     """
     
     # ============================================================================
+    # FUEL TYPE CONSTANTS
+    # ============================================================================
+    
+    # Fuel properties: (fuel_level, burn_rate)
+    FUEL_WATER = (0.0, 0.0)  # Water - no fuel, no burning
+    FUEL_BUILDING = (0.9, 0.0001)  # Buildings - high fuel, very slow burn
+    FUEL_FOREST = (0.8, 0.03)  # Forest - high fuel, moderate burn
+    FUEL_GRASS = (0.3, 0.08)  # Grassland/open terrain - low fuel, fast burn
+    
+    # ============================================================================
     # INITIALIZATION & CONFIGURATION
     # ============================================================================
     
@@ -76,7 +86,7 @@ class FireGrid:
         # Moisture level (0.0 to 1.0) - reduces ignition probability
         self.M = np.zeros((self.H, self.W), dtype=float)
         
-        # Intensity (for visualization only - not used in fuel consumption)
+        # Intensity
         self.I = np.zeros((self.H, self.W))
         
         # Start with a few random burning cells
@@ -113,82 +123,22 @@ class FireGrid:
         Returns:
             tuple: (fuel_level, burn_rate)
         """
+        # Guard: If lazy loading disabled, return current values
         if not self.lazy_fuel_enabled:
             return self.F[i, j], self.fuel_burn_rate[i, j]
         
-        # Check cache first
+        # Guard: Check cache first
         if (i, j) in self.fuel_cache:
             return self.fuel_cache[(i, j)]
         
-        # Convert cell to world coordinates
+        # Delegate to Environment for fuel lookup (single source of truth)
+        # Environment handles all terrain logic and spatial indexing
         world_pos = self.grid_mapper.cell_to_world(i, j)
+        fuel_properties = self.environment.get_fuel_at_position(world_pos)
         
-        fuel_level = 0.3  # Default fuel level (open terrain)
-        burn_rate = 0.08  # Default burn rate (grass burns fast)
-        
-        # Check if position is inside a building - NO FUEL
-        in_building = False
-        for obstacle in self.environment.obstacles:
-            if obstacle['type'] == 'city_block':
-                bounds = obstacle['bounds']
-                if (bounds['min'][0] <= world_pos[0] <= bounds['max'][0] and
-                    bounds['min'][1] <= world_pos[1] <= bounds['max'][1]):
-                    fuel_level = 0.9
-                    burn_rate = 0.0001  # Buildings burn very slowly
-                    in_building = True
-                    break
-        
-        if not in_building:
-            # Check for water (highest priority)
-            in_water = False
-            for zone in self.environment.terrain_zones:
-                if zone['type'] == 'lake':
-                    if zone.get('shape') == 'rectangle':
-                        # Point-in-polygon test for rotated rectangle
-                        point = [world_pos[0], world_pos[1]]
-                        corners = zone['corners']
-                        inside = False
-                        n = len(corners)
-                        for k in range(n):
-                            k_next = (k + 1) % n
-                            xi, yi = corners[k]
-                            xj, yj = corners[k_next]
-                            if ((yi > point[1]) != (yj > point[1])) and \
-                               (point[0] < (xj - xi) * (point[1] - yi) / (yj - yi) + xi):
-                                inside = not inside
-                        if inside:
-                            fuel_level = 0.0
-                            burn_rate = 0.0
-                            in_water = True
-                            break
-                    else:
-                        # Circular lake
-                        center = zone['center']
-                        radius = zone['radius']
-                        distance = np.sqrt((world_pos[0] - center[0])**2 + 
-                                         (world_pos[1] - center[1])**2)
-                        if distance <= radius:
-                            fuel_level = 0.0
-                            burn_rate = 0.0
-                            in_water = True
-                            break
-            
-            # Check for forest (only if not in water)
-            if not in_water:
-                for zone in self.environment.terrain_zones:
-                    if zone['type'] == 'forest':
-                        center = zone['center']
-                        radius = zone['radius']
-                        distance = np.sqrt((world_pos[0] - center[0])**2 + 
-                                         (world_pos[1] - center[1])**2)
-                        if distance <= radius:
-                            fuel_level = 0.8  # High fuel in forests
-                            burn_rate = 0.03  # Forest burns slowly but longer
-                            break
-        
-        # Cache the result
-        self.fuel_cache[(i, j)] = (fuel_level, burn_rate)
-        return fuel_level, burn_rate
+        # Cache and return
+        self.fuel_cache[(i, j)] = fuel_properties
+        return fuel_properties
     
     # ============================================================================
     # FIRE SPREAD CALCULATIONS
@@ -293,8 +243,13 @@ class FireGrid:
                     product_term *= (1.0 - P_xy)
         
         ignition_prob = 1.0 - product_term
-        # Reduce ignition probability based on moisture level
-        ignition_prob *= (1.0 - self.M[target_i, target_j])
+        
+        # STRONG moisture reduction: High moisture dramatically reduces ignition
+        # - At 50% moisture: ignition reduced by 75% (0.5^2 = 0.25 multiplier)
+        # - At 80% moisture: ignition reduced by 96% (0.2^2 = 0.04 multiplier)
+        moisture_factor = (1.0 - self.M[target_i, target_j]) ** 2
+        ignition_prob *= moisture_factor
+        
         return ignition_prob
     
     def _calculate_ignition_probabilities_vectorized(self) -> np.ndarray:
@@ -335,6 +290,9 @@ class FireGrid:
         # 2. Within burn_radius of active fire (active_region)
         cells_to_check = non_burning_mask & active_region
         
+        # for cell_to_check in cells_to_check:
+        #     self._calculate_ignition_probability()
+
         for i in range(self.H):
             for j in range(self.W):
                 if cells_to_check[i, j]:
@@ -453,16 +411,35 @@ class FireGrid:
         new_F[burning_mask] = np.maximum(0.0, new_F[burning_mask] - burn_rates_for_burning_cells * self.dt)
         
         # Update intensity for visualization (combination of remaining fuel and burn rate)
-        # Intenzita je kombinací paliva a rychlosti hoření
-        new_I[burning_mask] = np.minimum(1.0, new_F[burning_mask]) * self.fuel_burn_rate[burning_mask] * 10.0
+        # Moisture STRONGLY reduces fire intensity
+        moisture_intensity_reduction = (1.0 - new_M[burning_mask]) ** 1.5
+        new_I[burning_mask] = (np.minimum(1.0, new_F[burning_mask]) * 
+                               self.fuel_burn_rate[burning_mask] * 10.0 * 
+                               moisture_intensity_reduction)
         
         # 4. BURN-OUT: Cells with no fuel stop burning
         burnout_mask = burning_mask & (new_F <= 0)
         new_B[burnout_mask] = False
         new_I[burnout_mask] = 0.0
         
+        # 4b. MOISTURE SUPPRESSION: High moisture can extinguish fires
+        # Fires in very wet cells have a chance to be extinguished each step
+        wet_burning_mask = burning_mask & (new_M > 0.5)
+        extinguish_prob = (new_M[wet_burning_mask] - 0.5) * 0.4  # 0-20% chance per step
+        extinguish_random = np.random.random(np.sum(wet_burning_mask))
+        extinguished = extinguish_prob > extinguish_random
+        
+        # Apply extinguishment
+        wet_burning_indices = np.argwhere(wet_burning_mask)
+        for idx, should_extinguish in zip(wet_burning_indices, extinguished):
+            if should_extinguish:
+                new_B[idx[0], idx[1]] = False
+                new_I[idx[0], idx[1]] = 0.0
+        
         # 5. MOISTURE EVAPORATION: Moisture gradually evaporates over time
-        new_M = np.maximum(0.0, new_M - 0.01 * self.dt)
+        # Evaporation is slower in burning areas (steam effect)
+        evaporation_rate = np.where(new_B, 0.005, 0.01)  # Half speed in burning areas
+        new_M = np.maximum(0.0, new_M - evaporation_rate * self.dt)
         
         # Apply all updates simultaneously
         self.B = new_B
