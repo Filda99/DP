@@ -63,7 +63,9 @@ def run_drone_control_test():
     sim.start_simulation()
     
     sim.add_quadcopter("Quad_Test", position=[0, 0, 5])
-    sim.add_fixedwing("Plane_Test", position=[0, 0, 30], max_thrust=30.0)
+    sim.add_fixedwing("Plane_Test", position=[0, 0, 150], max_thrust=30.0)
+
+    sim.set_wind([0.0, 0.0, 0.0])
     
     log_times = []
     log_quad = {'pos': [], 'input': []}
@@ -83,10 +85,10 @@ def run_drone_control_test():
         # # Else: Hover (Input 0)
             
         # --- FIXED WING (Autopilot) ---
-        p_in = [0.0, 0.6, 0.0] # Cruise
-        if 2.0 <= t < 5.0:   p_in = [-0.5, 0.6, 0.0] # Bank Right
-        elif 8.0 <= t < 12.0:p_in = [0.5, 0.6, 0.1]  # Bank Left + Pitch Up
-        elif 15.0 <= t:      p_in = [0.0, 0.0, 0.0]  # Engines Off (Glide)
+        p_in = [0.0, 0.8, 0.2, 0] # [Bank, Throttle, Pitch]
+        if 2.0 <= t < 5.0:   p_in = [-0.1, 0.6, 0.0, 0] # Bank Right
+        elif 8.0 <= t < 12.0:p_in = [0.2, 0.6, 0.1, 0]  # Bank Left + Pitch Up
+        elif 15.0 <= t:      p_in = [0.0, 0.0, 0.0, 0]  # Engines Off (Glide)
 
         controls = { "Quad_Test": q_in, "Plane_Test": p_in }
         sim.step_simulation(controls)

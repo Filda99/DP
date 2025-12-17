@@ -143,13 +143,18 @@ class Simulation:
         print(f"✅ Added quadcopter '{name}' at {position}")
     
     def add_fixedwing(self, name, position=[0, 0, 5], mass=1.0, max_thrust=20.0, water_capacity=0.0):
-        fw = FixedWing(position, mass, max_thrust, water_capacity=water_capacity)
+        fw = FixedWing(position, mass, max_thrust, water_capacity=water_capacity, environment=self.environment)
         self.drones[name] = fw
         self.simulation_log['drones'][name] = {
             'type': 'fixedwing',
             'positions': [], 'forces': [], 'velocities': [], 'control_inputs': []
         }
         self.drone_trajectories[name] = [[position[0], position[1], position[2], 0.0]]
+        start_orientation = p.getQuaternionFromEuler([0, 0.2, 0.0])
+        # p.resetBasePositionAndOrientation(fw.drone_id, position, start_orientation)
+
+        # p.changeDynamics(fw.drone_id, -1, linearDamping=0.0, angularDamping=0.0)
+
         print(f"✅ Added fixed-wing '{name}' at {position} (water: {water_capacity}L)")
         return fw
     
