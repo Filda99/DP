@@ -112,7 +112,8 @@ class Simulation:
         load_environment_from_osm(self.environment, location, **kwargs)
         
     def enable_fire_simulation(self, **kwargs):
-        self.environment.enable_fire_simulation(dt=self.timestep, **kwargs)
+        dt = kwargs.pop('dt', self.timestep)
+        self.environment.enable_fire_simulation(dt=dt, **kwargs)
         # Init temp grid (Layers, H, W)
         if self.environment.fire_grid:
             shape = (20, self.environment.fire_grid.H, self.environment.fire_grid.W)

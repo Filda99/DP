@@ -206,12 +206,17 @@ class Environment:
         wind_velocity = self.weather['wind_velocity'][:2]
         wind_speed = np.linalg.norm(wind_velocity)
         wind_angle = np.arctan2(wind_velocity[1], wind_velocity[0]) if wind_speed > 0.01 else 0.0
-        
-        # INCREASED SPREAD RATE (l_base=3.0) for better visual demo
+
+        # REALISTIC SPREAD RATE
+        # l_base represents the base rate of spread in prob/sec. 
+        # For a 2m cell size, a spread of 0.1 means ~0.2 m/s without wind.
+        # Wind will multiply this by up to 10-20x.
+        REALISTIC_SPREAD_RATE = 0.05
+
         self.fire_grid = FireGrid(
             H=H, W=W, dt=dt, alpha=alpha, 
             k_wind=k_wind, k_slope=1.0,
-            wind_dir=wind_angle, l_base=np.ones(H) * 3.0  # Boosted for faster spread
+            wind_dir=wind_angle, l_base=np.ones(H) *REALISTIC_SPREAD_RATE
         )
         self.fire_enabled = True
         

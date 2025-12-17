@@ -5,3 +5,4 @@ osmnx
 geopandas 
 shapely
 contextily
+SciencePlots
