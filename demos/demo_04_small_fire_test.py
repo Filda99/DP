@@ -29,8 +29,6 @@ def run_small_fire_test():
     # Configuration - Pec pod Sněžkou in Krkonoše
     LOCATION = "Pec pod Sněžkou, Czech Republic"
     CACHE_PREFIX = "Pec_pod_Sněžkou_Czechia"
-    CENTER_LAT = 50.6868
-    CENTER_LON = 15.7361
     RADIUS_M = 100
     
     # Create simulation
@@ -44,15 +42,10 @@ def run_small_fire_test():
     
     if use_cache:
         print(f"📂 Loading from cache: {CACHE_PREFIX}")
-        load_environment_from_osm_cache(
-            environment=sim.environment,
-            cache_dir=cache_dir,
-            region_prefix=CACHE_PREFIX,
-            center_lat=CENTER_LAT,
-            center_lon=CENTER_LON,
-            radius_m=RADIUS_M,
-            default_height_m=10.0,
-            use_city_boundaries=True
+        sim.setup_osm_environment(
+            "Pec pod Sněžkou, Czech Republic",
+            default_building_height=10.0,
+            distance_m=RADIUS_M
         )
     else:
         print(f"🌍 No cache found, downloading from OSM...")

@@ -79,7 +79,7 @@ def _approximate_polygon_with_circles(geom, min_radius=5.0, max_circles=10):
 
 
 def _process_osm_features(environment, gdf_proj,
-                          default_height_m=10.0, use_city_boundaries=True, distance_m=2000):
+                          default_height_m=10.0, distance_m=2000):
     """
     Process OSM GeoDataFrame and populate the environment.
     
@@ -89,7 +89,6 @@ def _process_osm_features(environment, gdf_proj,
         environment: Environment instance to populate
         gdf_proj: GeoDataFrame with all OSM features (already projected to UTM and centered)
         default_height_m: Default building height
-        use_city_boundaries: Whether to merge buildings into boundaries
         distance_m: Max distance for filtering (waterways)
     """
     if gdf_proj is None or len(gdf_proj) == 0:
@@ -103,8 +102,8 @@ def _process_osm_features(environment, gdf_proj,
     grass_areas_added = 0
     urban_areas_added = 0
     
-    print("🏗️  Converting OSM data to simulation environment...")
-    print(f"   Total features to process: {len(gdf_proj)}")
+    print("    Converting OSM data to simulation environment...")
+    print(f"    Total features to process: {len(gdf_proj)}")
     
     # Debug: Check what types of features we have
     if 'landuse' in gdf_proj.columns:
@@ -186,8 +185,8 @@ def _process_osm_features(environment, gdf_proj,
                     environment.add_lake([center_x, center_y], radius)
                     lakes_added += 1
         
-        # --- Handle Waterways (Rivers/Streams) ---
-        elif 'waterway' in row and pd.notna(row.get('waterway')) and row['waterway'] in ['river', 'stream', 'canal']:
+        # --- Handle Waterways (Rivers) ---
+        elif 'waterway' in row and pd.notna(row.get('waterway')) and row['waterway'] in ['river', 'canal']:
             from shapely.geometry import LineString, MultiLineString
             
             if isinstance(geom, (LineString, MultiLineString)):
@@ -239,20 +238,14 @@ def _process_osm_features(environment, gdf_proj,
                         lakes_added += 1
                         rectangles_added += 1
                 
-                if rectangles_added > 0:
-                    print(f"   🌊 Added {row['waterway']}: {rectangles_added} rectangles, width={river_width}m")
-        
         # --- Handle Grass/Meadow ---
         elif 'landuse' in row and pd.notna(row.get('landuse')) and row['landuse'] in ['grass', 'meadow']:
             grass_areas_added += 1
     
     print(f"✅ Map data loaded successfully!")
-    if use_city_boundaries:
-        print(f"   - Added {urban_areas_added} urban areas (residential/commercial/industrial)")
-        if buildings_added > 0:
-            print(f"   - Added {buildings_added} individual buildings (outside urban zones)")
-    else:
-        print(f"   - Added {buildings_added} individual buildings (non-burnable obstacles)")
+    print(f"   - Added {urban_areas_added} urban areas (residential/commercial/industrial)")
+    if buildings_added > 0:
+        print(f"   - Added {buildings_added} individual buildings (outside urban zones)")
     print(f"   - Added {forests_added} forest circles (high fuel areas)")
     print(f"   - Added {lakes_added} water body rectangles/circles (fire breaks)")
     print(f"   - Found {grass_areas_added} grass/meadow areas (default terrain)")
@@ -264,8 +257,7 @@ def load_environment_from_osm_cache(environment: Environment,
                                    center_lat: float,
                                    center_lon: float,
                                    radius_m: float = 1500,
-                                   default_height_m: float = 10.0,
-                                   use_city_boundaries: bool = True):
+                                   default_height_m: float = 10.0):
     """
     Load OSM data from pre-downloaded cache files and populate environment.
     
@@ -279,7 +271,6 @@ def load_environment_from_osm_cache(environment: Environment,
         center_lon: Longitude of simulation center
         radius_m: Radius around center to extract (meters)
         default_height_m: Default building height
-        use_city_boundaries: Whether to merge buildings into boundaries
     
     Example:
         >>> load_environment_from_osm_cache(
@@ -366,138 +357,84 @@ def load_environment_from_osm_cache(environment: Environment,
         environment=environment,
         gdf_proj=combined_gdf,
         default_height_m=default_height_m,
-        use_city_boundaries=use_city_boundaries,
         distance_m=radius_m
     )
 
 
-def load_environment_from_osm(environment: Environment, location_query: str, default_height_m: float = 10.0, 
-                            distance_m: float = 2000, use_city_boundaries: bool = True,
-                            regional_cache_file: str = None):
+def load_environment_from_osm(
+    environment: Environment,
+    location: str,
+    default_height_m: float = 10.0,
+    radius_m: float = 1500,
+):
     """
     Downloads map data from OpenStreetMap for a given location and populates
     the simulation environment with obstacles and terrain.
 
     Args:
         environment: An instance of the Environment class to populate.
-        location_query: The name of the location (e.g., "Tišnov, Czech Republic", "Manhattan, New York City").
+        location: The name of the location (e.g., "Pec pod Sněžkou, Czech Republic").
         default_height_m: The height to assign buildings that don't have height data.
-        distance_m: Radius in meters around the location center to download (default: 2000m = 2km).
-        use_city_boundaries: If True, use city/residential boundaries instead of individual buildings (much faster).
-        regional_cache_file: Optional path to pre-downloaded regional .gpkg file (faster, offline).
+        radius_m: Radius in meters around the location center to download.
     """
-    if regional_cache_file:
-        print(f"🗂️  Loading from regional cache: {regional_cache_file}")
-        print(f"   Location: '{location_query}', Radius: {distance_m}m")
-    else:
-        print(f"🌍 Downloading map data for '{location_query}'...")
-        print(f"   Radius: {distance_m}m ({distance_m/1000:.1f} km) around center")
-    print(f"   Mode: {'City boundaries' if use_city_boundaries else 'Individual buildings'}")
+    print(f"🌍 Downloading map data for '{location}'...")
+    print(f"   Radius: {radius_m}m ({radius_m/1000:.1f} km) around center")
     
-    # --- 1. Download or Load Data ---
-    if regional_cache_file:
-        # Load from pre-downloaded regional file
-        from src.regional_cache import RegionalMapCache
-        
-        cache = RegionalMapCache(regional_cache_file)
-        gdf = cache.get_subregion_by_location_name(location_query, radius_m=distance_m)
-        
-        # Get center point for coordinate system
-        center_point = ox.geocode(location_query)
-        print(f"📍 Center coordinates: {center_point}")
-        
-    else:
-        # Original: download from OSM API
-        # Choose between detailed buildings or city boundaries
-        if use_city_boundaries:
-            # Download city/residential boundaries instead of individual buildings
-            tags = {
-                'landuse': ['residential', 'commercial', 'industrial', 'forest', 'grass', 'meadow'],
-                'natural': ['wood', 'water', 'wetland'],
-                'waterway': ['river', 'stream', 'canal']  # Add rivers/streams!
-            }
-        else:
-            # Original: download individual buildings
-            tags = {
-                'building': True,
-                'landuse': ['forest', 'grass', 'meadow'],
-                'natural': ['wood', 'water', 'wetland'],
-                'waterway': ['river', 'stream', 'canal']  # Add rivers/streams!
-            }
-        
-        try:
-            # First, geocode the location to get coordinates
-            try:
-                from shapely.geometry import Point
-                center_point = ox.geocode(location_query)
-                print(f"📍 Center coordinates: {center_point}")
-            except Exception as e:
-                print(f"⚠️  Could not geocode location: {e}")
-                print(f"   Trying with place boundary instead...")
-                center_point = None
-            
-            # Download geometries (polygons) for the specified tags
-            # Note: osmnx v1.x+ uses 'features_from_place' instead of 'geometries_from_place'
-            try:
-                if center_point:
-                    # Download using point + distance (better for getting surrounding areas)
-                    gdf = ox.features_from_point(center_point, tags=tags, dist=distance_m)
-                else:
-                    # Fallback to place boundary
-                    gdf = ox.features_from_place(location_query, tags=tags)
-            except AttributeError:
-                # Fallback for older osmnx versions
-                if center_point:
-                    gdf = ox.geometries_from_point(center_point, tags=tags, dist=distance_m)
-                else:
-                    gdf = ox.geometries_from_place(location_query, tags=tags)
-        except Exception as e:
-            print(f"❌ Failed to download OSM data: {e}")
-            print("   -> Please check your internet connection and location query.")
-            return
-    
-    # Common processing for both cache and live download
+    # --- 1. Geocode location to get coordinates ---
     try:
-        # --- 2. Project to Meters (UTM) ---
-        # Convert from Lat/Lon (degrees) to a local UTM projection (meters)
-        try:
-            # Try newer osmnx API
-            gdf_proj = gdf.to_crs(gdf.estimate_utm_crs())
-        except AttributeError:
-            # Fallback for older versions
-            gdf_proj = ox.project_geometries(gdf, to_crs=gdf.estimate_utm_crs())
-        
-        # --- 3. Center the Map at (0, 0) ---
-        # Use the QUERIED LOCATION as center, not the geometric centroid of features
-        # (otherwise large forests can shift the center away from the city!)
-        if center_point:
-            # Project the center point to UTM
-            from shapely.geometry import Point
-            center_geom = Point(center_point[1], center_point[0])  # lon, lat
-            gdf_center = gpd.GeoDataFrame([{'geometry': center_geom}], crs='EPSG:4326')
-            gdf_center_proj = gdf_center.to_crs(gdf_proj.crs)
-            center_x = gdf_center_proj.geometry.iloc[0].x
-            center_y = gdf_center_proj.geometry.iloc[0].y
-        else:
-            # Fallback: use geometric center of all features
-            map_center = gdf_proj.unary_union.centroid
-            center_x, center_y = map_center.x, map_center.y
-        
-        print(f"📍 Map center (UTM): ({center_x:.2f}, {center_y:.2f}). Centering at (0,0) for simulation.")
-        
-        # Translate all geometries so the map center is at (0, 0)
-        gdf_proj['geometry'] = gdf_proj['geometry'].translate(xoff=-center_x, yoff=-center_y)
-        
-        # --- 4. Populate Environment ---
-        # Use the shared processing function
-        _process_osm_features(
-            environment=environment,
-            gdf_proj=gdf_proj,
-            default_height_m=default_height_m,
-            use_city_boundaries=use_city_boundaries,
-            distance_m=distance_m
-        )
-
+        center_point = ox.geocode(location)
+        center_lat, center_lon = center_point
+        print(f"📍 Center coordinates: ({center_lat:.6f}°N, {center_lon:.6f}°E)")
     except Exception as e:
-        print(f"❌ Failed to download or process map data: {e}")
-        print("   -> Please check your internet connection and location query.")
+        print(f"❌ Failed to geocode location '{location}': {e}")
+        print("   -> Please check the location name (e.g., 'Prague, Czech Republic')")
+        return
+    
+    # --- 2. Download data ---
+    try:
+        tags = {
+            'landuse': ['residential', 'commercial', 'industrial', 'forest', 'grass', 'meadow'],
+            'natural': ['wood', 'water', 'wetland'],
+            'waterway': ['river', 'stream', 'canal']
+        }
+
+        # Download using point + distance
+        try:
+            gdf = ox.features_from_point(center_point, tags=tags, dist=radius_m)
+        except AttributeError:
+            # Fallback for older osmnx versions
+            gdf = ox.geometries_from_point(center_point, tags=tags, dist=radius_m)
+        
+        print(f"✅ Downloaded {len(gdf)} features from OSM")
+        
+    except Exception as e:
+        print(f"❌ Failed to download OSM data: {e}")
+        print("   -> Please check internet connection")
+        return
+    
+    # --- 3. Project to UTM (meters) ---
+    try:
+        gdf_proj = gdf.to_crs(gdf.estimate_utm_crs())
+    except AttributeError:
+        gdf_proj = ox.project_geometries(gdf, to_crs=gdf.estimate_utm_crs())
+    
+    # --- 4. Center at (0, 0) ---
+    from shapely.geometry import Point
+    center_geom = Point(center_lon, center_lat)
+    gdf_center = gpd.GeoDataFrame([{'geometry': center_geom}], crs='EPSG:4326')
+    gdf_center_proj = gdf_center.to_crs(gdf_proj.crs)
+    center_x = gdf_center_proj.geometry.iloc[0].x
+    center_y = gdf_center_proj.geometry.iloc[0].y
+    
+    print(f"   Map center (UTM): ({center_x:.2f}, {center_y:.2f}). Centering at (0,0) for simulation.")
+    
+    # Translate all geometries
+    gdf_proj['geometry'] = gdf_proj['geometry'].translate(xoff=-center_x, yoff=-center_y)
+    
+    # --- 5. Populate Environment ---
+    _process_osm_features(
+        environment=environment,
+        gdf_proj=gdf_proj,
+        default_height_m=default_height_m,
+        distance_m=radius_m
+    )

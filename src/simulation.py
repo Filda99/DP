@@ -58,7 +58,7 @@ class Simulation:
         self.environment = Environment()
         self.simulation_time = 0.0
         self.fps = 60  # Simulation FPS
-        self.timestep = 1/60.0  # 60 FPS (reduced from 240 for performance)
+        self.timestep = 1/60.0  # Simulation timestep (s)
         # --- Airflow model variables (corrected for physical accuracy) ---
         self.airflow_H = 50.0  # Convection height limit (m)
         self.convection_gain = 8.0  # Base updraft velocity [m/s] for unit fire intensity (realistic: 5-20 m/s)
@@ -118,8 +118,8 @@ class Simulation:
         # Create ground
         self.environment.create_ground()
         
-        print(f"✅ Simulation started ({'GUI' if self.gui else 'headless'} mode)")
-        self._log_event('simulation_start', {'gui': self.gui})
+        print(f"✅ Simulation started")
+        self._log_event('simulation_start ', {'timestep': self.timestep})
         
     def stop_simulation(self):
         """Stop PyBullet simulation."""
@@ -238,7 +238,7 @@ class Simulation:
     # ============================================================================
     
     def setup_osm_environment(self, location_query: str, default_building_height: float = 10.0,
-                            distance_m: float = 2000, use_city_boundaries: bool = True):
+                            distance_m: float = 2000):
         """
         Setup environment from OpenStreetMap data.
         
@@ -246,10 +246,9 @@ class Simulation:
             location_query: Location to load (e.g., "Prague, Czech Republic")
             default_building_height: Default height for buildings without height data (meters)
             distance_m: Radius in meters to download around the location (default: 2000m = 2km)
-            use_city_boundaries: If True, use city/residential boundaries instead of individual buildings (MUCH faster!)
         """
         print(f"🌍 Loading environment from OSM: {location_query}")
-        load_environment_from_osm(self.environment, location_query, default_building_height, distance_m, use_city_boundaries)
+        load_environment_from_osm(self.environment, location_query, default_building_height, distance_m)
     
     def set_wind(self, wind_velocity, turbulence=0.0):
         """Set wind conditions."""
@@ -271,7 +270,7 @@ class Simulation:
         if dt is None:
             dt = self.timestep
         
-        self.environment.enable_fire_simulation(grid_width_m, grid_height_m, cell_size_m, dt=dt)
+        self.environment.enable_fire_simulation(grid_width_m, grid_height_m, cell_size_m, dt=dt, lazy_fuel=False)
         
         # Initialize temperature grid (3D: height × rows × cols)
         if hasattr(self.environment, 'fire_grid') and self.environment.fire_grid is not None:

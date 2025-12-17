@@ -155,6 +155,7 @@ class GridMapper:
         Returns:
             (x_min, x_max, y_min, y_max) in world coordinates
         """
+        print(f"Grid bounds: x[{self.origin_x}, {-self.origin_x}], y[{self.origin_y}, {-self.origin_y}]")
         return (self.origin_x, -self.origin_x, self.origin_y, -self.origin_y)
     
     def get_grid_dimensions(self) -> Tuple[int, int]:

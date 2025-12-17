@@ -29,3 +29,6 @@ data/*.geojson
 *.png
 *.gif
 *.htmllogs/
+
+# Outputs
+output/

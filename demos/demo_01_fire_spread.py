@@ -25,9 +25,7 @@ def save_real_satellite_imagery(location, radius_m):
     import geopandas as gpd
     from shapely.geometry import Point, box
     
-    print("=" * 70)
-    print("�️  SAVING REAL SATELLITE IMAGERY")
-    print("=" * 70)
+    print("SAVING REAL SATELLITE IMAGERY")
     
     # Get location coordinates
     print(f"📍 Geocoding: {location}")
@@ -40,12 +38,12 @@ def save_real_satellite_imagery(location, radius_m):
     
     # Create bounding box
     point = Point(coords[1], coords[0])  # lon, lat
-    gdf_point = gpd.GeoDataFrame([{'geometry': point}], crs='EPSG:4326')
-    gdf_point_utm = gdf_point.to_crs(gdf_point.estimate_utm_crs())
-    point_utm = gdf_point_utm.geometry.iloc[0]
+    gdf_point = gpd.GeoDataFrame([{'geometry': point}], crs='EPSG:4326') # WGS84
+    gdf_point_utm = gdf_point.to_crs(gdf_point.estimate_utm_crs()) # Meter based coordinate system
+    point_utm = gdf_point_utm.geometry.iloc[0] # Center point in UTM to add meters offset for bbox
     
     bbox_utm = box(point_utm.x - radius_m, point_utm.y - radius_m,
-                   point_utm.x + radius_m, point_utm.y + radius_m)
+                   point_utm.x + radius_m, point_utm.y + radius_m)  # Create bbox in UTM
     gdf_bbox = gpd.GeoDataFrame([{'geometry': bbox_utm}], crs=gdf_point_utm.crs)
     
     # Convert to Web Mercator
@@ -53,7 +51,7 @@ def save_real_satellite_imagery(location, radius_m):
     gdf_point_web = gdf_point.to_crs('EPSG:3857')
     
     # Create figure
-    print("🖼️  Creating satellite map...")
+    print("    Creating satellite map...")
     fig, ax = plt.subplots(1, 1, figsize=(15, 15))
     ax.set_title(f"Real Satellite Imagery\n{location}\n(±{radius_m}m radius)", 
                  fontsize=16, fontweight='bold', pad=20)
@@ -64,10 +62,10 @@ def save_real_satellite_imagery(location, radius_m):
                        linewidths=5, zorder=10)
     
     # Add satellite basemap
-    print("   Downloading satellite tiles...")
+    print("    Downloading satellite tiles...")
     try:
         ctx.add_basemap(ax, source=ctx.providers.Esri.WorldImagery, zoom='auto')
-        print("   ✅ Satellite imagery loaded")
+        print("    Satellite imagery loaded")
     except Exception as e:
         print(f"   ⚠️  Failed to load satellite imagery: {e}")
     
@@ -75,7 +73,7 @@ def save_real_satellite_imagery(location, radius_m):
     ax.set_ylabel("Northing (Web Mercator)", fontsize=12)
     
     # Save
-    output_path = 'output/demo_01_satellite.png'
+    output_path = 'output/demo_01_satellite.pdf'
     plt.tight_layout()
     plt.savefig(output_path, dpi=200, bbox_inches='tight')
     plt.close()
@@ -93,11 +91,11 @@ def run_debug_demo():
     CACHE_PREFIX = "Pec_pod_Sněžkou_Czechia"
     CENTER_LAT = 50.6868
     CENTER_LON = 15.7361
-    RADIUS_M = 100
+    RADIUS_M = 1000
     
     # Step 1: Save real satellite imagery FIRST
     save_real_satellite_imagery(LOCATION, RADIUS_M)
-    
+
     # Step 2: Create simulation
     sim = Simulation()
     sim.start_simulation()
@@ -108,7 +106,7 @@ def run_debug_demo():
     use_cache = len(glob.glob(cache_pattern)) > 0
     
     if use_cache:
-        print(f"📂 Loading from cache: {CACHE_PREFIX}")
+        print(f"  Loading from cache: {CACHE_PREFIX}")
         load_environment_from_osm_cache(
             environment=sim.environment,
             cache_dir=cache_dir,
@@ -116,31 +114,28 @@ def run_debug_demo():
             center_lat=CENTER_LAT,
             center_lon=CENTER_LON,
             radius_m=RADIUS_M,
-            default_height_m=8.0,
-            use_city_boundaries=True
+            default_height_m=8.0
         )
     else:
-        print(f"🌍 No cache found, downloading from OSM...")
+        print(f"  No cache found, downloading from OSM...")
         sim.setup_osm_environment(LOCATION, 
                                   default_building_height=8.0,
-                                  distance_m=RADIUS_M,
-                                  use_city_boundaries=True)
-    
+                                  distance_m=RADIUS_M)
+        
     # Enable fire
     sim.enable_fire_simulation(
-        grid_width_m=200,  # 3km grid to match 1.5km radius (±1500m)
-        grid_height_m=200,
+        grid_width_m=2*RADIUS_M,  # 3km grid to match 1.5km radius (±1500m)
+        grid_height_m=2*RADIUS_M,
         cell_size_m=2.0  # Increased cell size to keep grid manageable (200×200 cells)
     )
-    
-    # Set wind
-    sim.set_wind([8.0, 0.0, 0.0])
     
     # Save initial environment visualization
     print("\n📸 Saving initial environment map...")
     sim.environment.save_environment_map('output/demo_01_environment.png', 
                                         show_fire_grid=True, 
-                                        detailed=False)  # Fast mode for large areas
+                                        detailed=True)  # Fast mode for large areas
+    
+    # exit(0)
     
     # Find a location with fuel to start the fire - BOTTOM MIDDLE area
     print("\n🔍 Finding forested area in bottom middle to start fire...")
@@ -306,7 +301,7 @@ def save_frame(sim, state, frame_num, time, output_dir):
                  fontsize=14, fontweight='bold')
     
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/frame_{frame_num:03d}.png', dpi=100, bbox_inches='tight')
+    plt.savefig(f'{output_dir}/frame_{frame_num:03d}.pdf', dpi=100, bbox_inches='tight')
     plt.close()
 
 

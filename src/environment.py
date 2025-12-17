@@ -261,7 +261,7 @@ class Environment:
     
     def create_ground(self):
         """Create ground plane."""
-        ground_id = p.loadURDF("plane.urdf")
+        ground_id = p.loadURDF("../urdf/plane.urdf")
         return ground_id
     
     def add_city_block(self, position, size=[5, 5, 10], color=[0.7, 0.7, 0.7, 1]):
@@ -638,16 +638,15 @@ class Environment:
         self._build_spatial_hash(cell_size=10.0)
         
         # Create grid mapper
-        print("   ⏱️  Creating grid mapper...")
+        print("    Creating grid mapper...")
         t_start = time.time()
         self.grid_mapper = GridMapper(grid_width_m, grid_height_m, cell_size_m)
-        print(f"      ✅ Grid mapper created in {time.time() - t_start:.3f}s")
         
         # Get grid dimensions
         H, W = self.grid_mapper.get_grid_dimensions()
         
         # Create fire grid with wind from weather system
-        print("   ⏱️  Calculating wind parameters...")
+        print("    Calculating wind parameters...")
         t_start = time.time()
         wind_velocity = self.weather['wind_velocity'][:2]  # Only x,y components
         wind_speed = np.linalg.norm(wind_velocity)
@@ -660,30 +659,28 @@ class Environment:
         # Create base lambda values for fire spread
         # REDUCED from 0.5 to 0.1 for much slower spread
         l_base = np.ones(H) * 0.1  # Base fire spread rate (SLOW - realistic wildfire)
-        print(f"      ✅ Wind parameters calculated in {time.time() - t_start:.3f}s")
         
-        print(f"   ⏱️  Initializing FireGrid ({H}x{W} cells, dt={dt:.4f}s)...")
+        print(f"    Initializing FireGrid ({H}x{W} cells, dt={dt:.4f}s)...")
         t_start = time.time()
         self.fire_grid = FireGrid(
             H=H, W=W, dt=dt, alpha=alpha, 
             k_wind=k_wind, k_slope=1.0,
             wind_dir=wind_angle, l_base=l_base
         )
-        print(f"      ✅ FireGrid initialized in {time.time() - t_start:.3f}s")
         
+        self.fire_enabled = True
+
         # Choose fuel loading strategy
         if lazy_fuel:
             # LAZY LOADING: Load fuel on-demand (fast startup)
-            print("   ⏱️  Enabling lazy fuel loading (on-demand)...")
+            print("    Enabling lazy fuel loading (on-demand)...")
             t_start = time.time()
             self.fire_grid.enable_lazy_fuel_loading(self, self.grid_mapper)
-            print(f"      ✅ Lazy fuel loading enabled in {time.time() - t_start:.3f}s")
         else:
             # EAGER LOADING: Preload all fuel (slow startup)
-            print("   ⏱️  Mapping fuel from terrain (buildings, forests, water)...")
+            print("    Mapping fuel from terrain (buildings, forests, water)...")
             t_start = time.time()
             self._initialize_fire_fuel_from_terrain()
-            print(f"      ✅ Fuel mapping completed in {time.time() - t_start:.3f}s")
         
         # IMPORTANT: Clear any random fires that were started in reset_random()
         # We want to start fires manually, not have random initial fires
@@ -707,15 +704,15 @@ class Environment:
                 burn_rate = 0.08  # Default burn rate (grass burns fast)
                 terrain_type = 'default'
                 
-                # FIRST: Check if position is inside a building - NO FUEL
+                # FIRST: Check if position is inside a building
                 in_building = False
                 for obstacle in self.obstacles:
                     if obstacle['type'] == 'city_block':
                         bounds = obstacle['bounds']
                         if (bounds['min'][0] <= world_pos[0] <= bounds['max'][0] and
                             bounds['min'][1] <= world_pos[1] <= bounds['max'][1]):
-                            fuel_level = 0.0  # Buildings have no fuel!
-                            burn_rate = 0.0   # Buildings don't burn
+                            fuel_level = 1.0
+                            burn_rate = 0.0001  # Buildings burn very slowly
                             in_building = True
                             terrain_type = 'building'
                             break
@@ -778,7 +775,7 @@ class Environment:
                                                  (world_pos[1] - center[1])**2)
                                 if distance <= radius:
                                     fuel_level = 0.8  # High fuel in forests
-                                    burn_rate = 0.03  # Forest burns slowly but longer
+                                    burn_rate = 0.03  # Forest burns slowly
                                     terrain_type = 'forest'
                                     break
                 
@@ -786,7 +783,7 @@ class Environment:
                 self.fire_grid.fuel_burn_rate[i, j] = burn_rate
                 debug_counts[terrain_type] += 1
         
-        print(f"✅ Fire fuel levels initialized from terrain:")
+        print(f" Fire fuel levels initialized from terrain:")
         print(f"   Buildings: {debug_counts['building']} cells")
         print(f"   Forests: {debug_counts['forest']} cells")
         print(f"   Lakes: {debug_counts['lake']} cells")
@@ -1143,5 +1140,5 @@ class Environment:
         plt.tight_layout()
         plt.savefig(filename, dpi=150, bbox_inches='tight')
         plt.close()
-        
+
         print(f"✅ Environment map saved to: {filename}")
