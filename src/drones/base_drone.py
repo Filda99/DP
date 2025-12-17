@@ -2,12 +2,52 @@
 Base Drone Class
 
 Abstract base class for all drone types with common physics and control interfaces.
+Includes PID Controller implementation for stable flight dynamics.
 """
 
 import pybullet as p
 import numpy as np
 from abc import ABC, abstractmethod
 
+class PIDController:
+    """Standard PID Controller implementation."""
+    def __init__(self, kp, ki, kd, output_limit=None, integral_limit=None):
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
+        self.output_limit = output_limit
+        self.integral_limit = integral_limit
+        self.prev_error = 0.0
+        self.integral = 0.0
+        
+    def reset(self):
+        self.prev_error = 0.0
+        self.integral = 0.0
+        
+    def update(self, error, dt, debug=False):
+        # Proportional
+        p_term = self.kp * error
+        
+        # Integral
+        self.integral += error * dt
+        if self.integral_limit:
+            self.integral = np.clip(self.integral, -self.integral_limit, self.integral_limit)
+        i_term = self.ki * self.integral
+        
+        # Derivative
+        derivative = (error - self.prev_error) / dt if dt > 0 else 0.0
+        d_term = self.kd * derivative
+        self.prev_error = error
+        
+        output = p_term + i_term + d_term
+        
+        if self.output_limit:
+            output = np.clip(output, -self.output_limit, self.output_limit)
+            
+        if debug:
+            return f"P:{p_term:.2f} I:{i_term:.2f} D:{d_term:.2f} Out:{output:.2f}"
+            
+        return output
 
 class BaseDrone(ABC):
     """Abstract base class for all drone types."""
@@ -17,112 +57,72 @@ class BaseDrone(ABC):
         self.drone_id = drone_id
         self.position = np.array(position)
         self.mass = mass
-        self.velocity = np.array([0.0, 0.0, 0.0])
+        self.environment = environment
         
-        # Water tank properties (only used by firefighting drones)
-        self.water_capacity = 0.0  # liters (0 = no firefighting capability)
-        self.current_water = 0.0  # liters
-        self.water_valve_open = False  # water valve state (True = water flowing)
-        
-        # Flight data logging
-        self.flight_log = {
-            'positions': [],
-            'forces': [],
-            'velocities': [],
-            'times': []
-        }
+        # Water tank properties
+        self.water_capacity = 0.0
+        self.current_water = 0.0
+        self.water_valve_open = False
         
         # Physics properties
-        self.gravity_compensation = mass * 9.81
+        self.gravity = 9.81
+        self.gravity_compensation = mass * self.gravity
+        
+        # Logging
+        self.flight_log = {'positions': [], 'forces': [], 'velocities': [], 'times': []}
         
     def get_position(self):
-        """Get current position from PyBullet."""
         if self.drone_id is not None:
             pos, _ = p.getBasePositionAndOrientation(self.drone_id)
-            self.position = np.array(pos)
-        return self.position
+            return np.array(pos)
+        return np.zeros(3)
     
     def get_velocity(self):
-        """Get current velocity from PyBullet."""
         if self.drone_id is not None:
             vel, _ = p.getBaseVelocity(self.drone_id)
-            self.velocity = np.array(vel)
-        return self.velocity
+            return np.array(vel)
+        return np.zeros(3)
+        
+    def get_orientation_quaternion(self):
+        if self.drone_id is not None:
+            _, orn = p.getBasePositionAndOrientation(self.drone_id)
+            return np.array(orn)
+        return np.array([0, 0, 0, 1])
+        
+    def get_orientation_rpy(self):
+        """Get Roll, Pitch, Yaw in radians."""
+        quat = self.get_orientation_quaternion()
+        return np.array(p.getEulerFromQuaternion(quat))
     
     def get_speed(self):
-        """Get current speed (velocity magnitude)."""
         return np.linalg.norm(self.get_velocity())
-    
-    def can_drop_water(self):
-        """Check if drone can drop water (has water tank and valve is open)."""
-        return self.water_capacity > 0 and self.water_valve_open and self.current_water > 0
-    
+
     def open_water_valve(self):
-        """Open water valve to start dropping water."""
-        if self.water_capacity > 0:
-            self.water_valve_open = True
-    
+        self.water_valve_open = True
+        
     def close_water_valve(self):
-        """Close water valve to stop dropping water."""
         self.water_valve_open = False
-    
-    def refill_water(self, amount=None):
-        """Refill water tank (full refill if no amount specified)."""
-        if amount is None:
-            self.current_water = self.water_capacity
-        else:
-            self.current_water = min(self.water_capacity, self.current_water + amount)
-    
+        
+    def can_drop_water(self):
+        return self.water_valve_open and self.current_water > 0
+        
     def consume_water(self, amount):
-        """Consume water from tank. Returns actual amount consumed."""
-        actual_amount = min(amount, self.current_water)
-        self.current_water -= actual_amount
-        return actual_amount
-    
-    def log_flight_data(self, forces, time_step):
-        """Log flight data for analysis."""
-        self.flight_log['positions'].append(self.get_position().copy())
-        self.flight_log['forces'].append(forces.copy())
-        self.flight_log['velocities'].append(self.get_velocity().copy())
-        self.flight_log['times'].append(time_step)
-    
-    def get_flight_log(self):
-        """Get complete flight log."""
-        return self.flight_log
-    
-    def clear_flight_log(self):
-        """Clear flight log."""
-        self.flight_log = {
-            'positions': [],
-            'forces': [],
-            'velocities': [],
-            'times': []
-        }
-    
+        dropped = min(self.current_water, amount)
+        self.current_water -= dropped
+        return dropped
+
     @abstractmethod
-    def joystick_to_forces(self, joystick_input):
-        """Convert joystick input to forces. Must be implemented by subclasses."""
+    def apply_control(self, joystick_input):
         pass
     
     @abstractmethod
-    def apply_control(self, joystick_input):
-        """Apply control forces. Must be implemented by subclasses."""
+    def apply_environmental_effects(self, atmospheric_conditions: dict):
         pass
     
     @abstractmethod
     def get_drone_type(self):
-        """Get drone type string. Must be implemented by subclasses."""
         pass
-
-    @abstractmethod
-    def apply_environmental_effects(self, atmospheric_conditions: dict):
-        """
-        Apply environmental forces based on local atmospheric conditions.
         
-        Args:
-            atmospheric_conditions: dict with keys:
-                - 'velocity': [u, v, w] airflow vector (m/s)
-                - 'temperature': local temperature (K)
-                - 'density': local air density (kg/m³)
-        """
+    @abstractmethod
+    def get_flight_characteristics(self):
         pass

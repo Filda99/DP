@@ -1,230 +1,148 @@
 """
 Fixed-Wing Drone Class
 
-Fixed-wing aircraft implementation with forward flight requirements.
-Cannot hover, requires forward motion for lift generation.
+Aerodynamic implementation based on Lift/Drag coefficients and Angle of Attack.
+Controls: Autopilot assisted (Bank Angle, Pitch Angle, Throttle).
+CORRECTED: Aerodynamics now depends on Airspeed (Velocity - Wind), not Ground Speed.
 """
 
 import pybullet as p
 import numpy as np
-from .base_drone import BaseDrone
+from .base_drone import BaseDrone, PIDController
 
 class FixedWing(BaseDrone):
-    """Fixed-wing aircraft with forward flight requirements."""
-    
-    def __init__(self, position=[0, 0, 5], mass=1.0, max_thrust=20.0, min_speed=3.0, water_capacity=50.0):
-        """Initialize fixed-wing aircraft.
-        
-        Args:
-            position: Initial position [x, y, z]
-            mass: Aircraft mass in kg
-            max_thrust: Maximum thrust in Newtons
-            min_speed: Minimum speed to maintain lift in m/s
-            water_capacity: Water tank capacity in liters (0 = no firefighting)
-        """
-        # Create PyBullet body first
+    def __init__(self, position=[0, 0, 5], mass=1.0, max_thrust=30.0, min_speed=5.0, water_capacity=50.0):
         self.drone_id = self._create_pybullet_body(position, mass)
-        
-        # Initialize base class
         super().__init__(self.drone_id, position, mass)
         
-        # Firefighting capability for fixed-wing
         self.water_capacity = water_capacity
-        self.current_water = water_capacity  # Start with full tank
+        self.current_water = water_capacity
         
-        # Fixed-wing specific parameters
+        # Flight Envelope
         self.max_thrust = max_thrust
-        self.min_speed = min_speed  # Minimum speed to maintain lift
-        self.current_heading = 0.0  # Current heading in radians
-        self.turn_rate = 1.0  # Max turn rate (rad/s)
+        self.max_speed = 25.0
+        self.stall_speed = 6.0
         
-        # Aerodynamic properties (REDUCED lift for more controlable flight)
-        self.lift_coefficient = 0.2  # REDUCED from 0.8 to prevent excessive climbing
-        self.drag_coefficient = 0.05
-        self.wing_area = 0.5  # m²
-        self.current_air_density = 1.225  # kg/m³ (default at sea level, updated by atmospheric conditions)
+        # Aerodynamics (Cessna-like approximation)
+        self.wing_area = 0.8
+        self.wing_span = 1.5
+        self.aspect_ratio = (self.wing_span**2) / self.wing_area
         
-        # Store atmospheric conditions for lift calculation
-        self.atmospheric_conditions = {
-            'velocity': np.array([0.0, 0.0, 0.0]),
-            'temperature': 293.15,
-            'density': 1.225
-        }
+        # Controllers (Autopilot)
+        self.pid_bank = PIDController(kp=2.0, ki=0.05, kd=0.5)
+        self.pid_pitch = PIDController(kp=2.0, ki=0.05, kd=0.5)
         
     def _create_pybullet_body(self, position, mass):
-        """Create fixed-wing body in PyBullet."""
-        # Create a more aerodynamic shape (elongated box)
-        collision_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.3, 0.1, 0.05])
-        visual_shape = p.createVisualShape(
-            p.GEOM_BOX, 
-            halfExtents=[0.3, 0.1, 0.05], 
-            rgbaColor=[0, 0, 1, 1]  # Blue fixed-wing
-        )
-        
-        # Create multibody
+        collision_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.4, 0.8, 0.05]) 
+        visual_shape = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.4, 0.8, 0.05], rgbaColor=[0.2, 0.2, 0.9, 1])
         drone_id = p.createMultiBody(
             baseMass=mass,
             baseCollisionShapeIndex=collision_shape,
             baseVisualShapeIndex=visual_shape,
             basePosition=position
         )
-        
         return drone_id
-    
-    def joystick_to_forces(self, joystick_input):
-        """
-        Convert joystick input to forces for fixed-wing aircraft.
-        
-        Args:
-            joystick_input: [turn_left_right, throttle, climb_dive] in range [-1, 1]
-            
-        Returns:
-            forces: [force_x, force_y, force_z] in Newtons
-        """
-        # Fixed-wing control interpretation:
-        # [0] = turn left/right (changes heading)
-        # [1] = throttle (forward thrust)
-        # [2] = climb/dive (elevator)
-        
-        turn_input = joystick_input[0]
-        throttle_input = joystick_input[1]
-        elevator_input = joystick_input[2]
-        
-        # Update heading based on turn input (assuming 60 FPS)
-        dt = 1/60.0
-        self.current_heading += turn_input * self.turn_rate * dt
-        
-        # Forward thrust (always needs some thrust to maintain flight)
-        base_thrust = self.max_thrust * 0.3  # Minimum thrust to maintain flight
-        thrust = base_thrust + (throttle_input * 0.5 + 0.5) * (self.max_thrust - base_thrust)
-        
-        # Calculate forces in world coordinates
-        force_x = thrust * np.cos(self.current_heading)
-        force_y = thrust * np.sin(self.current_heading)
-        
-        # Vertical force (elevator control + basic lift)
-        # Get atmospheric conditions
-        local_airflow_velocity = self.atmospheric_conditions['velocity']
-        local_density = self.atmospheric_conditions['density']
-        
-        # Calculate velocity relative to air (not ground)
-        aircraft_velocity = self.get_velocity()
-        air_relative_velocity = aircraft_velocity - local_airflow_velocity
-        v_air = np.linalg.norm(air_relative_velocity)
-        
-        # Generate lift based on airspeed (not groundspeed)
-        if v_air > 0.1:
-            lift = 0.5 * local_density * (v_air ** 2) * self.wing_area * self.lift_coefficient
-        else:
-            lift = 0
-        
-        # Combine lift with elevator input
-        # Elevator has STRONG authority (100% of max_thrust) for altitude control
-        force_z = lift + elevator_input * self.max_thrust * 1.0 - self.gravity_compensation
-        
-        return np.array([force_x, force_y, force_z])
-    
-    def apply_control(self, joystick_input):
-        """Apply fixed-wing control forces."""
-        # Convert joystick to forces
-        forces = self.joystick_to_forces(joystick_input)
-        
-        # Apply force to center of mass
-        p.applyExternalForce(
-            self.drone_id,
-            -1,  # Apply to base link
-            forces.tolist(),
-            [0, 0, 0],  # Force position (center)
-            p.WORLD_FRAME
-        )
-        
-        # Note: Drag is now handled in apply_environmental_effects() using air-relative velocity
-        
-        return forces
-    
-    def apply_wind_effect(self, wind_velocity):
-        """Apply wind forces to the fixed-wing aircraft."""
-        # Fixed-wing is more affected by wind due to larger surface area
-        wind_force = np.array(wind_velocity) * 0.2  # Higher wind resistance
-        
-        p.applyExternalForce(
-            self.drone_id,
-            -1,
-            wind_force.tolist(),
-            [0, 0, 0],
-            p.WORLD_FRAME
-        )
-        
-        return wind_force
-    
-    def get_drone_type(self):
-        """Get drone type string."""
-        return "Fixed-Wing"
-    
-    def can_hover(self):
-        """Check if drone can hover."""
-        return False
-    
-    def is_stalling(self):
-        """Check if aircraft is stalling (speed too low)."""
-        return self.get_speed() < self.min_speed
-    
-    def get_heading(self):
-        """Get current heading in radians."""
-        return self.current_heading
-    
-    def get_heading_degrees(self):
-        """Get current heading in degrees."""
-        return np.degrees(self.current_heading)
-    
-    def get_flight_characteristics(self):
-        """Get flight characteristics dictionary."""
-        return {
-            'type': self.get_drone_type(),
-            'mass': self.mass,
-            'can_hover': self.can_hover(),
-            'max_thrust': self.max_thrust,
-            'min_speed': self.min_speed,
-            'current_heading_deg': self.get_heading_degrees(),
-            'is_stalling': self.is_stalling(),
-            'lift_coefficient': self.lift_coefficient,
-            'drag_coefficient': self.drag_coefficient
-        }
-    
-    def apply_environmental_effects(self, atmospheric_conditions: dict):
-        """
-        Apply drag force based on air relative velocity and local atmospheric density.
-        
-        Args:
-            atmospheric_conditions: dict with keys:
-                - 'velocity': [u, v, w] airflow vector (m/s)
-                - 'temperature': local temperature (K)
-                - 'density': local air density (kg/m³)
-        """
-        # Extract atmospheric conditions
-        local_airflow = atmospheric_conditions['velocity']
-        local_density = atmospheric_conditions.get('density', 1.225)  # kg/m³
-        
-        # Store atmospheric conditions for use in lift calculation
-        self.atmospheric_conditions = atmospheric_conditions
-        self.current_air_density = local_density
-        
-        # Aircraft velocity relative to the air (v_air_relative = v_aircraft - u_air)
-        aircraft_velocity = self.get_velocity()
-        air_relative_velocity = aircraft_velocity - local_airflow
-        v_air = np.linalg.norm(air_relative_velocity)
-        
-        # Drag Force: F_drag = 0.5 * ρ * v²_air * C_D * A * (-v̂_air_relative)
-        drag_magnitude = 0.5 * local_density * (v_air ** 2) * self.drag_coefficient * self.wing_area
-        
-        # Drag acts opposite to the direction of relative air velocity
-        drag_force = -drag_magnitude * (air_relative_velocity / v_air) if v_air > 0.1 else np.array([0., 0., 0.])
 
-        # Apply the total external force
-        p.applyExternalForce(
-            self.drone_id,
-            -1,
-            drag_force.tolist(),
-            [0, 0, 0],
-            p.WORLD_FRAME
-        )
+    def _calculate_aerodynamics(self, velocity, orientation_quat, air_density):
+        """
+        Calculates Lift and Drag forces based on Airspeed and Angle of Attack.
+        """
+        # 1. Get Wind Vector
+        wind_vec = np.zeros(3)
+        if self.environment:
+            # Note: We assume uniform wind for simplicity, or query specific pos
+            wind_vec = self.environment.get_wind_at_position(self.get_position())
+            
+        # 2. Calculate Airspeed Vector (Relative Velocity)
+        # V_air = V_ground - V_wind
+        airspeed_vec_world = velocity - wind_vec
+        airspeed = np.linalg.norm(airspeed_vec_world)
+        
+        # If too slow, no aerodynamics
+        if airspeed < 0.1: return np.zeros(3), np.zeros(3)
+
+        # Rotation matrix: Body -> World
+        rot_matrix = np.array(p.getMatrixFromQuaternion(orientation_quat)).reshape(3, 3)
+        
+        # Transform Airspeed to Body Frame (to calculate Alpha)
+        airspeed_body = rot_matrix.T @ airspeed_vec_world
+        
+        # Angle of Attack (Alpha) = atan(-w / u)
+        # Using body-frame vertical and forward airspeed components
+        alpha = np.arctan2(-airspeed_body[2], airspeed_body[0])
+        
+        # Aerodynamic Coefficients
+        stall_angle = np.radians(15)
+        if abs(alpha) < stall_angle:
+            CL = 2.0 * np.pi * alpha + 0.3
+        else:
+            CL = 0.8 * np.sign(alpha) * np.exp(-5 * (abs(alpha) - stall_angle))
+            
+        CD = 0.05 + (CL**2) / (np.pi * self.aspect_ratio * 0.8)
+        
+        # Dynamic Pressure (q = 0.5 * rho * v^2)
+        # CRITICAL: Using AIRSPEED, not ground speed
+        q = 0.5 * air_density * (airspeed**2) * self.wing_area
+        
+        lift_mag = q * CL
+        drag_mag = q * CD
+        
+        # Force Vectors in Body Frame
+        # Simplified: Lift is perpendicular to airflow, Drag is parallel
+        # We approximate Lift as mostly Up (Z) in body frame for small alphas
+        F_lift_body = np.array([-lift_mag * np.sin(alpha), 0, lift_mag * np.cos(alpha)])
+        F_drag_body = np.array([-drag_mag * np.cos(alpha), 0, -drag_mag * np.sin(alpha)])
+        
+        # Rotate back to World Frame
+        F_lift_world = rot_matrix @ F_lift_body
+        F_drag_world = rot_matrix @ F_drag_body
+        
+        return F_lift_world, F_drag_world
+
+    def apply_control(self, joystick_input):
+        """
+        Autopilot Control.
+        Input: [Target_Bank_Input, Throttle, Target_Pitch_Input]
+        """
+        dt = 1/60.0
+        
+        # Inputs
+        target_bank = -joystick_input[0] * np.radians(45) 
+        throttle = np.clip(joystick_input[1], 0.0, 1.0)
+        target_pitch = joystick_input[2] * np.radians(20)
+        
+        # Thrust (World Frame)
+        thrust_scalar = throttle * self.max_thrust
+        quat = self.get_orientation_quaternion()
+        rot_matrix = np.array(p.getMatrixFromQuaternion(quat)).reshape(3, 3)
+        thrust_vec = rot_matrix @ np.array([thrust_scalar, 0, 0])
+        
+        # Aerodynamics (Using Airspeed via _calculate_aerodynamics)
+        vel_world = self.get_velocity()
+        lift_vec, drag_vec = self._calculate_aerodynamics(vel_world, quat, 1.225)
+        
+        # Stabilization (PID)
+        rpy = self.get_orientation_rpy()
+        torque_x = self.pid_bank.update(target_bank - rpy[0], dt)
+        torque_y = self.pid_pitch.update(target_pitch - rpy[1], dt)
+        
+        # Yaw Damping
+        ang_vel = np.array(p.getBaseVelocity(self.drone_id)[1])
+        torque_z = -2.0 * ang_vel[2] 
+        
+        # Apply Forces
+        p.applyExternalForce(self.drone_id, -1, thrust_vec, [0, 0, 0], p.WORLD_FRAME)
+        p.applyExternalForce(self.drone_id, -1, lift_vec, [0, 0, 0], p.WORLD_FRAME)
+        p.applyExternalForce(self.drone_id, -1, drag_vec, [0, 0, 0], p.WORLD_FRAME)
+        
+        # Apply Torques
+        p.applyExternalTorque(self.drone_id, -1, [torque_x, torque_y, torque_z], p.WORLD_FRAME)
+        
+        return thrust_vec 
+
+    def apply_environmental_effects(self, atmospheric_conditions: dict):
+        # Environment is already handled inside apply_control -> _calculate_aerodynamics
+        pass
+
+    def get_drone_type(self): return "Fixed-Wing"
+    def get_flight_characteristics(self): return {'type': 'Fixed-Wing (Aero)', 'stall_speed': self.stall_speed}

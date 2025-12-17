@@ -15,6 +15,7 @@ Thumbs.db
 
 # Logy a dočasné věci
 *.log
+logs/
 
 cache/
 

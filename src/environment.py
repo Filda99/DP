@@ -373,7 +373,7 @@ class Environment:
     # ============================================================================
 
     def _initialize_random_wind(self):
-        speed = random.uniform(3.0, 12.0)
+        speed = random.uniform(3.0, 25.0)
         angle = random.uniform(0, 2 * np.pi)
         self.wind_velocity = np.array([speed * np.cos(angle), speed * np.sin(angle), 0.0])
 
@@ -394,6 +394,21 @@ class Environment:
         # Smooth transition
         self.wind_velocity = 0.98 * self.wind_velocity + 0.02 * self.target_wind
         self.weather['wind_velocity'] = self.wind_velocity
+
+    def set_wind(self, wind_velocity):
+        """
+        Manually set wind velocity and disable random updates.
+        
+        Args:
+            wind_velocity: [vx, vy, vz] in m/s
+        """
+        self.wind_velocity = np.array(wind_velocity, dtype=float)
+        self.target_wind = self.wind_velocity.copy()
+        self.weather['wind_velocity'] = self.wind_velocity
+        
+        # Disable random wind changes
+        self.manual_wind_control = True
+        print(f"🌬️ Environment Wind set to: {self.wind_velocity} m/s")
 
     def get_wind_at_position(self, position):
         return self.wind_velocity * (1.0 + position[2] * 0.01)
