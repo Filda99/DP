@@ -84,7 +84,7 @@ class Quadcopter(BaseDrone):
         p.applyExternalTorque(self.drone_id, -1, [0, 0, torque_z], p.WORLD_FRAME)
         
         # 6. Visual Stabilization (Keep drone visually flat)
-        p.applyExternalTorque(self.drone_id, -1, [-2.0 * rpy[0] - 0.5*ang_vel[0], -2.0 * rpy[1] - 0.5*ang_vel[1], 0], p.WORLD_FRAME)
+        # p.applyExternalTorque(self.drone_id, -1, [-2.0 * rpy[0] - 0.5*ang_vel[0], -2.0 * rpy[1] - 0.5*ang_vel[1], 0], p.WORLD_FRAME)
 
         return np.array(total_force)
 

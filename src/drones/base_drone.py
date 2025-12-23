@@ -112,7 +112,7 @@ class BaseDrone(ABC):
         return dropped
 
     @abstractmethod
-    def apply_control(self, joystick_input):
+    def apply_control(self, joystick_input, dt):
         pass
     
     @abstractmethod

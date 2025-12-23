@@ -142,12 +142,12 @@ class Simulation:
         self.drone_trajectories[name] = [[position[0], position[1], position[2], 0.0]]
         print(f"✅ Added quadcopter '{name}' at {position}")
     
-    def add_fixedwing(self, name, position=[0, 0, 5], mass=1.0, max_thrust=20.0, water_capacity=0.0):
-        fw = FixedWing(position, mass, max_thrust, water_capacity=water_capacity, environment=self.environment)
+    def add_fixedwing(self, name, position=[0, 0, 5], mass=1.0, water_capacity=0.0):
+        fw = FixedWing(position=position, mass=mass, water_capacity=water_capacity, environment=self.environment)
         self.drones[name] = fw
         self.simulation_log['drones'][name] = {
             'type': 'fixedwing',
-            'positions': [], 'forces': [], 'velocities': [], 'control_inputs': []
+            'positions': [], 'forces': [], 'velocities': [], 'control_inputs': [], 'water_levels': []
         }
         self.drone_trajectories[name] = [[position[0], position[1], position[2], 0.0]]
         start_orientation = p.getQuaternionFromEuler([0, 0.2, 0.0])
@@ -227,7 +227,7 @@ class Simulation:
             
         H, W = self.environment.fire_grid.H, self.environment.fire_grid.W
         water_grid = np.zeros((H, W), dtype=float)
-        dt = 1.0 / self.fps
+        dt = self.timestep
         cell_size = self.environment.grid_mapper.cell_size_m
         max_sigma = 0.0
         
@@ -235,7 +235,6 @@ class Simulation:
             if not drone.can_drop_water(): continue
             pos = drone.get_position()
             altitude = pos[2]
-            if altitude > 50.0: continue
             
             effectiveness = 1.0 - (altitude / 50.0)
             water = drone.consume_water(200.0 * dt) * effectiveness
@@ -348,14 +347,20 @@ class Simulation:
                 drone.apply_environmental_effects(atmos)
 
                 # 2. Control
-                forces = drone.apply_control(control_input)
+                forces = drone.apply_control(control_input, self.timestep)
                 
                 # 3. Log data (Every step - FIXED to match time array length)
                 self.simulation_log['drones'][drone_name]['positions'].append(drone.get_position().copy())
                 self.simulation_log['drones'][drone_name]['forces'].append(forces.copy())
                 self.simulation_log['drones'][drone_name]['velocities'].append(drone.get_velocity().copy())
                 self.simulation_log['drones'][drone_name]['control_inputs'].append(control_input.copy())
-        
+                
+                # Check if drone has water attribute (FixedWing does, Quadcopter does not)
+                if hasattr(drone, 'current_water'):
+                    self.simulation_log['drones'][drone_name]['water_levels'].append(drone.current_water)
+                else:
+                    self.simulation_log['drones'][drone_name]['water_levels'].append(0.0)
+
         # Step physics
         p.stepSimulation()
         self.simulation_time += self.timestep
