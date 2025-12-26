@@ -42,7 +42,7 @@ class Simulation:
         self.timestep = 1/60.0
         
         # --- Airflow model variables ---
-        self.airflow_H = 50.0
+        self.airflow_H = 100.0
         self.convection_gain = 8.0
         self.plume_radius_factor = 2.0
         self.radial_flow_factor = 0.3
@@ -338,8 +338,8 @@ class Simulation:
         )
 
         # Iterate over local neighborhood of fire cells
-        for di in range(-2, 3):
-            for dj in range(-2, 3):
+        for di in range(-5, 5):
+            for dj in range(-5, 5):
                 i, j = ci + di, cj + dj
 
                 # Skip cells outside the fire grid

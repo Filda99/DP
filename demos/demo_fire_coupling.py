@@ -55,8 +55,9 @@ def run_verification():
     # 3. Setup Drones
     # ---------------------------------------------------------
     # Quadcopters (Stationary Probes)
-    sim.add_quadcopter("Quad_Center", position=[0, 0, 15])   # In Plume
-    sim.add_quadcopter("Quad_Side", position=[15, 0, 10])    # In Inflow
+    sim.add_quadcopter("Quad_Low", position=[0, 0, 15])
+    sim.add_quadcopter("Quad_Side", position=[5, 0, 15])
+    sim.add_quadcopter("Quad_High", position=[0, 0, 35])
 
     # Fixed Wings (Flyovers)
     # They start at Y=-40 and fly North (Y+) through the fire at X=0
@@ -89,8 +90,9 @@ def run_verification():
         
         # A. Controls
         controls = {
-            'Quad_Center': [0, 0, 0, 0],   # Hover
+            'Quad_Low': [0, 0, 0, 0],   # Hover
             'Quad_Side':   [0, 0, 0, 0],   # Hover
+            'Quad_High':   [0, 0, 0, 0],   # Hover
             # Fixed Wing: [Roll=0, Throttle=0.7, Pitch=0, Water=0]
             # Flying straight and level
             'Wing_Low':    [0, 0.7, 0, 0], 
@@ -130,8 +132,7 @@ def run_verification():
     # 6. Generate Final Plots
     # ---------------------------------------------------------
     print("📊 Generating final verification plots...")
-    plot_physics_data(history, output_dir)
-    plot_3d_trajectory(history, output_dir)
+    plot_trajectory_analysis(history, output_dir)
     print(f"✅ Verification complete. Check folder: {output_dir}/")
 
 def save_snapshot(sim, time, folder):
@@ -147,7 +148,7 @@ def save_snapshot(sim, time, folder):
     plt.colorbar(label="Fire Intensity")
     
     # Plot Drone Positions
-    colors = {'Quad_Center': 'cyan', 'Quad_Side': 'blue', 'Wing_Low': 'red', 'Wing_High': 'orange'}
+    colors = {'Quad_Low': 'cyan', 'Quad_Side': 'blue', 'Quad_High': 'yellow', 'Wing_Low': 'red', 'Wing_High': 'orange'}
     for name, drone in sim.drones.items():
         pos = drone.get_position()
         plt.scatter(pos[0], pos[1], c=colors.get(name, 'white'), s=100, edgecolor='black', label=name, zorder=10)
@@ -162,68 +163,60 @@ def save_snapshot(sim, time, folder):
     plt.savefig(filename)
     plt.close()
 
-def plot_physics_data(data, folder):
-    """Plots the Wind Influence graphs."""
-    time = data['time']
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12))
+def plot_trajectory_analysis(data, folder):
+    """Generates X, Y, Z graphs over time for Quads and Wings."""
+    time = np.array(data['time'])
     
-    # 1. Quadcopters (Stationary)
-    ax1.set_title("Quadcopter Probes (Stationary)")
-    ax1.plot(time, data['drones']['Quad_Center']['updraft'], 'c-', label='Quad Center (Updraft)')
-    ax1.plot(time, data['drones']['Quad_Side']['radial'], 'b--', label='Quad Side (Radial)')
-    ax1.axhline(0, color='k', alpha=0.3)
-    ax1.set_ylabel("Wind Speed (m/s)")
-    ax1.legend()
-    ax1.grid(True)
+    # Helper to get XYZ arrays
+    def get_xyz(name):
+        if name not in data['drones'] or len(data['drones'][name]) == 0:
+            print(f"⚠️ Warning: No data found for drone '{name}'")
+            return np.zeros(len(time)), np.zeros(len(time)), np.zeros(len(time))
+        arr = np.array(data['drones'][name]['pos'])
+        return arr[:,0], arr[:,1], arr[:,2] # x, y, z
     
-    # 2. Fixed Wings (Flyover Profile) - Updraft vs Time
-    ax2.set_title("Fixed-Wing Flyover: Updraft Profile")
-    ax2.plot(time, data['drones']['Wing_Low']['updraft'], 'r-', label='Wing Low (15m)')
-    ax2.plot(time, data['drones']['Wing_High']['updraft'], 'orange', linestyle='--', label='Wing High (40m)')
-    ax2.set_ylabel("Updraft (m/s)")
-    ax2.legend()
-    ax2.grid(True)
+    # Helper function for dual-axis plotting
+    def plot_dual_axis(ax_left, name, title):
+        x, y, z = get_xyz(name)
+        
+        # Left Axis: X and Y (Lateral)
+        l1 = ax_left.plot(time, x, label='X Position', color='red', linestyle='--', alpha=0.7)
+        l2 = ax_left.plot(time, y, label='Y Position', color='green', linestyle='--', alpha=0.7)
+        ax_left.set_ylabel("Lateral Position (m)", color='black')
+        ax_left.set_title(title)
+        ax_left.grid(True, alpha=0.3)
+        
+        # Right Axis: Z (Altitude)
+        ax_right = ax_left.twinx()
+        l3 = ax_right.plot(time, z, label='Z Altitude', color='blue', linewidth=2)
+        ax_right.set_ylabel("Altitude (m)", color='black')
+        ax_right.tick_params(axis='y', labelcolor='black')
+        
+        # Align Grids (Optional, sometimes hard with dual axis)
+        # ax_right.grid(False) 
 
-    # 3. Fixed Wing - Altitude Hold Check
-    ax3.set_title("Fixed-Wing Altitude Check")
-    # Extract Z height
-    z_low = [p[2] for p in data['drones']['Wing_Low']['pos']]
-    z_high = [p[2] for p in data['drones']['Wing_High']['pos']]
-    ax3.plot(time, z_low, 'r-', label='Wing Low Z')
-    ax3.plot(time, z_high, 'orange', label='Wing High Z')
-    ax3.set_ylabel("Altitude (m)")
-    ax3.legend()
-    ax3.grid(True)
-    
+        # Combined Legend
+        lines = l1 + l2 + l3
+        labels = [l.get_label() for l in lines]
+        ax_left.legend(lines, labels, loc='upper left')
+
+   # --- FIGURE 1: QUADCOPTERS ---
+    fig1, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 10))
+    plot_dual_axis(ax1, 'Quad_Low', "Quad Low (15m above fire) - Hovering")
+    plot_dual_axis(ax2, 'Quad_Side', "Quad Side (5m next to fire, 15m above fire) - Hovering")
+    plot_dual_axis(ax3, 'Quad_High', "Quad High (35m above fire) - Hovering")
+    ax2.set_xlabel("Time (s)")
     plt.tight_layout()
-    plt.savefig(f"{folder}/physics_verification.png")
+    plt.savefig(f"{folder}/analysis_quadcopters.pdf")
     plt.close()
 
-def plot_3d_trajectory(data, folder):
-    """Plots 3D movement history."""
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
-    
-    # Fire base (approximate)
-    xx, yy = np.meshgrid(np.linspace(-5, 5, 10), np.linspace(-5, 5, 10))
-    ax.plot_surface(xx, yy, np.zeros_like(xx), color='red', alpha=0.3)
-    
-    colors = {'Quad_Center': 'cyan', 'Quad_Side': 'blue', 'Wing_Low': 'red', 'Wing_High': 'orange'}
-    
-    for name, drone_data in data['drones'].items():
-        pos_hist = np.array(drone_data['pos'])
-        if len(pos_hist) > 0:
-            ax.plot(pos_hist[:,0], pos_hist[:,1], pos_hist[:,2], label=name, color=colors.get(name,'black'), linewidth=2)
-            # End point
-            ax.scatter(pos_hist[-1,0], pos_hist[-1,1], pos_hist[-1,2], s=50, color=colors.get(name,'black'))
-
-    ax.set_title("3D Drone Trajectories")
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
-    ax.set_zlabel("Height")
-    ax.legend()
-    
-    plt.savefig(f"{folder}/trajectory_3d.png")
+    # --- FIGURE 2: FIXED WINGS ---
+    fig2, (ax3, ax4) = plt.subplots(2, 1, figsize=(10, 10))
+    plot_dual_axis(ax3, 'Wing_Low', "Fixed-Wing Low (15m) - Flighover")
+    plot_dual_axis(ax4, 'Wing_High', "Fixed-Wing High (40m) - Flighover")
+    ax4.set_xlabel("Time (s)")
+    plt.tight_layout()
+    plt.savefig(f"{folder}/analysis_fixedwings.pdf")
     plt.close()
 
 if __name__ == "__main__":

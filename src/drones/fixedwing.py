@@ -135,13 +135,9 @@ class FixedWing(BaseDrone):
 
         # --- 4. Wind Triangle & Ground Speed ---
 
-        # Update Course (Heading) - standard coordinated turn
-        # We need Ground Speed (Vg) for this.
-        # Simplified wind handling for clarity:
-        if self.environment:
-             v_wind = self.environment.weather.get('wind_velocity', np.zeros(3))
-        else:
-             v_wind = np.zeros(3)
+        # Uses the wind we stored 
+        # in apply_environmental_effects, which includes Fire Updrafts
+        v_wind = self.current_wind
              
         # 3.1. Calculate Direction Vector of the Drone (Unit Vector based on chi/gamma)
         # This represents the direction the drone is traveling
@@ -176,22 +172,31 @@ class FixedWing(BaseDrone):
         else:
             chi_dot = 0.0
 
-        # --- 4. Integration ---
-        x_dot = vg * np.cos(chi) * np.cos(gamma)
-        y_dot = vg * np.sin(chi) * np.cos(gamma)
-        h_dot = vg * np.sin(gamma)
+        # --- 6. Integration ---
+        # A. Velocity relative to Air (What the propellers do)
+        v_air_x = va * np.cos(chi) * np.cos(gamma)
+        v_air_y = va * np.sin(chi) * np.cos(gamma)
+        v_air_z = va * np.sin(gamma)
 
+        # B. Total Ground Velocity (Add the wind vector directly)
+        # This ensures we "Drift" sideways in crosswind and "Bump" up in fire updrafts
+        x_dot = v_air_x + v_wind[0]
+        y_dot = v_air_y + v_wind[1]
+        h_dot = v_air_z + v_wind[2]  # <--- This captures the Fire Updraft
+
+        # Update Position
         self.state_pos[0] += x_dot * dt
         self.state_pos[1] += y_dot * dt
         self.state_pos[2] += h_dot * dt
         
+        # Update Internal States
         self.state_va += va_dot * dt
         self.state_chi += chi_dot * dt
         self.state_gamma += gamma_dot * dt
         self.state_phi_dot += phi_ddot * dt
         self.state_phi += self.state_phi_dot * dt
 
-        # --- 5. PyBullet Update ---
+        # --- 7. PyBullet Update ---
         new_quat = p.getQuaternionFromEuler([self.state_phi, self.state_gamma, self.state_chi])
         p.resetBasePositionAndOrientation(self.drone_id, self.state_pos, new_quat)
         p.resetBaseVelocity(self.drone_id, linearVelocity=[x_dot, y_dot, h_dot], angularVelocity=[0, 0, chi_dot])
