@@ -44,7 +44,7 @@ class Quadcopter(BaseDrone):
         )
         return drone_id
 
-    def apply_control(self, joystick_input):
+    def apply_control(self, joystick_input, dt):
         """
         Apply high-level joystick control.
         Input: [Roll_Cmd, Pitch_Cmd, Yaw_Rate, Vertical_Cmd] (Ranges -1 to 1)
