@@ -30,7 +30,6 @@ def plot_flight_analysis(name, times, positions, output_file):
     # Mark wind change
     plt.axvline(x=5.0, color='k', linestyle='--', label='Wind Increase (10 -> 20 m/s)')
         
-    plt.title(f'{name} - Position Stability in Wind')
     plt.xlabel('Time (s)')
     plt.ylabel('Position (m)')
     plt.grid(True, alpha=0.4)
@@ -75,10 +74,10 @@ def run_wind_test():
             log_pos.append(sim.drones["Quad_Test"].get_position())
 
     # Plot
-    output_dir = 'output/demo_05_graphs'
+    output_dir = 'output'
     os.makedirs(output_dir, exist_ok=True)
     
-    plot_flight_analysis("Quad_Wind_Test", np.array(log_times), np.array(log_pos), f"{output_dir}/wind_test.png")
+    plot_flight_analysis("Quad_Wind_Test", np.array(log_times), np.array(log_pos), f"{output_dir}/quad_wind_test.pdf")
     
     sim.stop_simulation()
 

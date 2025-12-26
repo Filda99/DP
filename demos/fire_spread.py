@@ -137,12 +137,10 @@ def run_fast_demo():
             region_prefix=CACHE_PREFIX,
             center_lat=CENTER_LAT,
             center_lon=CENTER_LON,
-            radius_m=RADIUS_M,
-            default_height_m=8.0
         )
     else:
         print(f"🌍 Stahuji z OSM...")
-        sim.setup_osm_environment(LOCATION, default_height_m=8.0, radius_m=RADIUS_M)
+        sim.setup_osm_environment(LOCATION)
         
     # 3. NASTAVENÍ MŘÍŽKY - ZDE JE HLAVNÍ ZRYCHLENÍ
     # Zvětšili jsme cell_size_m z 2.0 na 5.0 -> 6.25x méně buněk!

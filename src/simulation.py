@@ -222,42 +222,80 @@ class Simulation:
         self.temperature_grid = new_temp
     
     def _calculate_water_drops(self):
-        # FIX: Check if grid exists
+        """
+        OPTIMIZED VERSION: Calculates water dispersion only at impact sites.
+        """
+        # 1. Quick check if grid exists
         if self.environment.fire_grid is None or self.environment.grid_mapper is None:
             return {}
-            
-        H, W = self.environment.fire_grid.H, self.environment.fire_grid.W
-        water_grid = np.zeros((H, W), dtype=float)
+
+        water_drops = {}
         dt = self.timestep
-        cell_size = self.environment.grid_mapper.cell_size_m
-        max_sigma = 0.0
+        mapper = self.environment.grid_mapper
         
+        # Grid dimensions for boundary checks
+        H, W = self.environment.fire_grid.H, self.environment.fire_grid.W
+
         for drone in self.drones.values():
+            # If drone is not dropping water, skip (saves CPU)
             if not drone.can_drop_water(): continue
+
+            # 2. Get Position and Water Amount
             pos = drone.get_position()
             altitude = pos[2]
             
-            effectiveness = 1.0 - (altitude / 50.0)
-            water = drone.consume_water(200.0 * dt) * effectiveness
-            if water <= 0: continue
+            # Water effectiveness decreases with height
+            effectiveness = max(0.0, 1.0 - (altitude / 50.0))
+            water_amount = drone.consume_water(200.0 * dt) * effectiveness
             
+            if water_amount <= 0: continue
+
+            # 3. Where did it hit? (Center cell)
             try:
-                i, j = self.environment.grid_mapper.world_to_cell((pos[0], pos[1]))
-                if 0 <= i < H and 0 <= j < W:
-                    water_grid[i, j] += water
-                    effective_radius = 10.0 + 0.3 * altitude
-                    sigma = effective_radius / cell_size / 2.5
-                    max_sigma = max(max_sigma, sigma)
-            except: continue
-        
-        if max_sigma > 0:
-            water_grid = gaussian_filter(water_grid, sigma=max_sigma, mode='constant')
-        
-        water_drops = {}
-        nonzero = np.argwhere(water_grid > 1e-6)
-        for i, j in nonzero:
-            scaled_water = float(water_grid[i, j]) * 10.0
-            water_drops[(int(i), int(j))] = min(1.0, scaled_water)
+                center_r, center_c = mapper.world_to_cell((pos[0], pos[1]))
+            except:
+                continue # Out of bounds
+
+            # 4. Dispersion Parameters
+            effective_radius_m = 10.0 + 0.3 * altitude
+            sigma_cells = effective_radius_m / mapper.cell_size_m / 2.5
+            
+            # Optimization: Calculate only within 3*sigma radius (captures 99% of water)
+            influence_radius = int(sigma_cells * 3) + 1
+            
+            # 5. Iterate only over a small Bounding Box
+            # Instead of 160,000 cells, we check only ~100 cells
+            r_min = max(0, center_r - influence_radius)
+            r_max = min(H, center_r + influence_radius + 1)
+            c_min = max(0, center_c - influence_radius)
+            c_max = min(W, center_c + influence_radius + 1)
+
+            two_sigma_sq = 2 * sigma_cells**2
+
+            for r in range(r_min, r_max):
+                for c in range(c_min, c_max):
+                    # Squared distance from center
+                    dist_sq = (r - center_r)**2 + (c - center_c)**2
+                    
+                    # Gaussian function: exp(-x^2 / 2sigma^2)
+                    weight = np.exp(-dist_sq / two_sigma_sq)
+                    
+                    # Ignore negligible contributions
+                    if weight < 0.01: continue
+                    
+                    dropped_value = water_amount * weight * 10.0 # Scaling factor
+                    
+                    # Store in dictionary (accumulate if multiple drones hit same spot)
+                    coord = (r, c)
+                    if coord in water_drops:
+                        water_drops[coord] += dropped_value
+                    else:
+                        water_drops[coord] = dropped_value
+
+        # 6. Clip to max 1.0 (Saturation)
+        for k in water_drops:
+            water_drops[k] = min(1.0, water_drops[k])
+
         return water_drops
     
     # ============================================================================
@@ -447,13 +485,13 @@ class Simulation:
         # Environment updates
         water_drops = self._calculate_water_drops()
         self.environment.update_fire_simulation(water_drops=water_drops, real_dt=self.timestep)
-        self._update_temperature_grid()
+        # self._update_temperature_grid()
         
-        if len(self.simulation_log['times']) % 10 == 0:
-            self.environment.visualize_fire_in_simulation()
+        # if len(self.simulation_log['times']) % 10 == 0:
+        #     self.environment.visualize_fire_in_simulation()
         
-        fire_state = self.environment.get_fire_state()
-        self.simulation_log['fire_states'].append(fire_state)
+        # fire_state = self.environment.get_fire_state()
+        # self.simulation_log['fire_states'].append(fire_state)
         
         self._check_collisions()
     
