@@ -246,7 +246,7 @@ class Simulation:
             altitude = pos[2]
             
             # Water effectiveness decreases with height
-            effectiveness = max(0.0, 1.0 - (altitude / 50.0))
+            effectiveness = max(0.0, 1.0 - (altitude / 200.0))
             water_amount = drone.consume_water(200.0 * dt) * effectiveness
             
             if water_amount <= 0: continue

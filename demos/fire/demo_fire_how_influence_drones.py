@@ -5,7 +5,7 @@ import sys
 import shutil
 
 # Ensure we can import from src
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 
 from src.simulation import Simulation
@@ -159,7 +159,7 @@ def save_snapshot(sim, time, folder):
     plt.ylim(-40, 40)
     plt.grid(True, alpha=0.3)
     
-    filename = f"{folder}/env_step_{int(time*10):04d}.png"
+    filename = f"{folder}/env_step_{int(time*10):04d}.pdf"
     plt.savefig(filename)
     plt.close()
 

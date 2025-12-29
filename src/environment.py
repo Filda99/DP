@@ -211,12 +211,12 @@ class Environment:
         # l_base represents the base rate of spread in prob/sec. 
         # For a 2m cell size, a spread of 0.1 means ~0.2 m/s without wind.
         # Wind will multiply this by up to 10-20x.
-        REALISTIC_SPREAD_RATE = 0.05
+        SPREAD_RATE = 0.01
 
         self.fire_grid = FireGrid(
             H=H, W=W, dt=dt, alpha=alpha, 
             k_wind=k_wind, k_slope=1.0,
-            wind_dir=wind_angle, l_base=np.ones(H) *REALISTIC_SPREAD_RATE
+            wind_dir=wind_angle, l_base=np.ones(H) *SPREAD_RATE
         )
         self.fire_enabled = True
         
