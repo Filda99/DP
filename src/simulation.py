@@ -142,6 +142,7 @@ class Simulation:
         }
         self.drone_trajectories[name] = [[position[0], position[1], position[2], 0.0]]
         print(f"✅ Added quadcopter '{name}' at {position}")
+        return quad
     
     def add_fixedwing(self, name, position=[0, 0, 5], mass=1.0, water_capacity=0.0):
         fw = FixedWing(position=position, mass=mass, water_capacity=water_capacity, environment=self.environment)
