@@ -11,17 +11,18 @@ Tests the kinematic guidance model by performing a sequence of maneuvers:
 import numpy as np
 import sys
 import os
+import glob
+import time
 import matplotlib
-# matplotlib.use('Agg') 
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
-import pybullet as p
 
-# Cesta k projektu
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Add project root to path
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 
 from src.simulation import Simulation
+from src.map_importer import load_environment_from_osm_cache
 
 def run_demo():
     # 1. Setup Simulation
@@ -39,6 +40,8 @@ def run_demo():
     
     duration_sec = 60
     total_steps = int(duration_sec / dt) # Calculate steps based on actual dt
+
+    sim.set_wind([0.0, 0.0, 0.0]) # No wind for this demo
     
     print(f"🚀 Starting Fixed-Wing Demo ({duration_sec}s, dt={dt:.4f}s)...")
 
@@ -65,13 +68,13 @@ def run_demo():
             pitch_cmd = 0.0        # Maintain altitude
 
         elif time < 35.0:
-            pitch_cmd = 0.5
-            throttle_cmd = 0.5
+            pitch_cmd = 0.4
+            throttle_cmd = 0.3
 
         elif time < 45.0:
             # Phase 2: Right Turn (5-15s)
             # Roll +0.5 (approx 22 degrees bank)
-            roll_cmd = 0.5
+            roll_cmd = 0.8
         
         # Step Simulation
         sim.step_simulation({drone_name: [roll_cmd, throttle_cmd, pitch_cmd, water_cmd]})
@@ -144,24 +147,37 @@ def plot_results(positions, inputs, water_levels, times):
     ax2.grid(True, linestyle=':')
     ax2.legend()
 
-    # --- ROW 2: Position vs Time ---
+    # --- ROW 2: Position vs Time (UPDATED) ---
     ax3 = fig.add_subplot(3, 1, 2)
-    ax3.plot(times, positions[:, 0], label='X (North)', linestyle='--')
-    ax3.plot(times, positions[:, 1], label='Y (East)', linestyle='-.')
-    ax3.plot(times, positions[:, 2], label='Z (Altitude)')
     
-    ax3.set_xlabel('Time (s)')
-    ax3.set_ylabel('Position (m)')
-    ax3.set_title('Position History')
-    ax3.legend()
+    # Left Axis: Horizontal (X, Y)
+    ln1 = ax3.plot(times, positions[:, 0], label='X (North)', linestyle='--', color='C0')
+    ln2 = ax3.plot(times, positions[:, 1], label='Y (East)', linestyle='-.', color='C1')
+    ax3.set_ylabel('Horizontal Pos (m)')
     ax3.grid(True, linestyle=':')
+    
+    # Right Axis: Vertical (Z)
+    ax3_right = ax3.twinx()
+    ln3 = ax3_right.plot(times, positions[:, 2], label='Z (Altitude)', linestyle='-', color='C2')
+    ax3_right.set_ylabel('Altitude Z (m)', color='C2')
+    ax3_right.tick_params(axis='y', labelcolor='C2') # Color the tick labels to match the line
+    
+    # Combine Legends
+    lns = ln1 + ln2 + ln3
+    labs = [l.get_label() for l in lns]
+    ax3.legend(lns, labs, loc='upper left') # or 'best'
+    
+    ax3.set_title('Position History')
 
     # --- ROW 3: Control Inputs ---
     ax4 = fig.add_subplot(3, 1, 3)
-    ln1 = ax4.plot(times, inputs[:, 0], label='Roll', color='C0')
+    ln1 = ax4.plot(times, inputs[:, 0], label='Roll', color='C0', linestyle='-')
     ln2 = ax4.plot(times, inputs[:, 1], label='Throttle', color='C1', linestyle='--')
     ln3 = ax4.plot(times, inputs[:, 2], label='Pitch', color='C2', linestyle='-.')
     ax4.set_ylabel('Input'); ax4.set_ylim(0.1, 1.1)
+    ax4.set_xlabel('Time (s)')
+    ax4.set_ylim([-1.1, 1.1])
+    ax4.set_title('Commands History')
     
     lines = ln1 + ln2 + ln3
     labels = [l.get_label() for l in lines]

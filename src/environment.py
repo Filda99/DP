@@ -75,14 +75,15 @@ class Environment:
         
         H, W = self.fire_grid.H, self.fire_grid.W
         
+        # Fuel properties: (fuel_level, burn_rate)
+        FUEL_WATER = (0.0, 0.0) 
+        FUEL_BUILDING = (0.9, 0.0002) # 0.9 / 0.0002 = ~75 minutes will burn one cell
+        FUEL_FOREST = (0.8, 0.0005) # 0.8 / 0.0005 = ~26 minutes will burn one cell
+        FUEL_GRASS = (0.3, 0.001) # 0.3 / 0.001 = 5 minutes will burn one cell
+
         # 1. BASE LAYER: GRASS/OPEN (Default)
-        self.fire_grid.F[:] = 0.3
-        self.fire_grid.fuel_burn_rate[:] = 0.08
-        
-        # Fuel Constants
-        FUEL_FOREST = (0.8, 0.03)      # High fuel, medium burn
-        FUEL_BUILDING = (0.9, 0.0005)  # High fuel, very slow burn
-        FUEL_WATER = (0.0, 0.0)        # No fuel, no burn
+        self.fire_grid.F[:] = FUEL_GRASS[0]
+        self.fire_grid.fuel_burn_rate[:] = FUEL_GRASS[1]
         
         # Pre-calculate mapping constants to speed up loop
         origin_x = self.grid_mapper.origin_x
@@ -207,16 +208,23 @@ class Environment:
         wind_speed = np.linalg.norm(wind_velocity)
         wind_angle = np.arctan2(wind_velocity[1], wind_velocity[0]) if wind_speed > 0.01 else 0.0
 
-        # REALISTIC SPREAD RATE
+        # DEFINE PHYSICAL SPEED (Meters per Second)
         # l_base represents the base rate of spread in prob/sec. 
-        # For a 2m cell size, a spread of 0.1 means ~0.2 m/s without wind.
-        # Wind will multiply this by up to 10-20x.
-        SPREAD_RATE = 0.01
+        # 0.1 m/s = slow creep
+        # 1.0 m/s = fast walking pace fire
+        PHYSICAL_SPREAD_SPEED = 0.01
+        
+        # CALCULATE RATE PARAMETER (Lambda)
+        # Speed = Cell_Size * Rate  =>  Rate = Speed / Cell_Size
+        scaled_spread_rate = PHYSICAL_SPREAD_SPEED / cell_size_m
+
+        print(scaled_spread_rate)
 
         self.fire_grid = FireGrid(
             H=H, W=W, dt=dt, alpha=alpha, 
             k_wind=k_wind, k_slope=1.0,
-            wind_dir=wind_angle, l_base=np.ones(H) *SPREAD_RATE
+            wind_dir=wind_angle, 
+            l_base=np.ones(H) * scaled_spread_rate
         )
         self.fire_enabled = True
         

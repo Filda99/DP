@@ -15,6 +15,8 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 from shapely.geometry import Point, MultiPolygon
+import os
+import glob
 
 # Try to import the Environment class
 try:
@@ -109,7 +111,6 @@ def _process_osm_features(environment, gdf_proj, default_height_m=10.0, distance
     environment.rasterize_terrain_layers(gdf_water, gdf_buildings, gdf_forest)
 
     # --- 3. VISUALIZATION (Create PyBullet Objects) ---
-    # This loop is purely for the 3D view, it does NOT affect fire logic anymore.
     print("    Creating 3D visual objects...")
     
     # Visuals: Buildings
@@ -133,25 +134,20 @@ def _process_osm_features(environment, gdf_proj, default_height_m=10.0, distance
         size = [max_x - min_x, max_y - min_y, height]
         environment.add_city_block(pos_xy, size)
 
-    # Visuals: Forests (Approximated as circles)
+    # Visuals: Forests
     for _, row in gdf_forest.iterrows():
         geom = row.geometry
         if geom is None: continue
         circles = _approximate_polygon_with_circles(geom, min_radius=10.0, max_circles=5)
         for cx, cy, rad in circles:
             if rad > 5.0:
-                # Add simplified forest visual
                 tree_count = int((np.pi * rad**2) / 100)
                 environment.add_forest_area([cx, cy], rad, tree_count=max(3, min(tree_count, 15)))
 
-    # Visuals: Lakes (Approximated as circles or rectangles)
+    # Visuals: Lakes
     for _, row in gdf_water.iterrows():
         geom = row.geometry
         if geom is None: continue
-        
-        # Heuristic: If it's a long linestring/polygon (river), use rectangles
-        # For simplicity in visualizer, we often approximate everything with circles 
-        # or just add the main bodies.
         circles = _approximate_polygon_with_circles(geom, min_radius=10.0, max_circles=5)
         for cx, cy, rad in circles:
             if rad > 8.0:
@@ -169,8 +165,6 @@ def load_environment_from_osm_cache(environment: Environment,
     """
     Load OSM data from pre-downloaded cache files.
     """
-    import glob
-    
     print(f"📂 Loading from cache: {cache_dir}/{region_prefix}_*")
     
     cache_files = {
@@ -185,13 +179,14 @@ def load_environment_from_osm_cache(environment: Environment,
         matches = glob.glob(pattern)
         if matches:
             try:
+                # Load raw lat/lon data
                 gdf = gpd.read_file(matches[0])
                 gdfs[category] = gdf
             except Exception as e:
                 print(f"   ⚠️  Could not load {category}: {e}")
     
     if not gdfs:
-        raise FileNotFoundError(f"No cache files found in {cache_dir}")
+        raise FileNotFoundError(f"No cache files found in {cache_dir} matching {region_prefix}")
     
     # Projection setup
     center_point = Point(center_lon, center_lat)
@@ -203,20 +198,36 @@ def load_environment_from_osm_cache(environment: Environment,
     
     filtered_gdfs = {}
     for category, gdf in gdfs.items():
+        if gdf.empty: continue
+        
+        # Reproject to meters (UTM)
         gdf_proj = gdf.to_crs(utm_crs)
+        
+        # Filter by radius
+        # Note: We use the provided center point for filtering
         gdf_proj = gdf_proj[gdf_proj.distance(center_proj) <= radius_m]
-        gdf_proj['geometry'] = gdf_proj.translate(xoff=-center_proj.x, yoff=-center_proj.y)
-        filtered_gdfs[category] = gdf_proj
+        
+        if len(gdf_proj) > 0:
+            # Center the data to (0,0) relative to the requested center
+            gdf_proj['geometry'] = gdf_proj.translate(xoff=-center_proj.x, yoff=-center_proj.y)
+            filtered_gdfs[category] = gdf_proj
     
+    # FIX: Handle empty result gracefully
+    valid_dfs = [gdf for gdf in filtered_gdfs.values() if len(gdf) > 0]
+    
+    if not valid_dfs:
+        print(f"⚠️  No map features found within {radius_m}m of ({center_lat}, {center_lon}).")
+        return
+
     combined_gdf = gpd.GeoDataFrame(
-        pd.concat([gdf for gdf in filtered_gdfs.values() if len(gdf) > 0], ignore_index=True)
+        pd.concat(valid_dfs, ignore_index=True)
     )
     
     _process_osm_features(environment, combined_gdf, default_height_m, radius_m)
 
 def load_environment_from_osm(environment: Environment, location: str, default_height_m: float = 10.0, radius_m: float = 1500):
     """
-    Downloads map data from OSM and populates environment.
+    Downloads map data from OSM, SAVES CACHE (Raw Lat/Lon), and populates environment.
     """
     print(f"🌍 Downloading map data for '{location}'...")
     
@@ -227,6 +238,7 @@ def load_environment_from_osm(environment: Environment, location: str, default_h
         print(f"❌ Failed to geocode location: {e}")
         return
     
+    # 1. DOWNLOAD
     tags = {
         'landuse': ['residential', 'commercial', 'industrial', 'forest', 'grass', 'meadow', 'reservoir'],
         'natural': ['wood', 'water', 'wetland', 'scrub'],
@@ -243,12 +255,39 @@ def load_environment_from_osm(environment: Environment, location: str, default_h
         print(f"❌ Failed to download OSM data: {e}")
         return
     
-    # Projection and centering
+    # 2. SAVE RAW CACHE (Before projection)
+    # This allows load_environment_from_osm_cache to filter correctly later
+    cache_dir = "data"
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    # Clean filename
+    clean_name = location.replace(", ", "_").replace(" ", "_")
+    print(f"💾 Saving raw cache to {cache_dir}/{clean_name}_* ...")
+    
+    categories = ['building', 'landuse', 'natural', 'waterway']
+    for cat in categories:
+        if cat in gdf.columns:
+            subset = gdf[gdf[cat].notna()]
+            if not subset.empty:
+                filename = f"{cache_dir}/{clean_name}_{cat}_0.gpkg"
+                try:
+                    # Drop columns that can cause issues in GPKG (lists/dicts)
+                    for col in subset.columns:
+                        if subset[col].apply(lambda x: isinstance(x, (list, dict))).any():
+                            subset = subset.drop(columns=[col])
+                    
+                    subset.to_file(filename, driver="GPKG")
+                    print(f"   ✅ Saved {filename}")
+                except Exception as e:
+                    print(f"   ⚠️ Failed to save {cat}: {e}")
+
+    # 3. PROJECTION
     try:
         gdf_proj = gdf.to_crs(gdf.estimate_utm_crs())
     except AttributeError:
         gdf_proj = ox.project_geometries(gdf, to_crs=gdf.estimate_utm_crs())
     
+    # 4. CENTERING
     center_geom = Point(center_lon, center_lat)
     gdf_center = gpd.GeoDataFrame([{'geometry': center_geom}], crs='EPSG:4326')
     gdf_center_proj = gdf_center.to_crs(gdf_proj.crs)

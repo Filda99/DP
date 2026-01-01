@@ -55,16 +55,15 @@ def run_verification():
     # 3. Setup Drones
     # ---------------------------------------------------------
     # Quadcopters (Stationary Probes)
-    sim.add_quadcopter("Quad_Low", position=[0, 0, 15])
-    sim.add_quadcopter("Quad_Side", position=[5, 0, 15])
-    sim.add_quadcopter("Quad_High", position=[0, 0, 35])
+    sim.add_quadcopter("Quad_Low", position=[0, 0, 25])
+    sim.add_quadcopter("Quad_Side", position=[5, 0, 25])
+    sim.add_quadcopter("Quad_High", position=[0, 0, 80])
 
     # Fixed Wings (Flyovers)
     # They start at Y=-40 and fly North (Y+) through the fire at X=0
-    # Wing 1: Low Altitude (15m)
-    sim.add_fixedwing("Wing_Low", position=[-40, 0, 15], mass=1.0)
-    # Wing 2: High Altitude (40m)
-    sim.add_fixedwing("Wing_High", position=[-40, 0, 40], mass=1.0)
+    sim.add_fixedwing("Wing_Low", position=[-40, 0, 40], mass=1.0)
+    sim.add_fixedwing("Wing_Med", position=[-40, 0, 80], mass=1.0)
+    sim.add_fixedwing("Wing_High", position=[-40, 0, 120], mass=1.0)
     
     # 4. IGNITE
     # ---------------------------------------------------------
@@ -96,6 +95,7 @@ def run_verification():
             # Fixed Wing: [Roll=0, Throttle=0.7, Pitch=0, Water=0]
             # Flying straight and level
             'Wing_Low':    [0, 0.7, 0, 0], 
+            'Wing_Med':    [0, 0.7, 0, 0],
             'Wing_High':   [0, 0.7, 0, 0]
         }
         sim.step_simulation(controls)
@@ -124,7 +124,7 @@ def run_verification():
 
         # C. Generate Snapshots
         if step % int(snapshot_interval / sim.timestep) == 0:
-            save_snapshot(sim, current_time, output_dir)
+            # save_snapshot(sim, current_time, output_dir)
             print(f"   📸 Snapshot saved at {current_time:.1f}s")
 
     sim.stop_simulation()
@@ -202,18 +202,19 @@ def plot_trajectory_analysis(data, folder):
 
    # --- FIGURE 1: QUADCOPTERS ---
     fig1, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 10))
-    plot_dual_axis(ax1, 'Quad_Low', "Quad Low (15m above fire) - Hovering")
-    plot_dual_axis(ax2, 'Quad_Side', "Quad Side (5m next to fire, 15m above fire) - Hovering")
-    plot_dual_axis(ax3, 'Quad_High', "Quad High (35m above fire) - Hovering")
+    plot_dual_axis(ax1, 'Quad_Low', "Quad Low (25m above fire) - Hovering")
+    plot_dual_axis(ax2, 'Quad_Side', "Quad Side (5m next to fire, 25m above fire) - Hovering")
+    plot_dual_axis(ax3, 'Quad_High', "Quad High (80m above fire) - Hovering")
     ax2.set_xlabel("Time (s)")
     plt.tight_layout()
     plt.savefig(f"{folder}/analysis_quadcopters.pdf")
     plt.close()
 
     # --- FIGURE 2: FIXED WINGS ---
-    fig2, (ax3, ax4) = plt.subplots(2, 1, figsize=(10, 10))
-    plot_dual_axis(ax3, 'Wing_Low', "Fixed-Wing Low (15m) - Flighover")
-    plot_dual_axis(ax4, 'Wing_High', "Fixed-Wing High (40m) - Flighover")
+    fig2, (ax3, ax4, ax5) = plt.subplots(3, 1, figsize=(10, 10))
+    plot_dual_axis(ax3, 'Wing_Low', "Fixed-Wing Low (40m above fire) - Flighover")
+    plot_dual_axis(ax4, 'Wing_Med', "Fixed-Wing Medium (80m above fire) - Flighover")
+    plot_dual_axis(ax5, 'Wing_High', "Fixed-Wing High (120m above fire) - Flighover")
     ax4.set_xlabel("Time (s)")
     plt.tight_layout()
     plt.savefig(f"{folder}/analysis_fixedwings.pdf")

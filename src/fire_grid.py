@@ -12,12 +12,6 @@ class FireGrid:
     within this window.
     """
     
-    # Fuel properties: (fuel_level, burn_rate)
-    FUEL_WATER = (0.0, 0.0) 
-    FUEL_BUILDING = (0.9, 0.0005)
-    FUEL_FOREST = (0.8, 0.03)
-    FUEL_GRASS = (0.3, 0.08)
-    
     def __init__(self, H: int, W: int, dt: float = 0.1, alpha: float = 1.0,
                  k_wind: float = 1.0, k_slope: float = 1.0, wind_dir: float = 0.0,
                  l_base: Optional[np.ndarray] = None):
@@ -54,27 +48,6 @@ class FireGrid:
         self.grid_mapper = grid_mapper
         self.lazy_fuel_enabled = True
 
-    def _load_fuel_for_mask(self, mask, r_offset, c_offset):
-        """Load fuel from environment for specific cells (Lazy Loading).
-        Adjusts global indices based on ROI offset.
-        """
-        if not self.lazy_fuel_enabled: return
-        
-        # Indices relative to the ROI slice
-        local_indices = np.argwhere(mask)
-        if len(local_indices) == 0: return
-
-        # Convert to global coordinates
-        global_indices = local_indices + [r_offset, c_offset]
-        
-        for i, j in global_indices:
-            if (i, j) in self.fuel_cache:
-                self.F[i, j], self.fuel_burn_rate[i, j] = self.fuel_cache[(i, j)]
-                continue
-            # Note: In real setup, we would call environment.get_fuel_at(pos) here
-            # But typically this is handled by map_importer pre-filling the grid
-            pass 
-
     def step(self, suppression_assignments=None, water_drops=None):
         """
         Perform one simulation step using ROI (Region of Interest) optimization.
@@ -107,7 +80,7 @@ class FireGrid:
 
         # Define Region of Interest (ROI) with padding
         # Padding allows fire to spread into neighbors
-        PAD = 2 
+        PAD = 10
         r_min = max(0, np.min(burning_rows) - PAD)
         r_max = min(self.H, np.max(burning_rows) + 1 + PAD)
         c_min = max(0, np.min(burning_cols) - PAD)
@@ -147,7 +120,7 @@ class FireGrid:
             # Check bounds for neighbor slice
             n_r_min, n_r_max = r_min - di, r_max - di
             n_c_min, n_c_max = c_min - dj, c_max - dj
-            
+
             # If neighbor slice is completely out of bounds, skip
             if n_r_min >= self.H or n_r_max <= 0 or n_c_min >= self.W or n_c_max <= 0:
                 continue
