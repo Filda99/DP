@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import pybullet as p
 
 # Path setup
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 
 from src.simulation import Simulation
@@ -141,6 +141,11 @@ def plot_results(positions, inputs, times):
         print("⚠️ 'scienceplots' library not found. Using default style.")
         plt.style.use('default')
 
+    # creating a dictionary
+    font = {'size': 10}
+
+    # using rc function
+    plt.rc('font', **font)
     # Create Figure
     fig = plt.figure(figsize=(10, 12))
     
@@ -173,9 +178,9 @@ def plot_results(positions, inputs, times):
 
     # --- ROW 2: Position vs Time ---
     ax3 = fig.add_subplot(3, 1, 2)
-    ax3.plot(times, positions[:, 0], label='X (North)', linestyle='--')
-    ax3.plot(times, positions[:, 1], label='Y (East)', linestyle='-.')
-    ax3.plot(times, positions[:, 2], label='Z (Altitude)')
+    ax3.plot(times, positions[:, 0], label='X (North)', linestyle='-')
+    ax3.plot(times, positions[:, 1], label='Y (East)', linestyle='-')
+    ax3.plot(times, positions[:, 2], label='Z (Altitude)', linestyle='-')
     
     ax3.set_xlabel('Time (s)')
     ax3.set_ylabel('Position (m)')
@@ -188,11 +193,11 @@ def plot_results(positions, inputs, times):
     ax4 = fig.add_subplot(3, 1, 3)
     
     ln1 = ax4.plot(times, inputs[:, 0], label='Roll (rad)', color='C0')
-    ln2 = ax4.plot(times, inputs[:, 1], label='Pitch (rad)', color='C1', linestyle='--')
-    ln3 = ax4.plot(times, inputs[:, 2], label='YawRate (rad/s)', color='C2', linestyle='-.')
+    ln2 = ax4.plot(times, inputs[:, 1], label='Pitch (rad)', color='C1', linestyle='-')
+    ln3 = ax4.plot(times, inputs[:, 2], label='YawRate (rad/s)', color='C2', linestyle='-')
     
     # Vertical Velocity might have different scale, allow it to plot normally but label correctly
-    ln4 = ax4.plot(times, inputs[:, 3], label='VertVel (m/s)', color='C3', linestyle=':')
+    ln4 = ax4.plot(times, inputs[:, 3], label='VertVel (m/s)', color='C3', linestyle='-')
     
     ax4.set_xlabel('Time (s)')
     ax4.set_ylabel('Command Input')
@@ -206,10 +211,9 @@ def plot_results(positions, inputs, times):
     plt.tight_layout()
     
     # Save files
-    output_filename = 'demo_quadcopter_science'
-    plt.savefig(f'{output_filename}.png', dpi=300)
+    output_filename = 'output/demo_quadcopter'
     plt.savefig(f'{output_filename}.pdf') 
-    print(f"✅ Scientific plot saved to {output_filename}.png and .pdf")
+    print(f"✅ Scientific plot saved to {output_filename}.pdf")
 
 if __name__ == "__main__":
     run_demo()

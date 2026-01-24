@@ -258,6 +258,66 @@ def save_summary_figure(snapshots, output_dir):
     print(f"✅ Summary Figure saved: {filename}")
     plt.close()
 
+def save_real_satellite_imagery(location, radius_m):
+    """Save real satellite imagery from OpenStreetMap before running simulation."""
+    import osmnx as ox
+    import contextily as ctx
+    import geopandas as gpd
+    from shapely.geometry import Point, box
+    
+    print("SAVING REAL SATELLITE IMAGERY")
+    
+    # Get location coordinates
+    print(f"📍 Geocoding: {location}")
+    try:
+        coords = ox.geocode(location)
+        print(f"   Coordinates: (lat={coords[0]}, lon={coords[1]})")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return
+    
+    # Create bounding box
+    point = Point(coords[1], coords[0])  # lon, lat
+    gdf_point = gpd.GeoDataFrame([{'geometry': point}], crs='EPSG:4326') # WGS84
+    gdf_point_utm = gdf_point.to_crs(gdf_point.estimate_utm_crs()) # Meter based coordinate system
+    point_utm = gdf_point_utm.geometry.iloc[0] # Center point in UTM to add meters offset for bbox
+    
+    bbox_utm = box(point_utm.x - radius_m, point_utm.y - radius_m,
+                   point_utm.x + radius_m, point_utm.y + radius_m)  # Create bbox in UTM
+    gdf_bbox = gpd.GeoDataFrame([{'geometry': bbox_utm}], crs=gdf_point_utm.crs)
+    
+    # Convert to Web Mercator
+    gdf_bbox_web = gdf_bbox.to_crs('EPSG:3857')
+    gdf_point_web = gdf_point.to_crs('EPSG:3857')
+    
+    # Create figure
+    print("    Creating satellite map...")
+    fig, ax = plt.subplots(1, 1, figsize=(15, 15))
+    ax.set_title(f"Real Satellite Imagery\n{location}\n(±{radius_m}m radius)", 
+                 fontsize=16, fontweight='bold', pad=20)
+    
+    # Plot boundaries
+    gdf_bbox_web.plot(ax=ax, facecolor='none', edgecolor='red', linewidth=4)
+    gdf_point_web.plot(ax=ax, color='red', markersize=400, marker='x', 
+                       linewidths=5, zorder=10)
+    
+    # Add satellite basemap
+    print("    Downloading satellite tiles...")
+    try:
+        ctx.add_basemap(ax, source=ctx.providers.Esri.WorldImagery, zoom='auto')
+        print("    Satellite imagery loaded")
+    except Exception as e:
+        print(f"   ⚠️  Failed to load satellite imagery: {e}")
+    
+    ax.set_xlabel("Easting (Web Mercator)", fontsize=12)
+    ax.set_ylabel("Northing (Web Mercator)", fontsize=12)
+    
+    # Save
+    output_path = 'output/demo_01_satellite.pdf'
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"✅ Saved: {output_path}\n")
 
 def run_fast_demo():
     print("-" * 50)
@@ -301,6 +361,10 @@ def run_fast_demo():
         cell_size_m=5.0,  
         dt=0.5            
     )
+
+    save_real_satellite_imagery(LOCATION, RADIUS_M)
+    
+    exit(1)
     
     # Start Fire
     print("Igniting fire...")

@@ -1,5 +1,5 @@
 """
-Quadcopter Drone Class - Joystick Control Model with Wind Bypass
+Quadcopter Drone Class - High-Level Velocity Control Model
 
 Simplified physics model for MARL.
 Includes a "Perfect Stability" zone for winds below 14.7 m/s (ANAFI USA specs).
@@ -13,22 +13,6 @@ Implements a high-level velocity controller (similar to DJI/commercial drones):
 
 Includes logic to rotate commands based on current heading so controls
 always feel relative to the drone's front.
-"""
-
-"""
-Quadcopter Drone Class - High-Level Velocity Control Model
-
-Implementation based on:
-1. Input Mapping -> Target Velocity (Body Frame)
-2. Frame Transformation (Body -> World) using Rotation Matrix R_z(psi)
-3. Proportional Force Control (P-Controller) + Gravity Compensation
-4. Discrete Environmental Stability (Wind Bypass)
-
-As defined in Thesis Section 2.2.2.
-"""
-
-"""
-Quadcopter Drone Class - High-Level Velocity Control Model
 
 Implementation based on:
 1. Input Mapping -> Target Velocity (Body Frame)

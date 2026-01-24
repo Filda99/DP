@@ -59,7 +59,7 @@ def run_demo():
         
         # Fly up
         if time < 5.0:
-            pitch_cmd = 1.0 
+            pitch_cmd = 0.9 
             throttle_cmd = 1.0 # Full power
 
         # Stall
@@ -68,7 +68,7 @@ def run_demo():
             pitch_cmd = 0.0        # Maintain altitude
 
         elif time < 35.0:
-            pitch_cmd = 0.4
+            pitch_cmd = 0.45
             throttle_cmd = 0.3
 
         elif time < 45.0:
@@ -115,6 +115,11 @@ def plot_results(positions, inputs, water_levels, times):
         print("   Run: pip install scienceplots")
         plt.style.use('default')
 
+    # creating a dictionary
+    font = {'size': 10}
+
+    # using rc function
+    plt.rc('font', **font)
     # Create Figure
     # Note: SciencePlots usually prefers smaller figures (3-4 inches). 
     # Since we have a complex 3-row layout, we keep it large but may need to adjust font sizes.
@@ -137,8 +142,8 @@ def plot_results(positions, inputs, water_levels, times):
     # --- ROW 1, COL 2: Top-Down View (X vs Y) ---
     ax2 = fig.add_subplot(3, 2, 2)
     ax2.plot(x, y, label='Track')
-    ax2.scatter(x[0], y[0], c='g', s=20, zorder=5)
-    ax2.scatter(x[-1], y[-1], c='r', s=20, zorder=5)
+    ax2.scatter(x[0], y[0], c='g', label='Start', s=20, zorder=5)
+    ax2.scatter(x[-1], y[-1], c='r', label='End', s=20, zorder=5)
     
     ax2.set_xlabel('X Position (m)')
     ax2.set_ylabel('Y Position (m)')
@@ -151,16 +156,16 @@ def plot_results(positions, inputs, water_levels, times):
     ax3 = fig.add_subplot(3, 1, 2)
     
     # Left Axis: Horizontal (X, Y)
-    ln1 = ax3.plot(times, positions[:, 0], label='X (North)', linestyle='--', color='C0')
-    ln2 = ax3.plot(times, positions[:, 1], label='Y (East)', linestyle='-.', color='C1')
+    ln1 = ax3.plot(times, positions[:, 0], label='X (North)', color='C0', linestyle='-')
+    ln2 = ax3.plot(times, positions[:, 1], label='Y (East)', color='C1', linestyle='-')
     ax3.set_ylabel('Horizontal Pos (m)')
     ax3.grid(True, linestyle=':')
     
     # Right Axis: Vertical (Z)
     ax3_right = ax3.twinx()
-    ln3 = ax3_right.plot(times, positions[:, 2], label='Z (Altitude)', linestyle='-', color='C2')
-    ax3_right.set_ylabel('Altitude Z (m)', color='C2')
-    ax3_right.tick_params(axis='y', labelcolor='C2') # Color the tick labels to match the line
+    ln3 = ax3_right.plot(times, positions[:, 2], label='Z (Altitude)', color='C2', linestyle='-')
+    ax3_right.set_ylabel('Altitude Z (m)')
+    ax3_right.tick_params(axis='y') # Color the tick labels to match the line
     
     # Combine Legends
     lns = ln1 + ln2 + ln3
@@ -172,8 +177,8 @@ def plot_results(positions, inputs, water_levels, times):
     # --- ROW 3: Control Inputs ---
     ax4 = fig.add_subplot(3, 1, 3)
     ln1 = ax4.plot(times, inputs[:, 0], label='Roll', color='C0', linestyle='-')
-    ln2 = ax4.plot(times, inputs[:, 1], label='Throttle', color='C1', linestyle='--')
-    ln3 = ax4.plot(times, inputs[:, 2], label='Pitch', color='C2', linestyle='-.')
+    ln2 = ax4.plot(times, inputs[:, 1], label='Throttle', color='C1', linestyle='-')
+    ln3 = ax4.plot(times, inputs[:, 2], label='Pitch', color='C2', linestyle='-')
     ax4.set_ylabel('Input'); ax4.set_ylim(0.1, 1.1)
     ax4.set_xlabel('Time (s)')
     ax4.set_ylim([-1.1, 1.1])
@@ -182,79 +187,12 @@ def plot_results(positions, inputs, water_levels, times):
     lines = ln1 + ln2 + ln3
     labels = [l.get_label() for l in lines]
     ax4.legend(lines, labels, loc='upper right', ncol=4)
+    ax4.grid(True, linestyle=':')
 
     plt.tight_layout()
-    plt.savefig('demo_science_paper.pdf') # PDF is better for papers
-    print("✅ Scientific plot saved to demo_science_paper.png and .pdf")
+    plt.savefig('output/demo_fixedwing.pdf') # PDF is better for papers
+    print("✅ Scientific plot saved to output/demo_fixedwing.pdf")
 
-# def plot_results(positions, inputs, times):
-#     """Generates 2D Projections, Position-Time, and Control Input plots."""
-    
-#     # Increase height to accommodate 3 rows
-#     fig = plt.figure(figsize=(14, 15)) 
-#     # fig.suptitle('Fixed-Wing Kinematic Guidance Test', fontsize=16)
-
-#     x, y, z = positions[:, 0], positions[:, 1], positions[:, 2]
-
-#     # --- ROW 1, COL 1: Side View (X vs Z) ---
-#     ax1 = fig.add_subplot(3, 2, 1)
-#     ax1.plot(x, z, label='Flight Path', linewidth=2, color='blue')
-#     ax1.scatter(x[0], z[0], color='green', label='Start', s=50, zorder=5)
-#     ax1.scatter(x[-1], z[-1], color='red', label='End', s=50, zorder=5)
-    
-#     ax1.set_xlabel('X Position (m)')
-#     ax1.set_ylabel('Z Altitude (m)')
-#     ax1.set_title('Side View (X-Z Projection)')
-#     ax1.grid(True, alpha=0.3)
-#     ax1.legend()
-
-#     # --- ROW 1, COL 2: Top-Down View (X vs Y) ---
-#     ax2 = fig.add_subplot(3, 2, 2)
-#     ax2.plot(x, y, label='Ground Track', linewidth=2, color='blue')
-#     ax2.scatter(x[0], y[0], color='green', label='Start', s=50, zorder=5)
-#     ax2.scatter(x[-1], y[-1], color='red', label='End', s=50, zorder=5)
-    
-#     ax2.set_xlabel('X Position (m)')
-#     ax2.set_ylabel('Y Position (m)')
-#     ax2.set_title('Top-Down View (X-Y Projection)')
-#     ax2.grid(True, alpha=0.3)
-#     ax2.axis('equal') # Important for correct turn geometry visualization
-#     ax2.legend()
-
-#     # --- ROW 2: Position vs Time (X, Y, Z) ---
-#     ax3 = fig.add_subplot(3, 1, 2)
-#     ax3.plot(times, positions[:, 0], label='X (North)', linestyle='--')
-#     ax3.plot(times, positions[:, 1], label='Y (East)', linestyle='-.')
-#     ax3.plot(times, positions[:, 2], label='Z (Altitude)', linewidth=2)
-    
-#     ax3.set_xlabel('Time (s)')
-#     ax3.set_ylabel('Position (m)')
-#     ax3.set_title('Position vs Time')
-#     ax3.grid(True, alpha=0.3)
-#     ax3.legend()
-
-#     # --- ROW 3: Control Inputs vs Time ---
-#     ax4 = fig.add_subplot(3, 1, 3)
-    
-#     # Inputs: [Roll, Throttle, Pitch, Water]
-#     ax4.plot(times, inputs[:, 0], label='Roll Cmd (-1..1)', color='purple')
-#     ax4.plot(times, inputs[:, 1], label='Throttle Cmd (0..1)', color='orange')
-#     ax4.plot(times, inputs[:, 2], label='Pitch/Climb Cmd (-1..1)', color='green')
-    
-#     # Plot Water Trigger as a filled area
-#     ax4.fill_between(times, 0, inputs[:, 3], color='blue', alpha=0.2, label='Water Trigger')
-
-#     ax4.set_xlabel('Time (s)')
-#     ax4.set_ylabel('Input Value')
-#     ax4.set_title('Control Inputs')
-#     ax4.grid(True, alpha=0.3)
-#     ax4.legend(loc='upper right')
-
-#     plt.tight_layout()
-    
-#     # Save the file
-#     plt.savefig('Fixed-Wing_Kinematic_Guidance_Test.pdf', dpi=100, bbox_inches='tight')
-#     print("✅ Plot saved to demo_results.png")
 
 if __name__ == "__main__":
     run_demo()

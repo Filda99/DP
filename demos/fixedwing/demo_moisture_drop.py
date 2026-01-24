@@ -22,10 +22,10 @@ def run_suppression_demo():
     
     # Configuration
     LOCATION = "Pec pod Sněžkou, Czech Republic"
-    CACHE_PREFIX = "Pec_pod_Sněžkou_Czechia"
+    CACHE_PREFIX = "Pec_pod_Sněžkou_Czech_Republic"
     CENTER_LAT = 50.6868
     CENTER_LON = 15.7361
-    RADIUS_M = 1500
+    RADIUS_M = 600
     
     # 1. Initialize Simulation
     sim = Simulation()
@@ -33,7 +33,7 @@ def run_suppression_demo():
     
     # 2. Load Environment
     cache_dir = "data"
-    cache_pattern = f"{cache_dir}/{CACHE_PREFIX}_building_*.gpkg"
+    cache_pattern = f"{cache_dir}/{CACHE_PREFIX}*.gpkg"
     
     if len(glob.glob(cache_pattern)) > 0:
         print(f"📂 Loading from cache: {CACHE_PREFIX}")
@@ -68,11 +68,17 @@ def run_suppression_demo():
     print("\n🔍 Finding forest area to ignite...")
     
     sim.start_fire((67.5, -517.5), intensity=0.5)
+    sim.start_fire((67.5, -540), intensity=0.5)
+    sim.start_fire((80, -540), intensity=0.5)
+    sim.start_fire((50, -540), intensity=0.5)
+    sim.start_fire((67.5, -540), intensity=0.5)
+    sim.start_fire((90.5, -550), intensity=0.5)
+    sim.start_fire((67.5, -580), intensity=0.5)
     fire_center = np.array([67.5, -517.5])
 
     # 6. Deploy Firefighter Drone
     # Start offset from fire to begin patrol
-    start_pos = [fire_center[0] - 50, fire_center[1] - 50, 80] 
+    start_pos = [fire_center[0] - 200, fire_center[1] - 300, 80] 
     
     # FixedWing with 5000L tank
     sim.add_fixedwing("Firefighter", position=start_pos, mass=50.0, water_capacity=5000.0)
@@ -82,7 +88,7 @@ def run_suppression_demo():
     output_dir = 'output/demo_02_frames'
     os.makedirs(output_dir, exist_ok=True)
     
-    total_time = 120.0 # seconds
+    total_time = 60.0 # seconds
     steps = int(total_time / sim.timestep)
     save_interval = 300 # Save every 5 seconds (60Hz * 5)
     
@@ -145,19 +151,15 @@ def run_suppression_demo():
     print(f"\n✅ Simulation complete. Frames saved to {output_dir}")
 
 def save_suppression_frame(sim, state, drone, frame_num, time, output_dir):
-    """Save a 3-panel dashboard frame."""
-    fig = plt.figure(figsize=(18, 6), constrained_layout=True)
-    gs = fig.add_gridspec(1, 3, width_ratios=[1.2, 1.2, 0.6])
-    
-    ax1 = fig.add_subplot(gs[0])
-    ax2 = fig.add_subplot(gs[1])
-    ax3 = fig.add_subplot(gs[2])
+    """Save a single-panel frame with moisture overlaid on fire status."""
+    # Create single figure, adjusted size for one graph
+    fig, ax1 = plt.subplots(figsize=(10, 8), constrained_layout=True)
     
     # Get Bounds
     x_min, x_max, y_min, y_max = sim.environment.grid_mapper.get_grid_bounds()
     extent = [x_min, x_max, y_min, y_max]
     
-    # === PANEL 1: FIRE STATE ===
+    # === LAYER 1: FIRE STATE (Background) ===
     # RGB Map construction
     H, W = state['F'].shape
     rgb = np.zeros((H, W, 3))
@@ -184,59 +186,53 @@ def save_suppression_frame(sim, state, drone, frame_num, time, output_dir):
 
     ax1.imshow(rgb, origin='lower', extent=extent)
     
-    # Drone & Wind
+    # === LAYER 2: MOISTURE OVERLAY ===
+    moisture = state['M']
+    
+    # Create a masked array so 0.0 moisture is fully transparent
+    # Alternatively, use alpha channel or vmin with set_under
+    moisture_masked = np.ma.masked_where(moisture < 0.01, moisture)
+    
+    # Overlay moisture using Blues colormap with transparency (alpha=0.6)
+    im_m = ax1.imshow(moisture_masked, origin='lower', extent=extent, 
+                      cmap='Blues', vmin=0.01, vmax=1.0, alpha=0.6)
+    
+    # Optional: Add colorbar for moisture if needed
+    # plt.colorbar(im_m, ax=ax1, label='Soil Saturation', fraction=0.046, pad=0.04)
+
+    # === OVERLAYS: Drone, Wind, Text ===
+    # Drone Position
     dpos = drone.get_position()
-    ax1.plot(dpos[0], dpos[1], 'cyan', marker='P', markersize=10, markeredgecolor='black', label='Drone')
+    ax1.plot(dpos[0], dpos[1], 'cyan', marker='P', markersize=12, 
+             markeredgecolor='black', label='Drone')
     
     # Wind Arrow
     w = sim.environment.weather['wind_velocity']
-    ax1.arrow(x_min+200, y_max-200, w[0]*20, w[1]*20, head_width=50, color='yellow', width=10)
-    ax1.text(x_min+200, y_max-300, f"Wind {np.linalg.norm(w):.1f}m/s", color='yellow', fontweight='bold')
+    # Position arrow in top-right corner relative to map bounds
+    arrow_x = x_max - (x_max - x_min) * 0.1
+    arrow_y = y_max - (y_max - y_min) * 0.1
+    ax1.arrow(arrow_x, arrow_y, w[0]*20, w[1]*20, head_width=30, color='yellow', width=5)
+    ax1.text(arrow_x, arrow_y - 50, f"Wind {np.linalg.norm(w):.1f}m/s", 
+             color='yellow', fontweight='bold', ha='center')
     
-    ax1.set_title(f"Fire Status (T={time:.1f}s)")
+    # Tank Status (Replaces Panel 3)
+    curr = drone.current_water
+    cap = drone.water_capacity
+    valve_status = "OPEN" if drone.water_valve_open else "CLOSED"
+    valve_color = 'lime' if drone.water_valve_open else 'red'
+    
+    status_text = f"Tank: {curr:.0f}/{cap:.0f} L\nValve: {valve_status}"
+    
+    # Add text box in top-left
+    props = dict(boxstyle='round', facecolor='white', alpha=0.8)
+    ax1.text(0.02, 0.98, status_text, transform=ax1.transAxes, fontsize=12,
+             verticalalignment='top', bbox=props, fontweight='bold', color='black')
+
+    ax1.set_title(f"Fire & Suppression Status (T={time:.1f}s)")
     ax1.set_xlabel("Meters")
     ax1.set_ylabel("Meters")
 
-    # === PANEL 2: MOISTURE FIELD ===
-    moisture = state['M']
-    # Use a custom colormap where 0 is transparent/terrain color
-    cmap = plt.cm.Blues
-    cmap.set_under('white', alpha=0)
-    
-    # Plot base terrain first for context
-    ax2.imshow(state['F'], origin='lower', extent=extent, cmap='Greens', alpha=0.3)
-    # Overlay moisture
-    im2 = ax2.imshow(moisture, origin='lower', extent=extent, cmap='Blues', vmin=0.01, vmax=1.0)
-    
-    ax2.plot(dpos[0], dpos[1], 'cyan', marker='P', markersize=10, markeredgecolor='black')
-    plt.colorbar(im2, ax=ax2, label='Soil Saturation')
-    ax2.set_title("Moisture Dispersion")
-    
-    # === PANEL 3: TANK GAUGE ===
-    ax3.axis('off')
-    
-    # Draw Tank
-    cap = drone.water_capacity
-    curr = drone.current_water
-    pct = curr / cap if cap > 0 else 0
-    
-    # Outline
-    rect_border = plt.Rectangle((0.3, 0.1), 0.4, 0.8, fill=False, linewidth=3)
-    ax3.add_patch(rect_border)
-    
-    # Fill
-    rect_fill = plt.Rectangle((0.3, 0.1), 0.4, 0.8 * pct, facecolor='blue', alpha=0.7)
-    ax3.add_patch(rect_fill)
-    
-    # Text
-    ax3.text(0.5, 0.95, "WATER TANK", ha='center', fontsize=14, fontweight='bold')
-    ax3.text(0.5, 0.05, f"{curr:.0f} / {cap:.0f} L", ha='center', fontsize=12)
-    
-    status_color = 'green' if drone.water_valve_open else 'red'
-    status_text = "VALVE OPEN" if drone.water_valve_open else "VALVE CLOSED"
-    ax3.text(0.5, -0.05, status_text, ha='center', color=status_color, fontweight='bold', fontsize=12)
-
-    plt.savefig(f"{output_dir}/frame_{frame_num:03d}.png", dpi=80)
+    plt.savefig(f"{output_dir}/frame_{frame_num:03d}.png", dpi=100)
     plt.close()
 
 if __name__ == "__main__":

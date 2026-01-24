@@ -69,6 +69,10 @@ def run_verification():
     # ---------------------------------------------------------
     print("🔥 Igniting building...")
     sim.start_fire([0,0], intensity=1.0)
+    sim.start_fire([10,0], intensity=1.0)
+    sim.start_fire([0,10], intensity=1.0)
+    sim.start_fire([5,0], intensity=1.0)
+    sim.start_fire([0,5], intensity=1.0)
 
     # 5. Simulation Loop
     # ---------------------------------------------------------
@@ -164,7 +168,11 @@ def save_snapshot(sim, time, folder):
     plt.close()
 
 def plot_trajectory_analysis(data, folder):
-    """Generates X, Y, Z graphs over time for Quads and Wings."""
+    """
+    Generates:
+    1. 3-row plot for Quadcopters (unchanged).
+    2. Single plot for Fixed Wings showing only Delta Altitude (dh).
+    """
     time = np.array(data['time'])
     
     # Helper to get XYZ arrays
@@ -175,30 +183,65 @@ def plot_trajectory_analysis(data, folder):
         arr = np.array(data['drones'][name]['pos'])
         return arr[:,0], arr[:,1], arr[:,2] # x, y, z
     
-    # Helper function for dual-axis plotting
+    # Helper function for dual-axis plotting (USED ONLY FOR QUADS NOW)
     def plot_dual_axis(ax_left, name, title):
         x, y, z = get_xyz(name)
         
         # Left Axis: X and Y (Lateral)
-        l1 = ax_left.plot(time, x, label='X Position', color='red', linestyle='--', alpha=0.7)
-        l2 = ax_left.plot(time, y, label='Y Position', color='green', linestyle='--', alpha=0.7)
+        l1 = ax_left.plot(time, x, label='X Position', color='red', linestyle='-', alpha=0.7)
+        l2 = ax_left.plot(time, y, label='Y Position', color='green', linestyle='-', alpha=0.7)
         ax_left.set_ylabel("Lateral Position (m)", color='black')
         ax_left.set_title(title)
         ax_left.grid(True, alpha=0.3)
         
         # Right Axis: Z (Altitude)
         ax_right = ax_left.twinx()
-        l3 = ax_right.plot(time, z, label='Z Altitude', color='blue', linewidth=2)
+        l3 = ax_right.plot(time, z, label='Z Altitude', color='blue', linestyle='-', alpha=0.7)
         ax_right.set_ylabel("Altitude (m)", color='black')
         ax_right.tick_params(axis='y', labelcolor='black')
         
-        # Align Grids (Optional, sometimes hard with dual axis)
-        # ax_right.grid(False) 
-
         # Combined Legend
         lines = l1 + l2 + l3
         labels = [l.get_label() for l in lines]
         ax_left.legend(lines, labels, loc='upper left')
+
+   # --- FIGURE 1: QUADCOPTERS (UNCHANGED) ---
+    fig1, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 10))
+    plot_dual_axis(ax1, 'Quad_Low', "Quad Low (25m above fire) - Hovering")
+    plot_dual_axis(ax2, 'Quad_Side', "Quad Side (5m next to fire, 25m above fire) - Hovering")
+    plot_dual_axis(ax3, 'Quad_High', "Quad High (80m above fire) - Hovering")
+    ax3.set_xlabel("Time (s)")
+    plt.tight_layout()
+    plt.savefig(f"{folder}/analysis_quadcopters.pdf")
+    plt.close()
+
+    # --- FIGURE 2: FIXED WINGS (MODIFIED) ---
+    # Single plot showing Delta H for all 3 drones
+    plt.figure(figsize=(10, 6))
+    
+    wings = [
+        ('Wing_Low', 'Low Altitude (40m)', 'red'),
+        ('Wing_Med', 'Medium Altitude (80m)', 'green'),
+        ('Wing_High', 'High Altitude (120m)', 'blue')
+    ]
+    
+    for name, label, color in wings:
+        _, _, z = get_xyz(name)
+        
+        # Calculate Delta H (Current Alt - Initial Alt)
+        if len(z) > 0:
+            initial_alt = z[0]
+            delta_h = z - initial_alt
+            plt.plot(time, delta_h, label=label, color=color, linewidth=2)
+            
+    plt.title("Vertical Displacement (delta_h) due to Fire Updraft")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Altitude Deviation (m)")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f"{folder}/analysis_fixedwings.pdf")
+    plt.close()
 
    # --- FIGURE 1: QUADCOPTERS ---
     fig1, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 10))
@@ -207,7 +250,7 @@ def plot_trajectory_analysis(data, folder):
     plot_dual_axis(ax3, 'Quad_High', "Quad High (80m above fire) - Hovering")
     ax2.set_xlabel("Time (s)")
     plt.tight_layout()
-    plt.savefig(f"{folder}/analysis_quadcopters.pdf")
+    plt.savefig(f"{folder}/analysis_quadcopters2.pdf")
     plt.close()
 
     # --- FIGURE 2: FIXED WINGS ---
@@ -217,7 +260,7 @@ def plot_trajectory_analysis(data, folder):
     plot_dual_axis(ax5, 'Wing_High', "Fixed-Wing High (120m above fire) - Flighover")
     ax4.set_xlabel("Time (s)")
     plt.tight_layout()
-    plt.savefig(f"{folder}/analysis_fixedwings.pdf")
+    plt.savefig(f"{folder}/analysis_fixedwings2.pdf")
     plt.close()
 
 if __name__ == "__main__":
