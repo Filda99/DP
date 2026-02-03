@@ -33,3 +33,6 @@ data/*.geojson
 
 # Outputs
 output/
+
+# Trained models
+*pt

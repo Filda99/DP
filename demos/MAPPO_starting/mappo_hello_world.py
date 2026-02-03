@@ -111,10 +111,10 @@ env = VmasEnv(
 )
 
 # Print specs to inspect shapes (Batch_Size, N_Agents, Dim)
-print("action_spec:", env.full_action_spec)
-print("reward_spec:", env.full_reward_spec)
-print("done_spec:", env.full_done_spec)
-print("observation_spec:", env.observation_spec)
+# print("action_spec:", env.full_action_spec)
+# print("reward_spec:", env.full_reward_spec)
+# print("done_spec:", env.full_done_spec)
+# print("observation_spec:", env.observation_spec)
 
 # Transformations: Compute sum of rewards for logging
 # For our environment, 
@@ -230,8 +230,8 @@ critic = TensorDictModule(
 )
 
 # Sanity check
-print("Running policy:", policy(env.reset()))
-print("Running value:", critic(env.reset()))
+# print("Running policy:", policy(env.reset()))
+# print("Running value:", critic(env.reset()))
 
 
 # A. Define the Quadcopter Network (CNN + GRU)
@@ -325,7 +325,7 @@ loss_module = ClipPPOLoss(
     actor_network=policy,
     critic_network=critic,
     clip_epsilon=clip_epsilon,
-    entropy_coef=entropy_eps,
+    entropy_coeff=entropy_eps,
     normalize_advantage=False,
 )
 
@@ -471,3 +471,8 @@ with torch.no_grad():
         auto_cast_to_device=True,
         break_when_any_done=False,
     )
+
+# Uložení natrénovaného modelu
+model_name = "mappo_policy_trained.pt"
+torch.save(policy.state_dict(), model_name)
+print(f"💾 Model uložen do souboru: {model_name}")
