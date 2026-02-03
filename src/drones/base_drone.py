@@ -110,6 +110,14 @@ class BaseDrone(ABC):
         dropped = min(self.current_water, amount)
         self.current_water -= dropped
         return dropped
+    
+    def refill_tank(self):
+        """Refills the water tank to maximum capacity."""
+        if self.current_water < self.water_capacity:
+            self.current_water = self.water_capacity
+            print(f"{self.drone_id}: Tank refilled to {self.water_capacity}L")
+            return True
+        return False
 
     @abstractmethod
     def apply_control(self, joystick_input, dt):

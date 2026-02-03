@@ -92,6 +92,7 @@ class Simulation:
         p.setGravity(0, 0, -9.81)
         p.setTimeStep(self.timestep)  # 1/60s
         self.environment.create_ground()
+        self.environment.create_refill_zone()
         print(f"✅ Simulation started")
         self._log_event('simulation_start ', {'timestep': self.timestep})
         
@@ -447,10 +448,24 @@ class Simulation:
 
     def step_simulation(self, drone_controls):
         """Step the simulation forward."""
+
+        zone = self.environment.refill_zone
+
         # Apply controls to each drone
         for drone_name, control_input in drone_controls.items():
             if drone_name in self.drones:
                 drone = self.drones[drone_name]
+
+                # 0. Check for refill zone (only for FixedWing with water tank)
+                if zone and drone.water_capacity > 0: # FixedWing drones have water tanks
+                    d_pos = drone.get_position()
+                    z_pos = zone['position']
+                    
+                    # Quick calculation of squared distance
+                    dist_sq = (d_pos[0]-z_pos[0])**2 + (d_pos[1]-z_pos[1])**2 + (d_pos[2]-z_pos[2])**2
+                    
+                    if dist_sq < zone['radius_sq']:
+                        drone.refill_tank()
                 
                 # 1. Atmospheric effects
                 atmos = self.get_local_atmospheric_conditions(drone.get_position())

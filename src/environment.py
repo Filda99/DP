@@ -55,6 +55,8 @@ class Environment:
         # Storage for terrain data if loaded before fire grid is initialized
         self._pending_terrain_data = None
 
+        self.refill_zone = None # {'position': [x,y,z], 'radius': r}
+
     # ============================================================================
     # RASTERIZATION (FUEL MAP GENERATION)
     # ============================================================================
@@ -376,6 +378,41 @@ class Environment:
         else:
             print("❌ Cannot save map: FireGrid not initialized")
 
+    def create_refill_zone(self, center_pos=None, size=5.0):
+        """
+        Creates a visual refill zone.
+        If center_pos is None, generates a random position.
+        """
+        # Pokud není zadána pozice, vygenerujeme náhodnou (např. v rozsahu +/- 200m)
+        if center_pos is None:
+             x = random.uniform(-200, 200)
+             y = random.uniform(-200, 200)
+             z = random.uniform(30, 80) # Výška vhodná pro letadla
+             center_pos = [x, y, z]
+
+        # Vytvoření vizuálu (Modrá, poloprůhledná krychle)
+        visual_shape = p.createVisualShape(
+            shapeType=p.GEOM_BOX,
+            halfExtents=[size/2, size/2, size/2], # 5x5x5 metrů
+            rgbaColor=[0, 1, 1, 0.4] # Cyan, 40% průhlednost
+        )
+        
+        # Vytvoření tělesa bez kolizí (baseCollisionShapeIndex=-1)
+        zone_id = p.createMultiBody(
+            baseVisualShapeIndex=visual_shape,
+            basePosition=center_pos
+        )
+        
+        self.refill_zone = {
+            'id': zone_id,
+            'position': np.array(center_pos),
+            'size': size,
+            'radius_sq': (size/2 + 2.0)**2 # Čtverec poloměru pro rychlou detekci (+ tolerance)
+        }
+        
+        print(f"💧 Refill Zone created at {center_pos}")
+        return center_pos
+    
     # ============================================================================
     # WIND & PHYSICS UTILS
     # ============================================================================
