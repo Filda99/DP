@@ -72,8 +72,8 @@ class Quadcopter(BaseDrone):
         # Scale inputs to reasonable forces
         force_scale = 2.0  # Experiment with this
         
-        force_x = u_roll * force_scale  # Direct roll force
-        force_y = u_pitch * force_scale  # Direct pitch force
+        force_x = u_roll * force_scale  # Direct roll force (X axis)
+        force_y = -u_pitch * force_scale  # Direct pitch force (Y axis) - OPRAVENO: převrácený sign
         
         # Vertical: hover is at u_vert=0, with gravity compensation
         gravity_comp = self.mass * 9.81

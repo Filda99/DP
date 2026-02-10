@@ -22,8 +22,8 @@ class QuadActor(nn.Module):
             nn.Linear(32 * 7 * 7, 64)
         )
         
-        # 2. State & Memory - aktualizováno pro 12-feature self_state
-        self.gru = nn.GRUCell(input_size=64 + 12, hidden_size=128) # 12 je nová velikost self_state
+        # 2. State & Memory - aktualizováno pro 6-feature self_state (position + velocity)
+        self.gru = nn.GRUCell(input_size=64 + 6, hidden_size=128) # 6 je zjednodušená velikost self_state
         
         # 3. Heads - mnohem konzervativnější
         self.action_head = nn.Linear(128, 8) # 4 for Loc, 4 for Scale (Mean/Std)

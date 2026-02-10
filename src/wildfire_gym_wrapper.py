@@ -1,6 +1,7 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
+import torch
 import os
 import sys
 
@@ -47,7 +48,12 @@ class WildfireMARLEnv(gym.Env):
     def __init__(self, agents_config=["quad_1", "fw_1"]):
         super().__init__()
         self.sim = Simulation()
-        self.obs_proc = WildfireObsProcessor(window_size_m=40.0, resolution_px=32)
+        
+        # Observation window 10m pro local_map
+        self.obs_proc = WildfireObsProcessor(window_size_m=10.0, resolution_px=32)
+        
+        # BOUNDARY LIMITS PRO PENALIZACI
+        self.map_bounds = 50.0  # Dron nemůže jít dál než ±50m od centra
         
         self.quad_agents = [a for a in agents_config if "quad" in a.lower()]
         self.fixed_agents = [a for a in agents_config if "fw" in a.lower() or "fixed" in a.lower()]
@@ -64,12 +70,12 @@ class WildfireMARLEnv(gym.Env):
             n = len(self.quad_agents)
             obs_dict["quads"] = spaces.Dict({
                 "local_map": spaces.Box(low=0.0, high=1.0, shape=(n, 1, 32, 32), dtype=np.float32),
-                "self_state": spaces.Box(low=-np.inf, high=np.inf, shape=(n, 7), dtype=np.float32),
+                "self_state": spaces.Box(low=-np.inf, high=np.inf, shape=(n, 12), dtype=np.float32),  # Rozšířeno na 12
                 "hidden_state": spaces.Box(low=-np.inf, high=np.inf, shape=(n, 128), dtype=np.float32),
             })
             obs_spec_dict["quads"] = CompositeSpec({
                 "local_map": UnboundedContinuousTensorSpec(shape=(n, 1, 32, 32)),
-                "self_state": UnboundedContinuousTensorSpec(shape=(n, 7)),
+                "self_state": UnboundedContinuousTensorSpec(shape=(n, 12)),  # Rozšířeno na 12
                 "hidden_state": UnboundedContinuousTensorSpec(shape=(n, 128)),
             })
             action_dict["quads"] = spaces.Dict({
@@ -104,20 +110,55 @@ class WildfireMARLEnv(gym.Env):
         self.observation_spec = CompositeSpec(obs_spec_dict)
         self.action_spec = CompositeSpec(action_spec_dict)
         self.reward_spec = UnboundedContinuousTensorSpec(shape=(1,))
-        self.frame_pbar = None
+        
+        # ===== EXPLORATION TRACKING PRO NOVÝ REWARD SYSTÉM =====
+        self.visited_cells = set()  # Track visited 2x2m cells
+        self.previous_positions = {}  # Track drone movement
+        self.episode_start_time = 0.0
+        self.total_fire_discovered = False
+        self.exploration_reward_accumulated = 0.0
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.sim.start_simulation()
         
-        # Setup scenario: Add drones at starting positions
+        # ===== ENABLE FIRE SIMULATION =====
+        self.sim.enable_fire_simulation(
+            grid_width_m=50,
+            grid_height_m=50,
+            cell_size_m=2.0,
+            dt=0.5
+        )
+        
+        # Setup scenario: 4 drony v rozích 50x50m mapy
+        if len(self.quad_agents) >= 4:
+            start_positions = [
+                [-20, -20, 8],  # Levý dolní roh
+                [20, -20, 8],   # Pravý dolní roh  
+                [20, 20, 8],    # Pravý horní roh
+                [-20, 20, 8]    # Levý horní roh
+            ]
+            for i, name in enumerate(self.quad_agents[:4]):
+                self.sim.add_quadcopter(name, position=start_positions[i])
+        else:
+            # Fallback pro menší počet dronů
+            for name in self.quad_agents:
+                self.sim.add_quadcopter(name, position=[-20, 20, 8])  
+        
+        # Fixed fire position - 1 oheň uprostřed mapy
+        self.sim.environment.ignite_fire(x=0, y=0, intensity=3.0)  # Střed mapy
+        
+        # ===== RESET EXPLORATION TRACKING =====
+        self.visited_cells = set()
+        self.previous_positions = {}
+        self.episode_start_time = self.sim.simulation_time
+        self.total_fire_discovered = False
+        self.exploration_reward_accumulated = 0.0
+        
+        # Initialize previous positions for all drones
         for name in self.quad_agents:
-            self.sim.add_quadcopter(name, position=[0, 0, 5])
-        for name in self.fixed_agents:
-            self.sim.add_fixedwing(name, position=[0, 10, 20])
-
-        # Ignite a small starting fire
-        self.sim.environment.ignite_fire(x=0, y=10, intensity=1.0)
+            if name in self.sim.drones:
+                self.previous_positions[name] = self.sim.drones[name].get_position()[:2]
 
         return self._get_obs(), {}
 
@@ -133,15 +174,18 @@ class WildfireMARLEnv(gym.Env):
             for name in self.quad_agents:
                 if name in self.sim.drones:
                     data = self.obs_proc.fetch(self.sim, name)
+                    
+                    # Jen základní self_state
+                    basic_state = data["self_state"][:6]  # Jen prvních 6 features
+                    
                     q_maps.append(data["local_map"])
-                    q_states.append(data["self_state"])
+                    q_states.append(basic_state)
                 else:
                     q_maps.append(np.zeros((1, 32, 32), dtype=np.float32))
-                    q_states.append(np.zeros(7, dtype=np.float32))
+                    q_states.append(np.zeros(6, dtype=np.float32))  # Jen 6 features
             
             obs["quads"]["local_map"] = np.stack(q_maps)
             obs["quads"]["self_state"] = np.stack(q_states)
-            obs["quads"]["hidden_state"] = np.zeros((len(self.quad_agents), 128), dtype=np.float32)
 
         # Fetch Fixed-Wings - pouze pokud existují
         if self.fixed_agents:
@@ -164,13 +208,13 @@ class WildfireMARLEnv(gym.Env):
         agent_states = []
         for name in self.all_agents:
             if name in self.sim.drones:
-                state = self.obs_proc.fetch(self.sim, name)["self_state"]
+                state = self.obs_proc.fetch(self.sim, name)["self_state"][:6]  # Jen 6 features
                 agent_states.append(state)
             else:
-                agent_states.append(np.zeros(7, dtype=np.float32))
+                agent_states.append(np.zeros(6, dtype=np.float32))  # Jen 6 features
         
         while len(agent_states) < 8:
-            agent_states.append(np.zeros(7))
+            agent_states.append(np.zeros(6))  # Jen 6 features
         all_agents_vector = np.concatenate(agent_states).astype(np.float32)
 
         wind = self.sim.environment.weather['wind_velocity']
@@ -216,23 +260,95 @@ class WildfireMARLEnv(gym.Env):
         # 2. Physics Step
         self.sim.step_simulation(drone_controls)
 
-        if self.frame_pbar is not None:
-            self.frame_pbar.update(1)
-            self.sim_pbar.set_postfix({"Time": f"{self.sim.simulation_time:.1f}s"})
-
         # 3. Collect new state
         new_obs = self._get_obs()
+
+        # 4. ===== NOVÝ EXPLORATION-BASED REWARD SYSTÉM =====
+        reward = 0.0  
         
-        # 4. Shared Reward Calculation
-        # fire_state = self.sim.environment.get_fire_state()
-        # reward = -0.1 * np.sum(fire_state['fire_grid_state']['B']) if fire_state else 0.0
-        # Nová odměna pro trénink vznášení (v wildfire_gym_wrapper.py)
-        local_fire = new_obs["quads"]["local_map"][0] # Mapa 32x32 pro prvního drona
-        fire_intensity = np.sum(local_fire)
-        # Odměna za to, že vidí oheň + penalizace za vzdálenost od středu ohně v jeho výhledu
-        reward = fire_intensity * 0.5
+        # Tracking for fire discovery
+        total_fire_visible = False
+        
+        for drone_idx, drone_name in enumerate(self.quad_agents):
+            if drone_name and drone_name in self.sim.drones:
+                drone_pos = self.sim.drones[drone_name].get_position()
+                x, y, z = drone_pos
+                
+                # === 1. EXPLORATION REWARD - Nové oblasti ===
+                # Convert position to grid cell (2m resolution)
+                cell_x = int(x // 2.0)
+                cell_y = int(y // 2.0)
+                cell_key = (cell_x, cell_y)
+                
+                if cell_key not in self.visited_cells and abs(x) <= self.map_bounds and abs(y) <= self.map_bounds:
+                    self.visited_cells.add(cell_key)
+                    reward += 3.0  # Reward za navštívení nové oblasti
+                    self.exploration_reward_accumulated += 3.0
+                
+                # === 2. MOVEMENT REWARD - Aktivní pohyb ===
+                if drone_name in self.previous_positions:
+                    prev_x, prev_y = self.previous_positions[drone_name]
+                    movement_distance = np.sqrt((x - prev_x)**2 + (y - prev_y)**2)
+                    
+                    if movement_distance > 0.5:  # Významný pohyb (>0.5m)
+                        reward += min(movement_distance * 0.5, 2.0)  # Cap na 2.0
+                    elif movement_distance < 0.1:  # Stojí na místě
+                        reward -= 0.5  # Jemná penalizace za stání
+                
+                # Update position tracking
+                self.previous_positions[drone_name] = (x, y)
+                
+                # === 3. FIRE VISIBILITY REWARD ===
+                fire_visible = False
+                if "quads" in new_obs and "local_map" in new_obs["quads"] and len(new_obs["quads"]["local_map"]) > drone_idx:
+                    local_fire = new_obs["quads"]["local_map"][drone_idx, 0]  # Shape (32, 32)
+                    fire_intensity = np.sum(local_fire)
+                    
+                    if fire_intensity > 0.1:  # Vidí oheň!
+                        fire_visible = True
+                        total_fire_visible = True
+                        reward += 15.0  # Kontinuální reward za vidění ohně
+                        
+                        # Extra bonus při prvním objevení ohně v epizodě
+                        if not self.total_fire_discovered:
+                            reward += 100.0  # OBROVSKÝ bonus za první objevení!
+                            self.total_fire_discovered = True
+                
+                # === 4. SAFETY PENALTIES (POUZE negativní události) ===
+                # Boundary violation - výrazná penalizace
+                if abs(x) > self.map_bounds or abs(y) > self.map_bounds:
+                    reward -= 50.0  
+                
+                # Crash detection
+                if z < 0.5:  # Dron se rozbil
+                    reward -= 100.0
+                    
+                # Flying too high (ineffective exploration)
+                if z > 30.0:
+                    reward -= 1.0  # Jemná penalizace za létání moc vysoko
+                    
+            else:
+                # Dron neexistuje/crashnul - velká penalizace
+                reward -= 100.0
+        
+        # === 5. EXPLORATION PROGRESS BONUS ===
+        # Bonus za celkový exploration progress
+        exploration_percentage = len(self.visited_cells) / 625.0  # 25x25 cells = 50x50m map
+        if exploration_percentage > 0.1:  # 10% mapy prozkoumáno
+            reward += exploration_percentage * 10.0  # Progresivní bonus
+        
+        # === 6. COLLABORATIVE BEHAVIOR BONUS ===
+        # Pokud více dronů aktivně exploruje současně
+        active_drones = sum(1 for name in self.quad_agents if name in self.sim.drones and self.sim.drones[name].get_position()[2] > 0.5)
+        if active_drones >= 3:  # 3+ dronů stále létá
+            reward += 2.0  # Bonus za koordinaci
+        
+        self.last_fire_visible = total_fire_visible
 
         
         terminated = self.sim.simulation_time > 120 # 2 minute timeout
         
-        return new_obs, np.array([reward]), terminated, False, {}
+        # Ensure reward is always a valid number, never None
+        reward = float(reward) if reward is not None else -10.0
+        
+        return new_obs, reward, terminated, {}

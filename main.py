@@ -62,8 +62,8 @@ def create_demo_visualization(demo_log, env):
                 ax1.plot(xs[-1], ys[-1], 's', color=color, markersize=8,
                         markeredgecolor='black', markeredgewidth=1)
     
-    # Přidej pozice ohňů
-    fire_positions = [[0, 8], [2, 5]]  # Známé pozice ohňů
+    # Přidej pozice ohně - 1 oheň uprostřed!
+    fire_positions = [[0.0, 0.0]]  # 1 oheň uprostřed 50x50m mapy
     for fire_pos in fire_positions:
         ax1.plot(fire_pos[0], fire_pos[1], '*', color='orange', markersize=15, 
                 markeredgecolor='red', markeredgewidth=2, label='Oheň' if fire_pos == fire_positions[0] else "")
@@ -184,8 +184,8 @@ def train_main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"🖥️ Device: {device}")
     
-    # Environment
-    env = WildfireMARLEnv(agents_config=["quad_1"])
+    # Environment - 4 drony v rozích 50x50m mapy
+    env = WildfireMARLEnv(agents_config=["quad_1", "quad_2", "quad_3", "quad_4"])
     
     # Actor
     actor = QuadActor(message_dim=8).to(device)
@@ -212,7 +212,7 @@ def train_main():
     for episode in episode_pbar:
         # Reset environment
         obs_dict, _ = env.reset()
-        hidden_state = torch.zeros(1, 128).to(device)
+        hidden_state = torch.zeros(4, 128).to(device)  # 4 drony, každý má 128 hidden dim
         episode_reward = 0
         episode_steps = 0
         
@@ -220,29 +220,30 @@ def train_main():
             try:
                 # Extract observations
                 if "quads" in obs_dict:
-                    local_map = torch.FloatTensor(obs_dict["quads"]["local_map"][:1]).to(device)
-                    self_state = torch.FloatTensor(obs_dict["quads"]["self_state"][:1]).to(device)
+                    # *** VŠECH 4 DRONŮ místo pouze prvního ***
+                    local_map = torch.FloatTensor(obs_dict["quads"]["local_map"]).to(device)  # Všechny drony: (4, 1, 32, 32)
+                    self_state = torch.FloatTensor(obs_dict["quads"]["self_state"]).to(device)  # Všechny drony: (4, 6)
                 else:
                     break  # No quad agent
                 
                 # Forward pass
                 actions, message, new_hidden = actor(local_map, self_state, hidden_state)
                 
-                # Sample action
-                mean = actions[:, :4]
-                scale = torch.clamp(actions[:, 4:], 0.01, 1.0)
+                # Sample action pro všechny drony
+                mean = actions[:, :4]  # (4, 4) - 4 drony, každý má 4 akce
+                scale = torch.clamp(actions[:, 4:], 0.01, 1.0)  # (4, 4)
                 
                 dist = torch.distributions.Normal(mean, scale)
-                action = dist.sample()
+                action = dist.sample()  # (4, 4) - 4 drony, každý má 4 akce
                 log_prob = dist.log_prob(action).sum()
                 
                 # Simple value estimation
                 value = torch.tensor(0.0, device=device)
                 
-                # Step environment
-                action_np = torch.tanh(action).cpu().numpy()
-                result = env.step({"quads": {"action": action_np.reshape(1, -1)}})
-                obs_dict, reward, done, truncated, info = result
+                # Step environment - *** AKCE PRO VŠECH 4 DRONŮ ***
+                action_np = torch.tanh(action).cpu().numpy()  # (4, 4)
+                result = env.step({"quads": {"action": action_np}})  # Posílá všech 4 akcí!
+                obs_dict, reward, done, info = result
                 
                 # Store transition
                 trainer.store_transition(
@@ -254,7 +255,7 @@ def train_main():
                 episode_reward += reward
                 episode_steps += 1
                 
-                if done or truncated:
+                if done:
                     break
                     
             except Exception as e:
@@ -366,15 +367,34 @@ def demo_main():
     model.load_state_dict(checkpoint['actor_state_dict'])
     model.eval()
     
-    # Environment
-    env = WildfireMARLEnv(agents_config=["quad_1"])
+    # Environment - 4 drony v rozích 50x50m mapy
+    env = WildfireMARLEnv(agents_config=["quad_1", "quad_2", "quad_3", "quad_4"])
     
-    # Run 3 demo episodes (kratší pro rychlé testování)
+    # Definuj start pozice pro demo
+    start_positions = [
+        ("Levý dolní", [-20, -20, 8]),
+        ("Pravý dolní", [20, -20, 8]),  
+        ("Pravý horní", [20, 20, 8]),
+        ("Levý horní", [-20, 20, 8])
+    ]
+    
+    # Run demo pro každou ze 4 pozic
     demo_log = {'drones': {}, 'rewards': []}
     
-    for i in range(3):
+    for i, (position_name, start_pos) in enumerate(start_positions):
+        print(f"\n🚁 === DEMO {i+1}: {position_name} {start_pos} ===\n")
+        
+        # Environment pro 1 drona
+        env = WildfireMARLEnv(agents_config=["quad_1"])
         obs, _ = env.reset()
-        hidden_state = torch.zeros(1, 128)
+        
+        # Přestav dron na počáteční pozici
+        import pybullet as p
+        drone_id = env.sim.drones["quad_1"].drone_id
+        p.resetBasePositionAndOrientation(drone_id, start_pos, [0, 0, 0, 1])
+        obs = env._get_obs()  # Aktualizuj observace
+        
+        hidden_state = torch.zeros(1, 128)  # 1 dron
         total_reward = 0
         steps = 0
         
@@ -382,73 +402,87 @@ def demo_main():
         positions = []
         rewards = []
         
-        print(f"\n🚁 === DEMO RUN {i+1} ===\n")
-        
-        while steps < 100:  # Kratší běhy pro rychlé testování
+        while steps < 150:  # Delší pro jeden dron - 150 kroků
             if "quads" in obs:
-                local_map = torch.FloatTensor(obs["quads"]["local_map"][:1])
-                self_state = torch.FloatTensor(obs["quads"]["self_state"][:1])
+                # *** JEDEN DRON ***
+                local_map = torch.FloatTensor(obs["quads"]["local_map"])  # (1, 1, 32, 32)
+                self_state = torch.FloatTensor(obs["quads"]["self_state"])  # (1, 6)
             else:
                 break
             
             with torch.no_grad():
                 actions, _, hidden_state = model(local_map, self_state, hidden_state)
                 
-            mean = actions[:, :4]
-            scale = torch.clamp(actions[:, 4:], 0.5, 1.0)  # Ještě větší minimum - z 0.1 na 0.5
+            # Sample action pro jeden dron
+            mean = actions[:, :4]  # (1, 4)
+            scale = torch.clamp(actions[:, 4:], 0.1, 1.0) 
             action_sample = torch.normal(mean, scale)
-            actions_np = torch.tanh(action_sample).squeeze().numpy()
+            actions_np = torch.tanh(action_sample).numpy()  # (1, 4)
             
-            # ===== SPRÁVNÝ FORMÁT AKCÍ PRO NOVÉ PROSTŘEDÍ =====
+            # ===== AKCE PRO JEDEN DRON =====
             action_dict = {
                 "quads": {
-                    "action": actions_np.reshape(1, 4)  # Reshape na (1, 4) pro jeden dron
+                    "action": actions_np  # (1, 4)
                 }
             }
             
-            obs, reward, done, truncated, info = env.step(action_dict)
+            obs, reward, done, info = env.step(action_dict)
             total_reward += reward
             steps += 1
             
-            # Log pozice pro vizualizaci
+            # Log pozice drona
             if "quad_1" in env.sim.drones:
                 pos = env.sim.drones["quad_1"].get_position()
                 positions.append(pos.copy())
                 rewards.append(reward)
             
-            if steps % 25 == 0:  # Každých 25 kroků
-                print(f"   Krok {steps}: Reward={reward:.1f}, Total={total_reward:.1f}")
+            # Progress každých 15 kroků
+            if steps % 15 == 0:
+                if "quad_1" in env.sim.drones:
+                    pos = env.sim.drones["quad_1"].get_position()
+                    fire_distance = ((pos[0])**2 + (pos[1])**2)**0.5
+                    print(f"   Krok {steps}: Vzdálenost k ohni {fire_distance:.1f}m, Reward={reward:.2f}")
             
-            if done or truncated:
+            if done:
                 break
         
         # Ulož data pro vizualizaci
-        demo_log['drones'][f'quad_run_{i+1}'] = {
+        demo_log['drones'][f'quad_{position_name.replace(" ", "_")}'] = {
             'positions': positions,
             'rewards': rewards
         }
         demo_log['rewards'].append(total_reward)
         
-        print(f"   ✅ Hotovo! {total_reward:.1f} reward za {steps} kroků")
+        # Výsledek
+        start_distance = ((start_pos[0])**2 + (start_pos[1])**2)**0.5
+        if positions:
+            final_pos = positions[-1]
+            final_distance = ((final_pos[0])**2 + (final_pos[1])**2)**0.5
+            improvement = start_distance - final_distance
+            print(f"   ✅ Hotovo! Start: {start_distance:.1f}m -> Konec: {final_distance:.1f}m")
+            print(f"   🏆 Zlepšení: {improvement:+.1f}m, Reward: {total_reward:.1f}")
+        
+        env.close()
     
     # 🎨 VYTVOŘ VIZUALIZACI 
     try:
         print("\n🎨 Vytvářím vizualizaci demo běhu...")
         if demo_log['drones']:
-            viz_path = create_demo_visualization(demo_log, env)
-            print(f"📊 Vizualizace uložena: {viz_path}")
+            # Simulujeme environment pro vizualizaci
+            temp_env = WildfireMARLEnv(agents_config=["quad_1"])
+            viz_path = create_demo_visualization(demo_log, temp_env)
+            print(f"📈 Vizualizace uložena: {viz_path}")
+            temp_env.close()
         else:
             print("⚠️ Žádná data pro vizualizaci")
     except Exception as e:
         print(f"⚠️ Chyba při vizualizaci: {e}")
-    
-    env.close()
 
 def validate_main():
     """Ověří že prostředí funguje"""
     print("✅ VALIDACE PROSTŘEDÍ")
     
-    env = WildfireMARLEnv(agents_config=["quad_1"])
+    env = WildfireMARLEnv(agents_config=["quad_1", "quad_2", "quad_3", "quad_4"])
     obs, _ = env.reset()
     
     print(f"🌍 Prostředí úspěšně inicializováno")
@@ -457,13 +491,13 @@ def validate_main():
         print(f"   Quad local_map shape: {obs['quads']['local_map'].shape}")
         print(f"   Quad self_state shape: {obs['quads']['self_state'].shape}")
     
-    # Test jednoho kroku
+    # Test jednoho kroku - hovering pro jeden dron
     action = {
         "quads": {
-            "action": np.array([[0.0, 0.0, 0.0, 0.1]])  # Hovering pro jeden dron
+            "action": np.array([[0.0, 0.0, 0.0, 0.1]])  # quad_1: hovering
         }
     }
-    obs, reward, done, truncated, info = env.step(action)
+    obs, reward, done, info = env.step(action)
     print(f"✅ Test krok: reward={reward:.1f}")
     
     env.close()
