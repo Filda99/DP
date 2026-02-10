@@ -8,6 +8,12 @@ Includes PID Controller implementation for stable flight dynamics.
 import pybullet as p
 import numpy as np
 from abc import ABC, abstractmethod
+import os
+import sys
+
+# Add project root to path for imports
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
 class PIDController:
     """Standard PID Controller implementation."""

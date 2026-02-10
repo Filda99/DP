@@ -46,9 +46,25 @@ class Environment:
         self.wind_change_interval = random.uniform(5.0, 15.0)
         self.target_wind = self.wind_velocity.copy()
         
-        # Fire simulation components
-        self.fire_grid = None
-        self.grid_mapper = None
+        # We need to define the size of the world (e.g., 200m x 200m)
+        self.grid_width = 200.0
+        self.grid_height = 200.0
+        self.cell_size = 2.0 # 2 meters per cell
+        
+        # 1. Create Mapper
+        self.grid_mapper = GridMapper(
+            grid_width_m=self.grid_width, 
+            grid_height_m=self.grid_height, 
+            cell_size_m=self.cell_size
+        )
+        
+        # 2. Create Fire Grid
+        self.fire_grid = FireGrid(
+            H=self.grid_mapper.grid_height_cells,
+            W=self.grid_mapper.grid_width_cells,
+            dt=0.1 # Simulation time step for fire
+        )
+
         self.fire_time_accumulator = 0.0
         self.fire_enabled = False
         
@@ -72,7 +88,7 @@ class Environment:
             self._pending_terrain_data = (gdf_water, gdf_buildings, gdf_forest)
             return
 
-        print("🔥 Rasterizing terrain into FireGrid (Optimized Painter's Algorithm)...")
+        # print("🔥 Rasterizing terrain into FireGrid (Optimized Painter's Algorithm)...")
         t_start = time.time()
         
         H, W = self.fire_grid.H, self.fire_grid.W
@@ -159,15 +175,15 @@ class Environment:
 
         # 2. APPLY LAYERS IN PRIORITY ORDER
         cells_forest = burn_polygons_to_grid(gdf_forest, *FUEL_FOREST, "Forest")
-        print(f"   🌲 Applied Forest layer ({cells_forest} cells)")
+        # print(f"   🌲 Applied Forest layer ({cells_forest} cells)")
         
         cells_bld = burn_polygons_to_grid(gdf_buildings, *FUEL_BUILDING, "Buildings")
-        print(f"   🏢 Applied Building layer ({cells_bld} cells)")
+        # print(f"   🏢 Applied Building layer ({cells_bld} cells)")
         
         cells_water = burn_polygons_to_grid(gdf_water, *FUEL_WATER, "Water")
-        print(f"   💧 Applied Water layer ({cells_water} cells)")
+        # print(f"   💧 Applied Water layer ({cells_water} cells)")
         
-        print(f"✅ Terrain rasterization complete in {time.time() - t_start:.2f}s")
+        # print(f"✅ Terrain rasterization complete in {time.time() - t_start:.2f}s")
 
     # ============================================================================
     # PYBULLET OBJECT CREATION (VISUALS)
@@ -197,12 +213,39 @@ class Environment:
     # FIRE SIMULATION
     # ============================================================================
     
+    def ignite_fire(self, x: float, y: float, intensity: float = 1.0):
+        """
+        Ignites a fire at the specified world coordinates (x, y).
+        
+        Args:
+            x (float): X position in world meters
+            y (float): Y position in world meters
+            intensity (float): Initial fire intensity [0.0, 1.0]
+        """
+        # 1. Check if Mapper and Grid are initialized
+        if not hasattr(self, 'grid_mapper') or not hasattr(self, 'fire_grid'):
+            print("⚠️ Fire Grid components not ready. Cannot ignite.")
+            return
+
+        # 2. Convert World Coordinates -> Grid Indices
+        # The wrapper gives us (x, y), we need (row, col)
+        r, c = self.grid_mapper.world_to_cell((x, y))
+        
+        # 3. Update the FireGrid state directly
+        # We access the arrays B (Burning) and I (Intensity)
+        if 0 <= r < self.fire_grid.H and 0 <= c < self.fire_grid.W:
+            self.fire_grid.B[r, c] = True        # Set Burning flag to True
+            self.fire_grid.I[r, c] = intensity   # Set Intensity
+            # print(f"🔥 Ignition confirmed at world=({x:.1f}, {y:.1f}) -> grid=[{r}, {c}]")
+        else:
+            print(f"⚠️ Ignition failed: Coordinates ({x:.1f}, {y:.1f}) are out of simulation bounds.")
+
     def enable_fire_simulation(self, grid_width_m=100, grid_height_m=100, cell_size_m=2.0, 
                              dt=0.1, alpha=1.0, k_wind=1.5, wind_dir=0.0, lazy_fuel=False):
         """
         Enable wildfire simulation.
         """
-        print(f"🔥 Enabling Fire Simulation...")
+        # print(f"🔥 Enabling Fire Simulation...")
         self.grid_mapper = GridMapper(grid_width_m, grid_height_m, cell_size_m)
         H, W = self.grid_mapper.get_grid_dimensions()
         
@@ -220,7 +263,7 @@ class Environment:
         # Speed = Cell_Size * Rate  =>  Rate = Speed / Cell_Size
         scaled_spread_rate = PHYSICAL_SPREAD_SPEED / cell_size_m
 
-        print(scaled_spread_rate)
+        # print(scaled_spread_rate)
 
         self.fire_grid = FireGrid(
             H=H, W=W, dt=dt, alpha=alpha, 
@@ -231,7 +274,7 @@ class Environment:
         self.fire_enabled = True
         
         if self._pending_terrain_data:
-            print("    Found pending terrain data. Rasterizing now...")
+            # print("    Found pending terrain data. Rasterizing now...")
             self.rasterize_terrain_layers(*self._pending_terrain_data)
             self._pending_terrain_data = None
         else:
@@ -242,7 +285,7 @@ class Environment:
         self.fire_grid.B[:] = False
         self.fire_grid.I[:] = 0.0
         
-        print(f"✅ Fire simulation ready: {H}x{W} cells, {cell_size_m}m resolution.")
+        # print(f"✅ Fire simulation ready: {H}x{W} cells, {cell_size_m}m resolution.")
 
     def start_fire_at_position(self, world_pos, intensity=0.2):
         if not self.fire_enabled: return False
@@ -251,7 +294,7 @@ class Environment:
             if self.fire_grid.F[i, j] > 0:
                 self.fire_grid.B[i, j] = True
                 self.fire_grid.I[i, j] = np.minimum(1.0, self.fire_grid.F[i, j])
-                print(f"🔥 Fire started at {world_pos} (Cell {i},{j})")
+                # print(f"🔥 Fire started at {world_pos} (Cell {i},{j})")
                 return True
         except IndexError:
             pass
@@ -374,7 +417,7 @@ class Environment:
             
             plt.savefig(filename, dpi=150, bbox_inches='tight')
             plt.close()
-            print(f"✅ Saved map: {filename}")
+            # print(f"✅ Saved map: {filename}")
         else:
             print("❌ Cannot save map: FireGrid not initialized")
 
@@ -410,7 +453,7 @@ class Environment:
             'radius_sq': (size/2 + 2.0)**2 # Čtverec poloměru pro rychlou detekci (+ tolerance)
         }
         
-        print(f"💧 Refill Zone created at {center_pos}")
+        # print(f"💧 Refill Zone created at {center_pos}")
         return center_pos
     
     # ============================================================================
@@ -453,7 +496,7 @@ class Environment:
         
         # Disable random wind changes
         self.manual_wind_control = True
-        print(f"🌬️ Environment Wind set to: {self.wind_velocity} m/s")
+        # print(f"🌬️ Environment Wind set to: {self.wind_velocity} m/s")
 
     def get_wind_at_position(self, position):
         return self.wind_velocity * (1.0 + position[2] * 0.01)

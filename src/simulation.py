@@ -38,8 +38,8 @@ class Simulation:
         self.destroyed_drones = []
         self.environment = Environment()
         self.simulation_time = 0.0
-        self.fps = 60
-        self.timestep = 1/60.0
+        self.fps = 30
+        self.timestep = 1/self.fps
         
         # --- Airflow model variables ---
         self.airflow_H = 100.0
@@ -83,7 +83,7 @@ class Simulation:
         
         self.log_file = log_file
         self.log_entries = []
-        print(f"📝 Logging to: {self.log_file}")
+        # print(f"📝 Logging to: {self.log_file}")
         
     def start_simulation(self):
         """Start PyBullet simulation."""
@@ -93,7 +93,7 @@ class Simulation:
         p.setTimeStep(self.timestep)  # 1/60s
         self.environment.create_ground()
         self.environment.create_refill_zone()
-        print(f"✅ Simulation started")
+        # print(f"✅ Simulation started")
         self._log_event('simulation_start ', {'timestep': self.timestep})
         
     def stop_simulation(self):
@@ -102,7 +102,7 @@ class Simulation:
             p.disconnect()
             self.physics_client = None
         self._save_log()
-        print("✅ Simulation stopped")
+        # print("✅ Simulation stopped")
     
     def _log_event(self, event_type, data):
         """Log an event to the log file."""
@@ -128,7 +128,7 @@ class Simulation:
         }
         with open(self.log_file, 'w') as f:
             json.dump(log_data, f, indent=2, default=str)
-        print(f"📝 Log saved to: {self.log_file}")
+        # print(f"📝 Log saved to: {self.log_file}")
     
     # ============================================================================
     # DRONE MANAGEMENT
@@ -142,7 +142,7 @@ class Simulation:
             'positions': [], 'forces': [], 'velocities': [], 'control_inputs': []
         }
         self.drone_trajectories[name] = [[position[0], position[1], position[2], 0.0]]
-        print(f"✅ Added quadcopter '{name}' at {position}")
+        # print(f"✅ Added quadcopter '{name}' at {position}")
         return quad
     
     def add_fixedwing(self, name, position=[0, 0, 5], mass=1.0, water_capacity=0.0):
@@ -158,7 +158,7 @@ class Simulation:
 
         # p.changeDynamics(fw.drone_id, -1, linearDamping=0.0, angularDamping=0.0)
 
-        print(f"✅ Added fixed-wing '{name}' at {position} (water: {water_capacity}L)")
+        # print(f"✅ Added fixed-wing '{name}' at {position} (water: {water_capacity}L)")
         return fw
     
     def get_drone_status(self, drone_name):
@@ -179,16 +179,16 @@ class Simulation:
     
     def setup_osm_environment(self, location_query: str, default_building_height: float = 10.0,
                             distance_m: float = 2000):
-        print(f"🌍 Loading environment from OSM: {location_query}")
+        # print(f"🌍 Loading environment from OSM: {location_query}")
         load_environment_from_osm(self.environment, location_query, default_building_height, distance_m)
     
     def set_wind(self, wind_velocity):
         self.environment.set_wind(wind_velocity)
-        print(f"✅ Wind set to {wind_velocity} m/s")
+        # print(f"✅ Wind set to {wind_velocity} m/s")
     
     def set_weather(self, visibility=1000.0, precipitation=0.0):
         self.environment.set_weather(visibility, precipitation)
-        print(f"✅ Weather set - visibility: {visibility}m, precipitation: {precipitation}")
+        # print(f"✅ Weather set - visibility: {visibility}m, precipitation: {precipitation}")
     
     # ============================================================================
     # FIRE SIMULATION
@@ -202,8 +202,8 @@ class Simulation:
             H, W = self.environment.fire_grid.H, self.environment.fire_grid.W
             height_levels = 20
             self.temperature_grid = np.full((height_levels, H, W), self.base_temperature, dtype=float)
-            print(f"✅ Temperature grid initialized: {height_levels}×{H}×{W}")
-        print(f"✅ Fire simulation enabled in environment")
+            # print(f"✅ Temperature grid initialized: {height_levels}×{H}×{W}")
+        # print(f"✅ Fire simulation enabled in environment")
     
     def start_fire(self, world_pos, intensity=0.2):
         return self.environment.start_fire_at_position(world_pos, intensity)
@@ -543,12 +543,12 @@ class Simulation:
         print(f"🔥 DESTROYED: {drone_name}")
     
     def run_scenario(self, scenario_function, steps=1000):
-        print(f"🚁 Running scenario for {steps} steps...")
+        # print(f"🚁 Running scenario for {steps} steps...")
         for step in range(steps):
             controls = scenario_function(step, self.simulation_time, self.drones)
             self.step_simulation(controls)
             if step % 100 == 0: print(f"  Step {step}/{steps} - Time: {self.simulation_time:.2f}s")
-        print(f"✅ Scenario completed")
+        # print(f"✅ Scenario completed")
     
     # ============================================================================
     # VISUALIZATION & ANALYSIS
@@ -564,7 +564,7 @@ class Simulation:
                 self.environment, 
                 title
             )
-            print("✅ Visualization complete")
+            # print("✅ Visualization complete")
         else:
             print("❌ Visualizer not initialized")
 
@@ -579,7 +579,7 @@ class Simulation:
                 drone_name,
                 title
             )
-            print("✅ Visualization complete")
+            # print("✅ Visualization complete")
         else:
             print("❌ Visualizer not initialized")
     

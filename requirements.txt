@@ -1,8 +1,22 @@
-numpy
-matplotlib
+# Simulation & Physics
 pybullet
-osmnx 
-geopandas 
+numpy
+scipy
+
+# Mapping & Geometry
+osmnx
+geopandas
 shapely
 contextily
+
+# Visualization
+matplotlib
 SciencePlots
+opencv-python
+
+# Reinforcement Learning
+torch
+tensordict
+torchrl
+gymnasium
+tqdm
