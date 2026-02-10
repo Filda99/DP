@@ -93,12 +93,31 @@ class Environment:
         
         H, W = self.fire_grid.H, self.fire_grid.W
         
-        # Fuel properties: (fuel_level, burn_rate)
+        # Fuel properties: (fuel_level, burn_rate_per_sq_meter)
+        # Burn rate per square meter - stejný burn rate na m2 bez ohledu na cell size
+        
+        # Reálné burn times pro 1x1m buňku:
+        # Tráva: 30 sekund -> burn_rate = fuel_level / 30s = 0.3 / 30 = 0.01 per second per m2
+        # Les: 2 minuty -> burn_rate = 0.8 / 120 = 0.0067 per second per m2  
+        # Budova: 10 minut -> burn_rate = 0.9 / 600 = 0.0015 per second per m2
+        
+        BURN_RATE_GRASS_PER_M2 = 0.01      # 30s pro 1x1m buňku
+        BURN_RATE_FOREST_PER_M2 = 0.0067    # 2 min pro 1x1m buňku 
+        BURN_RATE_BUILDING_PER_M2 = 0.0015  # 10 min pro 1x1m buňku
+        
+        # Scale burn rate podle cell size - větší buňka horí proporcionálně déle
+        cell_area = cell_size * cell_size  # m2
+        
         FUEL_WATER = (0.0, 0.0) 
-        FUEL_BUILDING = (0.9, 0.0002) # 0.9 / 0.0002 = ~75 minutes will burn one cell
-        FUEL_FOREST = (0.8, 0.0005) # 0.8 / 0.0005 = ~26 minutes will burn one cell
-        FUEL_GRASS = (0.3, 0.001) # 0.3 / 0.001 = 5 minutes will burn one cell
-
+        FUEL_BUILDING = (0.9, BURN_RATE_BUILDING_PER_M2 / cell_area)  # Scale podle plochy
+        FUEL_FOREST = (0.8, BURN_RATE_FOREST_PER_M2 / cell_area)     # Scale podle plochy
+        FUEL_GRASS = (0.3, BURN_RATE_GRASS_PER_M2 / cell_area)       # Scale podle plochy        
+        # Debug info - ukažme burn times
+        grass_burn_time = FUEL_GRASS[0] / FUEL_GRASS[1] if FUEL_GRASS[1] > 0 else 0
+        forest_burn_time = FUEL_FOREST[0] / FUEL_FOREST[1] if FUEL_FOREST[1] > 0 else 0 
+        print(f"🔥 Fire config for {cell_size}x{cell_size}m cells:")
+        print(f"   Tráva: {grass_burn_time:.1f}s burn time")
+        print(f"   Les: {forest_burn_time:.1f}s burn time")
         # 1. BASE LAYER: GRASS/OPEN (Default)
         self.fire_grid.F[:] = FUEL_GRASS[0]
         self.fire_grid.fuel_burn_rate[:] = FUEL_GRASS[1]
@@ -255,13 +274,19 @@ class Environment:
 
         # DEFINE PHYSICAL SPEED (Meters per Second)
         # l_base represents the base rate of spread in prob/sec. 
-        # 0.1 m/s = slow creep
-        # 1.0 m/s = fast walking pace fire
-        PHYSICAL_SPREAD_SPEED = 0.01
+        # 0.001 m/s = very slow creep (realističky pomalé)
+        # 0.01 m/s = slow creep  
+        # 0.1 m/s = moderate spread
+        PHYSICAL_SPREAD_SPEED = 0.01  # Rychlejší šíření pro viditelnost
         
         # CALCULATE RATE PARAMETER (Lambda)
         # Speed = Cell_Size * Rate  =>  Rate = Speed / Cell_Size
         scaled_spread_rate = PHYSICAL_SPREAD_SPEED / cell_size_m
+
+        # Calculate fuel properties based on cell size
+        BURN_RATE_GRASS_PER_M2 = 0.01      # 30s pro 1x1m buňku
+        cell_area = cell_size_m * cell_size_m  # m2
+        FUEL_GRASS = (0.3, BURN_RATE_GRASS_PER_M2 / cell_area)       # Scale podle plochy
 
         # print(scaled_spread_rate)
 
@@ -278,9 +303,17 @@ class Environment:
             self.rasterize_terrain_layers(*self._pending_terrain_data)
             self._pending_terrain_data = None
         else:
-            print("⚠️  No terrain data found. Initializing empty grid (Grass).")
-            self.fire_grid.F[:] = 0.3
-            self.fire_grid.fuel_burn_rate[:] = 0.08
+            # print("⚠️  No terrain data found. Initializing as grass with correct burn rates.")
+            # Použij naše nové fuel properties místo starých konstant!
+            self.fire_grid.F[:] = FUEL_GRASS[0]
+            self.fire_grid.fuel_burn_rate[:] = FUEL_GRASS[1]
+
+        # Debug info - ukažme burn times pokaždé
+        grass_burn_time = FUEL_GRASS[0] / FUEL_GRASS[1] if FUEL_GRASS[1] > 0 else 0
+        spread_rate_per_second = scaled_spread_rate
+        print(f"🔥 Fire config for {cell_size_m}x{cell_size_m}m cells:")
+        print(f"   Tráva: {grass_burn_time:.1f}s burn time, spread rate: {spread_rate_per_second:.6f}/s")
+        print(f"   Alpha: {alpha}, k_wind: {k_wind}, spread_speed: {PHYSICAL_SPREAD_SPEED} m/s")
 
         self.fire_grid.B[:] = False
         self.fire_grid.I[:] = 0.0

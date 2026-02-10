@@ -41,10 +41,10 @@ class GridMapper:
         self.origin_x = -self.actual_width_m / 2
         self.origin_y = -self.actual_height_m / 2
         
-        print(f"✅ GridMapper initialized:")
-        print(f"   Grid size: {self.grid_width_cells}x{self.grid_height_cells} cells")
-        print(f"   Cell size: {cell_size_m}m")
-        print(f"   World bounds: [{self.origin_x:.1f}, {-self.origin_x:.1f}] x [{self.origin_y:.1f}, {-self.origin_y:.1f}]")
+        # print(f"✅ GridMapper initialized:")
+        # print(f"   Grid size: {self.grid_width_cells}x{self.grid_height_cells} cells")
+        # print(f"   Cell size: {cell_size_m}m")
+        # print(f"   World bounds: [{self.origin_x:.1f}, {-self.origin_x:.1f}] x [{self.origin_y:.1f}, {-self.origin_y:.1f}]")
     
     def world_to_cell(self, pos_xy: Tuple[float, float]) -> Tuple[int, int]:
         """

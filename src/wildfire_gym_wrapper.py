@@ -126,8 +126,8 @@ class WildfireMARLEnv(gym.Env):
         self.sim.enable_fire_simulation(
             grid_width_m=50,
             grid_height_m=50,
-            cell_size_m=2.0,
-            dt=0.5
+            cell_size_m=5.0,   # Větší buňky jako v demo pro lepší šíření
+            dt=0.5  # Větší time step - fire sim nemusí být tak častá jako PyBullet
         )
         
         # Setup scenario: 4 drony v rozích 50x50m mapy
@@ -274,31 +274,38 @@ class WildfireMARLEnv(gym.Env):
                 drone_pos = self.sim.drones[drone_name].get_position()
                 x, y, z = drone_pos
                 
-                # === 1. EXPLORATION REWARD - Nové oblasti ===
+                # === 1. FIRE-CENTRIC EXPLORATION ===
                 # Convert position to grid cell (2m resolution)
                 cell_x = int(x // 2.0)
                 cell_y = int(y // 2.0)
                 cell_key = (cell_x, cell_y)
                 
+                # ADAPTIVE exploration rewards based on fire discovery status
                 if cell_key not in self.visited_cells and abs(x) <= self.map_bounds and abs(y) <= self.map_bounds:
                     self.visited_cells.add(cell_key)
-                    reward += 3.0  # Reward za navštívení nové oblasti
-                    self.exploration_reward_accumulated += 3.0
+                    
+                    if not self.total_fire_discovered:
+                        # Pre-discovery: Encourage exploration
+                        reward += 1.0
+                        self.exploration_reward_accumulated += 1.0
+                    else:
+                        # Post-discovery: Discourage random exploration
+                        reward += 0.2  # Much smaller exploration reward
                 
-                # === 2. MOVEMENT REWARD - Aktivní pohyb ===
+                # === 2. MOVEMENT REWARD - Enhanced for active search ===
                 if drone_name in self.previous_positions:
                     prev_x, prev_y = self.previous_positions[drone_name]
                     movement_distance = np.sqrt((x - prev_x)**2 + (y - prev_y)**2)
                     
-                    if movement_distance > 0.5:  # Významný pohyb (>0.5m)
-                        reward += min(movement_distance * 0.5, 2.0)  # Cap na 2.0
-                    elif movement_distance < 0.1:  # Stojí na místě
-                        reward -= 0.5  # Jemná penalizace za stání
+                    if movement_distance > 0.5:  # Meaningful movement
+                        reward += min(movement_distance * 0.3, 0.8)  # Slightly higher movement reward
+                    elif movement_distance < 0.1:  # Standing still
+                        reward -= 0.2  # Higher penalty for inactivity
                 
                 # Update position tracking
                 self.previous_positions[drone_name] = (x, y)
                 
-                # === 3. FIRE VISIBILITY REWARD ===
+                # === 3. FIRE VISIBILITY & TRACKING REWARDS ===
                 fire_visible = False
                 if "quads" in new_obs and "local_map" in new_obs["quads"] and len(new_obs["quads"]["local_map"]) > drone_idx:
                     local_fire = new_obs["quads"]["local_map"][drone_idx, 0]  # Shape (32, 32)
@@ -307,46 +314,94 @@ class WildfireMARLEnv(gym.Env):
                     if fire_intensity > 0.1:  # Vidí oheň!
                         fire_visible = True
                         total_fire_visible = True
-                        reward += 15.0  # Kontinuální reward za vidění ohně
+                        
+                        # MASSIVE continuous fire tracking reward
+                        reward += 50.0  # Much higher than exploration
                         
                         # Extra bonus při prvním objevení ohně v epizodě
                         if not self.total_fire_discovered:
-                            reward += 100.0  # OBROVSKÝ bonus za první objevení!
+                            reward += 200.0  # HUGE discovery bonus
                             self.total_fire_discovered = True
+                            print(f"🔥 FIRE DISCOVERED by {drone_name}!")
+                        
+                        # Bonus za intenzitu ohně (čím blíž, tím více vidí)
+                        intensity_bonus = min(fire_intensity * 5.0, 50.0)  # Higher intensity bonus
+                        reward += intensity_bonus
+                        
+                        # DISTANCE-BASED FIRE TRACKING
+                        fire_distance = np.sqrt(x**2 + y**2)  # Distance to fire center (0,0)
+                        if fire_distance < 15.0:  # Close to fire
+                            proximity_reward = (15.0 - fire_distance) * 3.0  # Closer = higher reward
+                            reward += proximity_reward
+                    
+                    else:
+                        # If fire was previously visible but now lost
+                        if self.total_fire_discovered:
+                            # PENALTY for losing sight of discovered fire
+                            fire_distance = np.sqrt(x**2 + y**2)
+                            if fire_distance > 20.0:  # Too far from fire center
+                                reward -= 5.0  # Penalty for being far from fire when it's known
+                
+                # === 4. FIRE-SEEKING BEHAVIOR (when fire is known but not visible) ===
+                if self.total_fire_discovered and not fire_visible:
+                    # Reward for moving towards fire center when fire is known
+                    fire_distance = np.sqrt(x**2 + y**2)
+                    
+                    # Direction-based reward
+                    if drone_name in self.previous_positions:
+                        prev_x, prev_y = self.previous_positions[drone_name]
+                        prev_distance = np.sqrt(prev_x**2 + prev_y**2)
+                        
+                        if fire_distance < prev_distance:  # Moving closer to fire
+                            approach_reward = (prev_distance - fire_distance) * 10.0
+                            reward += min(approach_reward, 20.0)  # Cap at 20
+                        else:  # Moving away from fire
+                            retreat_penalty = (fire_distance - prev_distance) * 5.0
+                            reward -= min(retreat_penalty, 10.0)  # Cap penalty at 10
                 
                 # === 4. SAFETY PENALTIES (POUZE negativní události) ===
-                # Boundary violation - výrazná penalizace
+                # Boundary violation - umírněná penalizace
                 if abs(x) > self.map_bounds or abs(y) > self.map_bounds:
-                    reward -= 50.0  
+                    reward -= 10.0  # Menší penalizace
                 
                 # Crash detection
                 if z < 0.5:  # Dron se rozbil
-                    reward -= 100.0
+                    reward -= 20.0  # Menší crash penalty
                     
                 # Flying too high (ineffective exploration)
                 if z > 30.0:
-                    reward -= 1.0  # Jemná penalizace za létání moc vysoko
+                    reward -= 0.1  # Velmi jemná penalizace
                     
-            else:
-                # Dron neexistuje/crashnul - velká penalizace
-                reward -= 100.0
+        # Episode se ukončí při crash, takže nemusíme řešit missing drony
         
-        # === 5. EXPLORATION PROGRESS BONUS ===
-        # Bonus za celkový exploration progress
+        # === 5. TEAM COORDINATION & SMART EXPLORATION ===
+        # Reduced exploration bonus when fire is already found
         exploration_percentage = len(self.visited_cells) / 625.0  # 25x25 cells = 50x50m map
-        if exploration_percentage > 0.1:  # 10% mapy prozkoumáno
-            reward += exploration_percentage * 10.0  # Progresivní bonus
+        if exploration_percentage > 0.1 and not self.total_fire_discovered:  # Only reward exploration before fire discovery
+            reward += exploration_percentage * 1.0  # Smaller progressive bonus
         
-        # === 6. COLLABORATIVE BEHAVIOR BONUS ===
-        # Pokud více dronů aktivně exploruje současně
+        # === 6. COLLABORATIVE FIRE MONITORING ===
+        # Bonus if multiple drones see fire simultaneously
         active_drones = sum(1 for name in self.quad_agents if name in self.sim.drones and self.sim.drones[name].get_position()[2] > 0.5)
-        if active_drones >= 3:  # 3+ dronů stále létá
-            reward += 2.0  # Bonus za koordinaci
+        if total_fire_visible and active_drones >= 2:
+            reward += 2.0  # Team coordination bonus
         
         self.last_fire_visible = total_fire_visible
 
+        # === CRASH DETECTION - ukončit episode okamžitě ===
+        crashed_drones = []
+        for drone_name in self.quad_agents:
+            if drone_name not in self.sim.drones:
+                crashed_drones.append(drone_name)
+            elif self.sim.drones[drone_name].get_position()[2] < 0.5:
+                crashed_drones.append(drone_name)
         
-        terminated = self.sim.simulation_time > 120 # 2 minute timeout
+        # Pokud nějaký dron crashnul, UKONČIT EPISODE
+        episode_crashed = len(crashed_drones) > 0
+        if episode_crashed:
+            print(f"🛑 Episode terminated due to drone crash: {crashed_drones}")
+        
+        terminated = self.sim.simulation_time > 120 or episode_crashed  # Crash OR timeout
         
         # Ensure reward is always a valid number, never None
         reward = float(reward) if reward is not None else -10.0
