@@ -478,7 +478,12 @@ class Simulation:
                 self.simulation_log['drones'][drone_name]['positions'].append(drone.get_position().copy())
                 self.simulation_log['drones'][drone_name]['forces'].append(forces.copy())
                 self.simulation_log['drones'][drone_name]['velocities'].append(drone.get_velocity().copy())
-                self.simulation_log['drones'][drone_name]['control_inputs'].append(control_input.copy())
+                
+                # Handle control_input logging for torch tensors
+                if hasattr(control_input, 'detach'):  # PyTorch tensor
+                    self.simulation_log['drones'][drone_name]['control_inputs'].append(control_input.detach().cpu().numpy().copy())
+                else:
+                    self.simulation_log['drones'][drone_name]['control_inputs'].append(control_input.copy())
                 
                 # Check if drone has water attribute (FixedWing does, Quadcopter does not)
                 if drone.can_drop_water():

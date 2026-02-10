@@ -92,14 +92,34 @@ class WildfireObsProcessor:
         else:
             water_norm = 0.0 # Handle 0-capacity drones safely
 
-        # Vector state (Self-State)
-        # [z, vx, vy, vz, roll, pitch, yaw_rate, water_level]
-        # We omit X,Y world coords for better generalization
+        # Vector state (Self-State) - ROZŠÍŘENO pro map awareness a exploration tracking
+        # [z, vx, vy, vz, roll, pitch, water_level, norm_x, norm_y, dist_to_boundary, exploration_ratio, fire_discovery_ratio]
+        # We add world position for map awareness
+        
+        # Get environment reference for bounds (přes simulation)
+        map_bounds = 50.0  # Stejné jako v wrapper
+        
+        # Map awareness - normalized position a distance to boundaries
+        norm_x = pos[0] / map_bounds  # -1 až +1
+        norm_y = pos[1] / map_bounds  # -1 až +1
+        dist_to_boundary = min(
+            map_bounds - abs(pos[0]),  # Distance to X boundary
+            map_bounds - abs(pos[1])   # Distance to Y boundary
+        ) / map_bounds  # Normalized 0-1
+        
+        # Exploration progress (bude aktualizováno z wrapper)
+        exploration_ratio = 0.0  # Placeholder - wrapper will override
+        fire_discovery_ratio = 0.0  # Placeholder - wrapper will override
+        
         self_state = np.array([
             pos[2],                    # Altitude
             vel[0], vel[1], vel[2],    # World velocities
             rpy[0], rpy[1],            # Attitude
             water_norm,                # Water level
+            norm_x, norm_y,            # Normalized map position
+            dist_to_boundary,          # Distance to boundary
+            exploration_ratio,         # Exploration progress (placeholder)
+            fire_discovery_ratio,      # Fire discovery progress (placeholder)
         ], dtype=np.float32)
 
         return {

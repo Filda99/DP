@@ -22,12 +22,24 @@ class QuadActor(nn.Module):
             nn.Linear(32 * 7 * 7, 64)
         )
         
-        # 2. State & Memory
-        self.gru = nn.GRUCell(input_size=64 + 7, hidden_size=128) # 7 is self_state size
+        # 2. State & Memory - aktualizováno pro 12-feature self_state
+        self.gru = nn.GRUCell(input_size=64 + 12, hidden_size=128) # 12 je nová velikost self_state
         
-        # 3. Heads
+        # 3. Heads - mnohem konzervativnější
         self.action_head = nn.Linear(128, 8) # 4 for Loc, 4 for Scale (Mean/Std)
         self.message_head = nn.Linear(128, message_dim)
+        
+        # KONZERVATIVNÍ inicializace pro bezpečné hovering
+        with torch.no_grad():
+            # Inicializuj všechny akce na malé hodnoty kolem nuly
+            self.action_head.bias.fill_(0.0)  
+            self.action_head.weight.fill_(0.0)
+            
+            # Nastavit jen malý pozitivní bias pro throttle mean (pro hover)
+            self.action_head.bias[3] = 0.1   # throttle mean mírně pozitivní
+            
+            # Scale biasy nastavit na malé pozitivní hodnoty (menší variance)
+            self.action_head.bias[4:] = -1.0  # všechny scale biasy malé
 
     def forward(self, local_map, self_state, hidden_state):
         # 1. Handle Scalar Batch (Data Collection) vs Batched (Training)

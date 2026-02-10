@@ -63,43 +63,33 @@ class Quadcopter(BaseDrone):
 
     def apply_control(self, inputs, dt):
         """
-        Applies control forces based on High-Level Velocity Control Model.
+        Simplified control for debugging.
         """
         # --- Stage 1: Input Mapping (v_local_cmd) ---
         u_roll, u_pitch, u_yaw, u_vert = inputs
         
-        v_local_x = u_pitch * self.max_xy_velocity  # Forward
-        v_local_y = u_roll * self.max_xy_velocity   # Right
-        v_local_z = u_vert * self.max_z_velocity    # Up
-        target_yaw_rate = u_yaw * self.max_yaw_rate
-
-        # --- Stage 2: Frame Transformation (v_world_cmd) ---
-        current_rpy = self.get_orientation_rpy()
-        psi = current_rpy[2]
-        c, s = np.cos(psi), np.sin(psi)
+        # MUCH SIMPLER CONTROL - direct force application
+        # Scale inputs to reasonable forces
+        force_scale = 2.0  # Experiment with this
         
-        v_world_x = (v_local_x * c) - (v_local_y * s)
-        v_world_y = (v_local_x * s) + (v_local_y * c)
-        v_world_z = v_local_z
+        force_x = u_roll * force_scale  # Direct roll force
+        force_y = u_pitch * force_scale  # Direct pitch force
         
-        # --- Stage 3: Proportional Force Control (F_cmd) ---
-        vel_current = self.get_velocity()
-        
-        force_x = self.mass * self.kp_xy * (v_world_x - vel_current[0])
-        force_y = self.mass * self.kp_xy * (v_world_y - vel_current[1])
-        
+        # Vertical: hover is at u_vert=0, with gravity compensation
         gravity_comp = self.mass * 9.81
-        force_z = (self.mass * self.kp_z * (v_world_z - vel_current[2])) + gravity_comp
-
-        # --- Attitude & Yaw Control ---
+        force_z = gravity_comp + (u_vert * force_scale)  # Hover + throttle
+        
+        # Simplified yaw
+        target_yaw_rate = u_yaw * self.max_yaw_rate
         ang_vel = np.array(p.getBaseVelocity(self.drone_id)[1])
         torque_z = self.kp_yaw * (target_yaw_rate - ang_vel[2])
         
-        torque_x = -self.kp_attitude * current_rpy[0] - 1.0 * ang_vel[0]
-        torque_y = -self.kp_attitude * current_rpy[1] - 1.0 * ang_vel[1]
+        # Minimal attitude stabilization
+        current_rpy = self.get_orientation_rpy()
+        torque_x = -2.0 * current_rpy[0]  # Keep level
+        torque_y = -2.0 * current_rpy[1]  # Keep level
 
-        # --- Apply Forces (CORRECTED) ---
-        # Get current position to apply force at Center of Mass
+        # --- Apply Forces ---
         current_pos = self.get_position()
         
         p.applyExternalForce(self.drone_id, -1, [force_x, force_y, force_z], current_pos, p.WORLD_FRAME)
