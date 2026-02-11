@@ -124,28 +124,18 @@ class WildfireMARLEnv(gym.Env):
         
         # ===== ENABLE FIRE SIMULATION =====
         self.sim.enable_fire_simulation(
-            grid_width_m=50,
-            grid_height_m=50,
+            grid_width_m=30,
+            grid_height_m=30,
             cell_size_m=5.0,   # Větší buňky jako v demo pro lepší šíření
             dt=0.5  # Větší time step - fire sim nemusí být tak častá jako PyBullet
         )
         
-        # Setup scenario: 4 drony v rozích 50x50m mapy
-        if len(self.quad_agents) >= 4:
-            start_positions = [
-                [-20, -20, 8],  # Levý dolní roh
-                [20, -20, 8],   # Pravý dolní roh  
-                [20, 20, 8],    # Pravý horní roh
-                [-20, 20, 8]    # Levý horní roh
-            ]
-            for i, name in enumerate(self.quad_agents[:4]):
-                self.sim.add_quadcopter(name, position=start_positions[i])
-        else:
-            # Fallback pro menší počet dronů
-            for name in self.quad_agents:
-                self.sim.add_quadcopter(name, position=[-20, 20, 8])  
+        # Setup scenario: 1 dron ve středu mapy pro debugging
+        if len(self.quad_agents) >= 1:
+            # Jeden dron ve středu mapy pro lepší kontrolu
+            self.sim.add_quadcopter(self.quad_agents[0], position=[0, 0, 10])
         
-        # Fixed fire position - 1 oheň uprostřed mapy
+        # Fixed fire position - 1 oheň uprostřed mapy  
         self.sim.environment.ignite_fire(x=0, y=0, intensity=3.0)  # Střed mapy
         
         # ===== RESET EXPLORATION TRACKING =====

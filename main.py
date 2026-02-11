@@ -304,8 +304,8 @@ def train_main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"🖥️ Device: {device}")
     
-    # Environment - 4 drony v rozích 50x50m mapy
-    env = WildfireMARLEnv(agents_config=["quad_1", "quad_2", "quad_3", "quad_4"])
+    # Environment - 1 dron na 30x30m mapě (STEJNÉ JAKO DEMO!)
+    env = WildfireMARLEnv(agents_config=["quad_1"])
     
     # Actor
     actor = QuadActor(message_dim=8).to(device)
@@ -334,7 +334,7 @@ def train_main():
     for episode in episode_pbar:
         # Reset environment
         obs_dict, _ = env.reset()
-        hidden_state = torch.zeros(4, 128).to(device)  # 4 drony, každý má 128 hidden dim
+        hidden_state = torch.zeros(1, 128).to(device)  # 1 dron, má 128 hidden dim
         episode_reward = 0
         episode_steps = 0
         episode_crashed = False
@@ -343,9 +343,9 @@ def train_main():
             try:
                 # Extract observations
                 if "quads" in obs_dict:
-                    # Všech 4 dronů
-                    local_map = torch.FloatTensor(obs_dict["quads"]["local_map"]).to(device)  # (4, 1, 32, 32)
-                    self_state = torch.FloatTensor(obs_dict["quads"]["self_state"]).to(device)  # (4, 6)
+                    # Jeden dron
+                    local_map = torch.FloatTensor(obs_dict["quads"]["local_map"]).to(device)  # (1, 1, 32, 32)
+                    self_state = torch.FloatTensor(obs_dict["quads"]["self_state"]).to(device)  # (1, 6)
                 else:
                     break  # No quad agent
                 
@@ -359,7 +359,7 @@ def train_main():
                 # Simple value estimation
                 value = torch.tensor(0.0, device=device)
                 
-                # Step environment - AKCE PRO VŠECH 4 DRONŮ
+                # Step environment - AKCE PRO 1 DRON
                 action_np = actions.cpu().numpy()  # Already sampled and clipped by gentle method
                 result = env.step({"quads": {"action": action_np}})
                 obs_dict, reward, done, info = result
@@ -545,24 +545,40 @@ def create_demo_visualization(env, frame_num):
         ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         ax1.grid(True, alpha=0.3)
         
-        # === PANEL 2: Palivo ===
-        fuel = state['F']
-        im2 = ax2.imshow(fuel, origin='lower', extent=extent, cmap='YlOrRd', vmin=0, vmax=1)
-        ax2.set_title('Zbývající palivo')
-        ax2.set_xlabel('X [m]')
-        divider2 = make_axes_locatable(ax2)
-        cax2 = divider2.append_axes("right", size="5%", pad=0.05)
-        cbar2 = plt.colorbar(im2, cax=cax2)
-        cbar2.set_label('Palivo (0-1)')
+        # === PANEL 2: Real-time Rewards ===
+        # Sleduj reward z posledních kroků
+        recent_rewards = getattr(env, '_recent_rewards', [0] * 20)
+        recent_rewards = recent_rewards[-20:]  # Posledních 20 kroků
+        
+        ax2.clear()
+        steps_x = range(len(recent_rewards))
+        ax2.plot(steps_x, recent_rewards, 'b-', linewidth=2, label='Reward za krok')
+        ax2.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+        ax2.axhline(y=5, color='green', linestyle='--', alpha=0.5, label='Dobrý reward (5+)')
+        ax2.axhline(y=-5, color='red', linestyle='--', alpha=0.5, label='Špatný reward (-5)')
+        
+        ax2.set_title(f'Real-time Rewards (posledních {len(recent_rewards)} kroků)')
+        ax2.set_xlabel('Kroky zpět')
+        ax2.set_ylabel('Reward')
+        ax2.legend()
         ax2.grid(True, alpha=0.3)
+        
+        # Statistiky o rewards
+        if recent_rewards:
+            avg_reward = np.mean(recent_rewards)
+            ax2.text(0.02, 0.98, f'Avg: {avg_reward:.2f}', transform=ax2.transAxes, 
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
+                    verticalalignment='top')
         
         # Statistiky
         burning_count = np.sum(burning)
-        total_fuel = np.sum(fuel)
         active_drones = len(env.sim.drones)
         sim_time = env.sim.simulation_time
         
-        plt.suptitle(f'Demo Frame {frame_num} | Čas: {sim_time:.1f}s | Hořící buňky: {burning_count} | Drony: {active_drones}/4', 
+        # Current reward z tracking
+        current_reward = env._recent_rewards[-1] if env._recent_rewards else 0.0
+        
+        plt.suptitle(f'Demo Frame {frame_num} | Čas: {sim_time:.1f}s | Hořící buňky: {burning_count} | Drony: {active_drones}/1 | Reward: {current_reward:.2f}', 
                     fontsize=12, fontweight='bold')
         
         plt.tight_layout()
@@ -632,9 +648,10 @@ def demo_main():
     model.load_state_dict(checkpoint['actor_state_dict'])
     model.eval()
     
-    # Načti action scale z modelu pokud existuje
-    action_scale = checkpoint.get('action_scale', 0.5)  # Default na 0.5
-    print(f"🎯 Action scale: {action_scale:.3f}")
+    # Načti action scale z modelu a POUŽIJ HO (bez debug omezení)
+    model_action_scale = checkpoint.get('action_scale', 0.5)
+    action_scale = model_action_scale  # POUŽIJ ORIGINÁLNÍ SCALE Z MODELU!
+    print(f"🎯 Action scale z modelu: {model_action_scale:.3f} → použiji STEJNÝ scale: {action_scale:.3f}")
     
     # Zobraz statistiky modelu
     if 'crash_count' in checkpoint:
@@ -643,42 +660,20 @@ def demo_main():
         crash_rate = (crash_count / episode_count) * 100
         print(f"📊 Model stats: Crash rate {crash_rate:.1f}%, Best reward {checkpoint.get('best_reward', 'N/A')}")
     
-    # Environment - 4 drony v rozích 50x50m mapy
-    env = WildfireMARLEnv(agents_config=["quad_1", "quad_2", "quad_3", "quad_4"])
-    
-    # Definuj start pozice pro demo
-    start_positions = [
-        ("Levý dolní", [-20, -20, 8]),
-        ("Pravý dolní", [20, -20, 8]),  
-        ("Pravý horní", [20, 20, 8]),
-        ("Levý horní", [-20, 20, 8])
-    ]
-    
-    # Run demo se všemi 4 drony současně + vizualizace
-    print(f"\n🚁 === DEMO: Všechny 4 drony současně ===\n")
-    
-    # Environment se všemi 4 drony
-    env = WildfireMARLEnv(agents_config=["quad_1", "quad_2", "quad_3", "quad_4"])
+    # Environment - 1 dron na 30x30m mapě (STEJNÉ JAKO TRAINING!)
+    env = WildfireMARLEnv(agents_config=["quad_1"])
     obs, _ = env.reset()
     
-    # Přestav drony na počáteční pozice
-    import pybullet as p
-    for i, (position_name, start_pos) in enumerate(start_positions):
-        drone_name = f"quad_{i+1}"
-        if drone_name in env.sim.drones:
-            drone_id = env.sim.drones[drone_name].drone_id
-            p.resetBasePositionAndOrientation(drone_id, start_pos, [0, 0, 0, 1])
+    # Přidej reward tracking pro vizualizaci
+    env._recent_rewards = []
     
-    obs = env._get_obs()  # Aktualizuj observace
+    print("🚁 === DEMO: 1 dron na mapě (konzistentní s tréninkem) ===")
     
-    # Hidden states pro všechny drony
-    hidden_states = torch.zeros(4, 128)
+    # Hidden states pro 1 dron
+    hidden_states = torch.zeros(1, 128)
     total_reward = 0
     steps = 0
     frame_count = 0
-    last_viz_time = time.time()
-    
-    print("🎬 Spouštím DLOUHÉ demo s vizualizací každých 0.8s...")
     
     # První frame
     try:
@@ -689,37 +684,36 @@ def demo_main():
     except Exception as e:
         print(f"⚠️ Chyba při vizualizaci frame 0: {e}")
     
-    while steps < 4500:  # Kratší demo - 5 sekund ale s detailem
+    while steps < 4500:
         try:
             if "quads" in obs:
-                # *** VŠECHNY 4 DRONY ***
-                local_map = torch.FloatTensor(obs["quads"]["local_map"])  # (4, 1, 32, 32)
-                self_state = torch.FloatTensor(obs["quads"]["self_state"])  # (4, 6)
+                local_map = torch.FloatTensor(obs["quads"]["local_map"])  # (1, 1, 32, 32)
+                self_state = torch.FloatTensor(obs["quads"]["self_state"])  # (1, 6)
             else:
                 break
             
             with torch.no_grad():
                 actions, _, hidden_states = model(local_map, self_state, hidden_states)
                 
-            # Sample action s gentle training action scale
-            mean = actions[:, :4]  # (4, 4)
-            scale = torch.clamp(actions[:, 4:], 0.01, 0.3)  # Stejná variance jako při training
-            action_sample = torch.normal(mean, scale)
+            # PŘÍMÝ PŘÍSTUP - nech model plnou kontrolu
+            actions_direct = torch.clamp(actions[:, :4], -1.0, 1.0)  # Přímo použij mean jako akce
+            actions_np = actions_direct.numpy()  # (1, 4)
             
-            # GENTLE CLIPPING - použij action scale z modelu
-            actions_clipped = torch.clamp(action_sample, -action_scale, action_scale)
-            actions_np = actions_clipped.numpy()  # (4, 4)
-            
-            # ===== AKCE PRO VŠECHNY DRONY =====
+            # ===== AKCE PRO 1 DRON =====
             action_dict = {
                 "quads": {
-                    "action": actions_np  # (4, 4)
+                    "action": actions_np  # (1, 4)
                 }
             }
             
             obs, reward, done, info = env.step(action_dict)
             total_reward += reward
             steps += 1
+            
+            # Track rewards pro vizualizaci
+            env._recent_rewards.append(reward)
+            if len(env._recent_rewards) > 50:  # Drž pouze posledních 50 kroků
+                env._recent_rewards = env._recent_rewards[-50:]
             
             # Vizualizace každých 450 kroků (= 15s * 30fps)
             if steps % 450 == 0 and steps > 0:  # Každých 450 kroků = 10 snímků za 4500 kroků  
@@ -731,22 +725,25 @@ def demo_main():
                 except Exception as e:
                     print(f"⚠️ Chyba při vizualizaci frame {frame_count}: {e}")
             
-            # Progress každých 20 kroků
+            # Progress každých 20 kroků  
             if steps % 20 == 0:
                 active_drones = len(env.sim.drones)
                 fire_distances = []
                 out_of_bounds = 0
+                drone_heights = []
                 for drone_name, drone in env.sim.drones.items():
                     pos = drone.get_position()
                     fire_distance = ((pos[0])**2 + (pos[1])**2)**0.5
                     fire_distances.append(fire_distance)
+                    drone_heights.append(pos[2])
                     
-                    # Kontrola hranic mapy (50x50m = ±25m)
-                    if abs(pos[0]) > 25 or abs(pos[1]) > 25:
+                    # Kontrola hranic mapy (30x30m = ±15m)
+                    if abs(pos[0]) > 15 or abs(pos[1]) > 15:
                         out_of_bounds += 1
                 
                 if fire_distances:
                     avg_distance = np.mean(fire_distances)
+                    avg_height = np.mean(drone_heights) 
                     boundary_warning = f" ⚠️ {out_of_bounds} dronů mimo mapu!" if out_of_bounds > 0 else ""
                     
                     # Fire info
@@ -756,7 +753,7 @@ def demo_main():
                         burning_cells = np.sum(fire_state['fire_grid_state']['B'])
                     fire_info = f" | 🔥 {burning_cells} hořících buněk"
                     
-                    print(f"   Krok {steps}: Aktivní drony={active_drones}, Prům.vzdálenost={avg_distance:.1f}m, Reward={reward:.2f}{boundary_warning}{fire_info}")
+                    print(f"   Krok {steps}: Aktivní drony={active_drones}, Vzdálenost={avg_distance:.1f}m, Výška={avg_height:.1f}m, Reward={reward:.2f}{boundary_warning}{fire_info}")
             
             if done:
                 break
@@ -778,7 +775,7 @@ def demo_main():
     destroyed_count = len(env.sim.destroyed_drones)
     
     print(f"\n✅ Demo dokončeno!")
-    print(f"   🚁 Aktivní drony: {active_drones}/4")
+    print(f"   🚁 Aktivní drony: {active_drones}/1")
     print(f"   💥 Zničené drony: {destroyed_count}")
     print(f"   🏆 Celkový reward: {total_reward:.1f}")
     print(f"   📷 Vytvořeno {frame_count + 1} snímků")
