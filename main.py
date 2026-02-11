@@ -117,10 +117,10 @@ class SimplePPOTrainer:
         self.memory = []
         self.update_count = 0
         
-        # Gentle training parameters
+        # Gentle training parameters - IMPROVED starting scale for better control
         self.gentle_training = gentle_training
         if gentle_training:
-            self.action_scale = 0.1  # Začínáme malé!
+            self.action_scale = 0.4  # Start higher for better control authority!
             self.max_action_scale = 0.8
             self.action_scale_increment = 0.05
             print(f"🎯 GENTLE TRAINING ENABLED - starting action scale: {self.action_scale:.3f}")
@@ -168,8 +168,8 @@ class SimplePPOTrainer:
             
         self.episode_rewards.append(episode_reward)
         
-        # Zvyš action scale při stabilně dobrém výkonu
-        if episode_reward > 5.0:  # Stabilní let bez crashe
+        # Zvyš action scale při stabilně dobrém výkonu (adjusted for new reward system)
+        if episode_reward > 2.0:  # Adjusted for more reasonable reward expectations
             self.successful_episodes += 1
             
             # Po 3 úspěšných episodes v řadě
@@ -304,19 +304,23 @@ def train_main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"🖥️ Device: {device}")
     
-    # Environment - 1 dron na 30x30m mapě (STEJNÉ JAKO DEMO!)
+    # Environment - 1 dron na mapě s hranicemi definovanými v prostředí
     env = WildfireMARLEnv(agents_config=["quad_1"])
     
-    # Actor
-    actor = QuadActor(message_dim=8).to(device)
+    # Get self_state size from environment's observation processor
+    self_state_size = env.obs_proc.get_self_state_size()
+    print(f"🧠 Self-state size: {self_state_size} features")
+    
+    # Actor with proper observation size
+    actor = QuadActor(message_dim=8, self_state_size=self_state_size).to(device)
     
     # Trainer - s gentle training enabled
     trainer = SimplePPOTrainer(actor, device, lr=3e-5, gentle_training=True)
     
     # Training settings
-    max_episodes = 100  # Více episodes pro gentle progression
+    max_episodes = 100
     max_steps = 150
-    save_every = 20
+    save_every = 25
     
     save_dir = f"models/gentle_training_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     os.makedirs(save_dir, exist_ok=True)
@@ -375,7 +379,16 @@ def train_main():
                 episode_steps += 1
                 
                 if done:
-                    if reward < -5:  # Crashed episode
+                    # Check if episode ended due to crash (altitude < 0.5m) rather than just low reward
+                    drone_crashed = False
+                    if "quads" in obs_dict:
+                        for i in range(obs_dict["quads"]["self_state"].shape[0]):
+                            altitude = obs_dict["quads"]["self_state"][i][0]  # First feature is altitude
+                            if altitude < 0.5:
+                                drone_crashed = True
+                                break
+                    
+                    if drone_crashed or reward < -10:  # Actual crash or severe penalty
                         episode_crashed = True
                         crash_count += 1
                     break
@@ -388,8 +401,8 @@ def train_main():
         # === GENTLE PROGRESSION ===
         trainer.maybe_increase_action_scale(episode_reward)
         
-        # Update policy každých 3 epizod - stabilnější
-        if episode % 3 == 0 and episode > 0:
+        # Update policy každých 5 epizod - stabilnější pro složitější boundary learning
+        if episode % 5 == 0 and episode > 0:
             loss = trainer.update_policy()
             if loss:
                 episode_pbar.write(f"📊 Ep {episode}: Policy updated, Loss: {loss:.3f}")
@@ -418,10 +431,10 @@ def train_main():
             'Stable': stable_episodes
         })
         
-        # Success condition - stable flying with reasonable action scale
-        if stable_episodes >= 10 and trainer.action_scale >= 0.4:
-            episode_pbar.write(f"🏆 SUCCESS! Stable flight achieved with action scale {trainer.action_scale:.3f}")
-            episode_pbar.write(f"    Stable episodes: {stable_episodes}, Crash rate: {crash_rate:.1f}%")
+        # Success condition - vyžaduj dlouhodobou stabilitu pro boundary awareness
+        if stable_episodes >= 15 and trainer.action_scale >= 0.7:  # Přísnější podmínky
+            episode_pbar.write(f"🏆 SUCCESS! Stabilní let s boundary awareness - action scale {trainer.action_scale:.3f}")
+            episode_pbar.write(f"    Stabilní epizody: {stable_episodes}, Crash rate: {crash_rate:.1f}%")
             
         # Early stopping pokud moc crashuje
         if episode > 20 and crash_rate > 80:
@@ -440,7 +453,12 @@ def train_main():
                 'best_reward': best_reward
             }
             torch.save(checkpoint, f"{save_dir}/checkpoint_ep{episode+1:03d}.pt")
-            episode_pbar.write(f"💾 Model uložen (Ep {episode+1}, Scale: {trainer.action_scale:.3f})")
+            
+            # Také uložit jako nejnovější model pro demo
+            newest_dir = "models/newest"
+            os.makedirs(newest_dir, exist_ok=True)
+            torch.save(checkpoint, f"{newest_dir}/latest_model.pt")
+            episode_pbar.write(f"💾 Model uložen (Ep {episode+1}, Scale: {trainer.action_scale:.3f}) a zkopírován do newest/")
     
     # Final save s complete stats
     final_checkpoint = {
@@ -455,6 +473,11 @@ def train_main():
         'final_crash_rate': crash_rate
     }
     torch.save(final_checkpoint, f"{save_dir}/final_model.pt")
+    
+    # Uložit finální model také jako nejnovější pro demo
+    newest_dir = "models/newest"
+    os.makedirs(newest_dir, exist_ok=True)
+    torch.save(final_checkpoint, f"{newest_dir}/latest_model.pt")
     
     # Uzavři progress bar
     episode_pbar.close()
@@ -598,60 +621,31 @@ def demo_main():
     """Spustí demo natrénovaného modelu"""
     print("🎬 DEMO GENTLE TRAINED MODELU")
     
-    # FORCE použij dobrý model místo nejnovějšího
-    model_dir = "models/gentle_training_20260210_211518"  # Dobrý model s reward 65.88
-    
-    if not os.path.exists(model_dir):
-        print(f"❌ Dobrý model {model_dir} neexistuje! Hledám nejnovější...")
-        # Fallback na automatický nejnovější
-        models_dir = "models"
-        if not os.path.exists(models_dir):
-            print(f"❌ Složka {models_dir}/ neexistuje!")
-            return
-        
-        # Najdi všechny gentle training složky
-        gentle_dirs = [d for d in os.listdir(models_dir) 
-                       if os.path.isdir(os.path.join(models_dir, d)) and d.startswith("gentle_training_")]
-        
-        if not gentle_dirs:
-            print("❌ Žádné gentle training modely nenalezeny!")
-            return
-        
-        # Seřaď podle času (nejnovější poslední)
-        gentle_dirs.sort()
-        latest_gentle_dir = gentle_dirs[-1]
-        model_dir = f"{models_dir}/{latest_gentle_dir}"
-        
-        print(f"🔍 Použiji nejnovější: {latest_gentle_dir}")
-    else:
-        print(f"🎯 Použiji DOBRÝ model: gentle_training_20260210_211518")
-    
-    # Preferuj final_model.pt, pak nejnovější checkpoint
-    model_path = f"{model_dir}/final_model.pt"
+    # Použij nejnovější model z models/newest/
+    model_path = "models/newest/latest_model.pt"
     
     if not os.path.exists(model_path):
-        # Fallback na nejnovější checkpoint
-        checkpoints = [f for f in os.listdir(model_dir) if f.startswith("checkpoint_")]
-        if checkpoints:
-            checkpoints.sort()
-            model_path = f"{model_dir}/{checkpoints[-1]}"
-            print(f"📥 Použiji nejnovější checkpoint: {checkpoints[-1]}")
-        else:
-            print("❌ Žádné modely nalezeny!")
-            return
-    else:
-        print(f"📥 Načítám final model: {model_path}")
+        print("❌ Nejnovější model nenalezen! Spusťte nejdříve train.")
+        print(f"   Očekávaný soubor: {model_path}")
+        return
     
-    # Load model
-    model = QuadActor(message_dim=8)
+    print(f"📥 Načítám nejnovější model: {model_path}")
+    
+    # Load model with proper configuration
+    # First create env to get configuration
+    temp_env = WildfireMARLEnv(agents_config=["quad_1"])
+    self_state_size = temp_env.obs_proc.get_self_state_size()
+    temp_env.close()
+    
+    model = QuadActor(message_dim=8, self_state_size=self_state_size)
     checkpoint = torch.load(model_path, map_location='cpu')
     model.load_state_dict(checkpoint['actor_state_dict'])
     model.eval()
     
-    # Načti action scale z modelu a POUŽIJ HO (bez debug omezení)
+    # Načti action scale z modelu ale SYNCHRONIZOVÁNO s reward thresholds
     model_action_scale = checkpoint.get('action_scale', 0.5)
-    action_scale = model_action_scale  # POUŽIJ ORIGINÁLNÍ SCALE Z MODELU!
-    print(f"🎯 Action scale z modelu: {model_action_scale:.3f} → použiji STEJNÝ scale: {action_scale:.3f}")
+    action_scale = min(model_action_scale, 0.40)  # SYNCHRONIZED: 0.40 > stop_bonus_threshold(0.30)
+    print(f"🎯 Action scale z modelu: {model_action_scale:.3f} → synchronizován na {action_scale:.3f} pro demo")
     
     # Zobraz statistiky modelu
     if 'crash_count' in checkpoint:
@@ -660,8 +654,8 @@ def demo_main():
         crash_rate = (crash_count / episode_count) * 100
         print(f"📊 Model stats: Crash rate {crash_rate:.1f}%, Best reward {checkpoint.get('best_reward', 'N/A')}")
     
-    # Environment - 1 dron na 30x30m mapě (STEJNÉ JAKO TRAINING!)
-    env = WildfireMARLEnv(agents_config=["quad_1"])
+    # Environment with unlimited runtime for demo
+    env = WildfireMARLEnv(agents_config=["quad_1"], demo_mode=True)
     obs, _ = env.reset()
     
     # Přidej reward tracking pro vizualizaci
@@ -684,7 +678,8 @@ def demo_main():
     except Exception as e:
         print(f"⚠️ Chyba při vizualizaci frame 0: {e}")
     
-    while steps < 4500:
+    max_steps = 15000 
+    while steps < max_steps:
         try:
             if "quads" in obs:
                 local_map = torch.FloatTensor(obs["quads"]["local_map"])  # (1, 1, 32, 32)
@@ -695,9 +690,9 @@ def demo_main():
             with torch.no_grad():
                 actions, _, hidden_states = model(local_map, self_state, hidden_states)
                 
-            # PŘÍMÝ PŘÍSTUP - nech model plnou kontrolu
-            actions_direct = torch.clamp(actions[:, :4], -1.0, 1.0)  # Přímo použij mean jako akce
-            actions_np = actions_direct.numpy()  # (1, 4)
+            # OMEZENÝ ACTION SCALE PRO DEMO - aby nevyletěl z mapy!
+            actions_clipped = torch.clamp(actions[:, :4], -action_scale, action_scale)  # Použij omezený scale
+            actions_np = actions_clipped.numpy()  # (1, 4)
             
             # ===== AKCE PRO 1 DRON =====
             action_dict = {
@@ -715,8 +710,7 @@ def demo_main():
             if len(env._recent_rewards) > 50:  # Drž pouze posledních 50 kroků
                 env._recent_rewards = env._recent_rewards[-50:]
             
-            # Vizualizace každých 450 kroků (= 15s * 30fps)
-            if steps % 450 == 0 and steps > 0:  # Každých 450 kroků = 10 snímků za 4500 kroků  
+            if steps % (max_steps / 10) == 0 and steps > 0:
                 try:
                     viz_path = create_demo_visualization(env, frame_count)
                     if viz_path:
@@ -725,8 +719,7 @@ def demo_main():
                 except Exception as e:
                     print(f"⚠️ Chyba při vizualizaci frame {frame_count}: {e}")
             
-            # Progress každých 20 kroků  
-            if steps % 20 == 0:
+            if steps % 100 == 0:
                 active_drones = len(env.sim.drones)
                 fire_distances = []
                 out_of_bounds = 0
@@ -737,8 +730,9 @@ def demo_main():
                     fire_distances.append(fire_distance)
                     drone_heights.append(pos[2])
                     
-                    # Kontrola hranic mapy (30x30m = ±15m)
-                    if abs(pos[0]) > 15 or abs(pos[1]) > 15:
+                    # Check boundary violations using environment's map bounds
+                    map_bounds = env.map_bounds  # Use actual environment configuration
+                    if abs(pos[0]) > map_bounds or abs(pos[1]) > map_bounds:
                         out_of_bounds += 1
                 
                 if fire_distances:
@@ -794,18 +788,26 @@ def validate_main():
     
     print(f"🌍 Prostředí úspěšně inicializováno")
     print(f"   Observace klíče: {list(obs.keys())}")
+    print(f"   Map bounds: ±{env.map_bounds}m")
+    print(f"   Self-state size: {env.obs_proc.get_self_state_size()} features")
     if "quads" in obs:
         print(f"   Quad local_map shape: {obs['quads']['local_map'].shape}")
         print(f"   Quad self_state shape: {obs['quads']['self_state'].shape}")
     
-    # Test jednoho kroku - hovering pro jeden dron
-    action = {
-        "quads": {
-            "action": np.array([[0.0, 0.0, 0.0, 0.1]])  # quad_1: hovering
+    # Test jednoho kroku - hovering pro všechny drony v environmentu
+    num_quads = obs['quads']['self_state'].shape[0] if 'quads' in obs else 0
+    if num_quads > 0:
+        # Create hovering actions for all quadcopters
+        hover_actions = np.array([[0.0, 0.0, 0.0, 0.1] for _ in range(num_quads)])
+        action = {
+            "quads": {
+                "action": hover_actions
+            }
         }
-    }
-    obs, reward, done, info = env.step(action)
-    print(f"✅ Test krok: reward={reward:.1f}")
+        obs, reward, done, info = env.step(action)
+        print(f"✅ Test krok: reward={reward:.1f}, drony={num_quads}")
+    else:
+        print("⚠️ Žádné kvadrokoptéry v prostředí")
     
     env.close()
     print("✅ Validace dokončena!")

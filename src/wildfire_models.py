@@ -10,7 +10,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 class QuadActor(nn.Module):
-    def __init__(self, message_dim=8):
+    def __init__(self, message_dim=8, self_state_size=16):
         super().__init__()
         # 1. CNN for Fire Map
         self.cnn = nn.Sequential(
@@ -22,8 +22,9 @@ class QuadActor(nn.Module):
             nn.Linear(32 * 7 * 7, 64)
         )
         
-        # 2. State & Memory - aktualizováno pro 6-feature self_state (position + velocity)
-        self.gru = nn.GRUCell(input_size=64 + 6, hidden_size=128) # 6 je zjednodušená velikost self_state
+        # 2. State & Memory - updated for expanded self_state size
+        self.gru = nn.GRUCell(input_size=64 + self_state_size, hidden_size=128)
+        self.self_state_size = self_state_size
         
         # 3. Heads - mnohem konzervativnější
         self.action_head = nn.Linear(128, 8) # 4 for Loc, 4 for Scale (Mean/Std)

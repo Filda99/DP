@@ -63,31 +63,38 @@ class Quadcopter(BaseDrone):
 
     def apply_control(self, inputs, dt):
         """
-        Simplified control for debugging.
+        Improved control with better physics and stability.
         """
-        # --- Stage 1: Input Mapping (v_local_cmd) ---
+        # --- Stage 1: Input Mapping ---
         u_roll, u_pitch, u_yaw, u_vert = inputs
         
-        # MUCH SIMPLER CONTROL - direct force application
-        # Scale inputs to reasonable forces
-        force_scale = 2.0  # Experiment with this
+        # IMPROVED CONTROL - better force scaling and stability
+        # Reduced force scale for more gentle control
+        force_scale = 1.5  # Reduced from 2.0 for better stability
         
-        force_x = u_roll * force_scale  # Direct roll force (X axis)
-        force_y = -u_pitch * force_scale  # Direct pitch force (Y axis) - OPRAVENO: převrácený sign
+        force_x = u_roll * force_scale  # Roll force (X axis)
+        force_y = u_pitch * force_scale  # Pitch force (Y axis) - CORRECTED: removed negative sign
         
-        # Vertical: hover is at u_vert=0, with gravity compensation
+        # IMPROVED VERTICAL CONTROL with better hover stability
         gravity_comp = self.mass * 9.81
-        force_z = gravity_comp + (u_vert * force_scale)  # Hover + throttle
+        # Add velocity damping for better hover stability
+        current_vel = self.get_velocity()
+        z_damping = -0.5 * current_vel[2]  # Vertical velocity damping
         
-        # Simplified yaw
+        # Hover point is at u_vert=0, with improved stability
+        throttle_input = u_vert * force_scale * 0.5  # Reduced throttle sensitivity
+        force_z = gravity_comp + throttle_input + z_damping
+        
+        # IMPROVED YAW CONTROL
         target_yaw_rate = u_yaw * self.max_yaw_rate
         ang_vel = np.array(p.getBaseVelocity(self.drone_id)[1])
         torque_z = self.kp_yaw * (target_yaw_rate - ang_vel[2])
         
-        # Minimal attitude stabilization
+        # MUCH STRONGER ATTITUDE STABILIZATION
         current_rpy = self.get_orientation_rpy()
-        torque_x = -2.0 * current_rpy[0]  # Keep level
-        torque_y = -2.0 * current_rpy[1]  # Keep level
+        # Increased stabilization gains significantly
+        torque_x = -8.0 * current_rpy[0] - 2.0 * ang_vel[0]  # Roll stabilization + damping
+        torque_y = -8.0 * current_rpy[1] - 2.0 * ang_vel[1]  # Pitch stabilization + damping
 
         # --- Apply Forces ---
         current_pos = self.get_position()

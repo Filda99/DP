@@ -20,7 +20,7 @@ class WildfireObsProcessor:
     standardized neural network inputs (CNN + MLP).
     """
     def __init__(self, 
-                 window_size_m: float = 40.0, 
+                 window_size_m: float = 30.0,  # SNÍŽENO z 40.0 na 30.0 pro lepší boundary awareness!
                  resolution_px: int = 32,
                  lidar_rays: int = 8,
                  lidar_dist: float = 50.0):
@@ -96,30 +96,37 @@ class WildfireObsProcessor:
         # [z, vx, vy, vz, roll, pitch, water_level, norm_x, norm_y, dist_to_boundary, exploration_ratio, fire_discovery_ratio]
         # We add world position for map awareness
         
-        # Get environment reference for bounds (přes simulation)
-        map_bounds = 50.0  # Stejné jako v wrapper
+        # Get environment reference for bounds (from simulation/environment)
+        # This should be read from the actual environment configuration
+        map_bounds = 50.0  # TODO: This should be read from environment config
         
-        # Map awareness - normalized position a distance to boundaries
-        norm_x = pos[0] / map_bounds  # -1 až +1
-        norm_y = pos[1] / map_bounds  # -1 až +1
-        dist_to_boundary = min(
-            map_bounds - abs(pos[0]),  # Distance to X boundary
-            map_bounds - abs(pos[1])   # Distance to Y boundary
-        ) / map_bounds  # Normalized 0-1
+        # Detailed boundary information - give drone complete spatial awareness
+        norm_x = pos[0] / map_bounds  # -1 to +1 (normalized X position)
+        norm_y = pos[1] / map_bounds  # -1 to +1 (normalized Y position)
         
-        # Exploration progress (bude aktualizováno z wrapper)
+        # Distance to each boundary (normalized 0-1, where 1 = at center, 0 = at boundary)
+        dist_to_left = (map_bounds + pos[0]) / (2 * map_bounds)    # Distance to left boundary
+        dist_to_right = (map_bounds - pos[0]) / (2 * map_bounds)   # Distance to right boundary  
+        dist_to_bottom = (map_bounds + pos[1]) / (2 * map_bounds)  # Distance to bottom boundary
+        dist_to_top = (map_bounds - pos[1]) / (2 * map_bounds)     # Distance to top boundary
+        
+        # Minimum boundary distance (most critical for collision avoidance)
+        min_boundary_dist = min(dist_to_left, dist_to_right, dist_to_bottom, dist_to_top)
+        
+        # Exploration progress (will be updated by wrapper)
         exploration_ratio = 0.0  # Placeholder - wrapper will override
         fire_discovery_ratio = 0.0  # Placeholder - wrapper will override
         
         self_state = np.array([
-            pos[2],                    # Altitude
-            vel[0], vel[1], vel[2],    # World velocities
-            rpy[0], rpy[1],            # Attitude
-            water_norm,                # Water level
-            norm_x, norm_y,            # Normalized map position
-            dist_to_boundary,          # Distance to boundary
-            exploration_ratio,         # Exploration progress (placeholder)
-            fire_discovery_ratio,      # Fire discovery progress (placeholder)
+            pos[2],                    # 0: Altitude
+            vel[0], vel[1], vel[2],    # 1-3: World velocities
+            rpy[0], rpy[1],            # 4-5: Attitude (roll, pitch)
+            water_norm,                # 6: Water level
+            norm_x, norm_y,            # 7-8: Normalized map position
+            dist_to_left, dist_to_right, dist_to_bottom, dist_to_top,  # 9-12: Individual boundary distances
+            min_boundary_dist,         # 13: Minimum boundary distance
+            exploration_ratio,         # 14: Exploration progress (placeholder)
+            fire_discovery_ratio,      # 15: Fire discovery progress (placeholder)
         ], dtype=np.float32)
 
         return {
@@ -127,3 +134,7 @@ class WildfireObsProcessor:
             "self_state": self_state,
             "lidar": self.get_lidar_data(sim, drone_name)
         }
+    
+    def get_self_state_size(self):
+        """Returns the size of self_state vector for consistent configuration"""
+        return 16  # Based on the actual features defined in fetch method

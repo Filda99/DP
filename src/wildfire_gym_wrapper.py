@@ -45,12 +45,13 @@ from wildfire_obs_processor import WildfireObsProcessor
 class WildfireMARLEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, agents_config=["quad_1", "fw_1"]):
+    def __init__(self, agents_config=["quad_1", "fw_1"], demo_mode=False):
         super().__init__()
         self.sim = Simulation()
+        self.demo_mode = demo_mode  # Flag for unlimited runtime in demo
         
-        # Observation window 10m pro local_map
-        self.obs_proc = WildfireObsProcessor(window_size_m=10.0, resolution_px=32)
+        # Observation window SYNCHRONIZED with processor defaults
+        self.obs_proc = WildfireObsProcessor(window_size_m=30.0, resolution_px=32)  # CONSISTENT 30m window
         
         # BOUNDARY LIMITS PRO PENALIZACI
         self.map_bounds = 50.0  # Dron nemůže jít dál než ±50m od centra
@@ -68,14 +69,15 @@ class WildfireMARLEnv(gym.Env):
         # Přidat kvadrokoptéry pouze pokud existují
         if self.quad_agents:
             n = len(self.quad_agents)
+            self_state_size = self.obs_proc.get_self_state_size()  # Get actual size from processor
             obs_dict["quads"] = spaces.Dict({
                 "local_map": spaces.Box(low=0.0, high=1.0, shape=(n, 1, 32, 32), dtype=np.float32),
-                "self_state": spaces.Box(low=-np.inf, high=np.inf, shape=(n, 12), dtype=np.float32),  # Rozšířeno na 12
+                "self_state": spaces.Box(low=-np.inf, high=np.inf, shape=(n, self_state_size), dtype=np.float32),
                 "hidden_state": spaces.Box(low=-np.inf, high=np.inf, shape=(n, 128), dtype=np.float32),
             })
             obs_spec_dict["quads"] = CompositeSpec({
                 "local_map": UnboundedContinuousTensorSpec(shape=(n, 1, 32, 32)),
-                "self_state": UnboundedContinuousTensorSpec(shape=(n, 12)),  # Rozšířeno na 12
+                "self_state": UnboundedContinuousTensorSpec(shape=(n, self_state_size)),
                 "hidden_state": UnboundedContinuousTensorSpec(shape=(n, 128)),
             })
             action_dict["quads"] = spaces.Dict({
@@ -110,6 +112,11 @@ class WildfireMARLEnv(gym.Env):
         self.observation_spec = CompositeSpec(obs_spec_dict)
         self.action_spec = CompositeSpec(action_spec_dict)
         self.reward_spec = UnboundedContinuousTensorSpec(shape=(1,))
+        
+        # CORRECTED exploration grid calculation: 2m cells on 100x100m map = 50x50 = 2500 cells
+        grid_size = int((2 * self.map_bounds) / 2.0)  # 100m / 2m = 50 cells per side
+        exploration_grid_cells = grid_size * grid_size  # 50 * 50 = 2500 cells total
+        self.exploration_grid_cells = exploration_grid_cells
         
         # ===== EXPLORATION TRACKING PRO NOVÝ REWARD SYSTÉM =====
         self.visited_cells = set()  # Track visited 2x2m cells
@@ -165,14 +172,22 @@ class WildfireMARLEnv(gym.Env):
                 if name in self.sim.drones:
                     data = self.obs_proc.fetch(self.sim, name)
                     
-                    # Jen základní self_state
-                    basic_state = data["self_state"][:6]  # Jen prvních 6 features
+                    # Full enhanced self_state with boundary awareness
+                    full_state = data["self_state"].copy()  # Use actual size from processor
+                    
+                    # Update exploration and fire discovery ratios with real values
+                    exploration_percentage = len(self.visited_cells) / self.exploration_grid_cells
+                    fire_discovery_flag = 1.0 if self.total_fire_discovered else 0.0
+                    
+                    # Update exploration tracking in the state vector
+                    full_state[14] = exploration_percentage  # Exploration ratio
+                    full_state[15] = fire_discovery_flag     # Fire discovery flag
                     
                     q_maps.append(data["local_map"])
-                    q_states.append(basic_state)
+                    q_states.append(full_state)
                 else:
                     q_maps.append(np.zeros((1, 32, 32), dtype=np.float32))
-                    q_states.append(np.zeros(6, dtype=np.float32))  # Jen 6 features
+                    q_states.append(np.zeros(self.obs_proc.get_self_state_size(), dtype=np.float32))
             
             obs["quads"]["local_map"] = np.stack(q_maps)
             obs["quads"]["self_state"] = np.stack(q_states)
@@ -196,15 +211,18 @@ class WildfireMARLEnv(gym.Env):
         fire_summary = self._downsample_grid(full_fire_grid, res).flatten()
 
         agent_states = []
+        key_features_count = 8  # First 8 most important features for global obs
         for name in self.all_agents:
             if name in self.sim.drones:
-                state = self.obs_proc.fetch(self.sim, name)["self_state"][:6]  # Jen 6 features
+                # Use first N most important features for global obs (avoid making it too large)
+                state = self.obs_proc.fetch(self.sim, name)["self_state"][:key_features_count]
                 agent_states.append(state)
             else:
-                agent_states.append(np.zeros(6, dtype=np.float32))  # Jen 6 features
+                agent_states.append(np.zeros(key_features_count, dtype=np.float32))
         
-        while len(agent_states) < 8:
-            agent_states.append(np.zeros(6))  # Jen 6 features
+        max_agents = 8  # Maximum supported agents in global observation
+        while len(agent_states) < max_agents:
+            agent_states.append(np.zeros(key_features_count))
         all_agents_vector = np.concatenate(agent_states).astype(np.float32)
 
         wind = self.sim.environment.weather['wind_velocity']
@@ -227,6 +245,10 @@ class WildfireMARLEnv(gym.Env):
         # 1. Map actions from RL to Simulation
         drone_controls = {}
         
+        # Store actions for stop bonus calculation
+        if not hasattr(self, 'last_actions'):
+            self.last_actions = {}
+        
         # Map Quads (Unpack from nested "action" key)
         if "quads" in actions and "action" in actions["quads"]:
             # GymWrapper passes this as a numpy array now
@@ -234,6 +256,7 @@ class WildfireMARLEnv(gym.Env):
             for i, name in enumerate(self.quad_agents):
                 # Ensure we handle shape (1, 4) vs (4,)
                 act = quad_acts[i]
+                self.last_actions[name] = act  # Store for stop bonus
                 drone_controls[name] = act
         
         # Map Fixed-Wings (Unpack from nested "action" key)
@@ -264,36 +287,60 @@ class WildfireMARLEnv(gym.Env):
                 drone_pos = self.sim.drones[drone_name].get_position()
                 x, y, z = drone_pos
                 
-                # === 1. FIRE-CENTRIC EXPLORATION ===
+                # === 1. BALANCED EXPLORATION ===
                 # Convert position to grid cell (2m resolution)
                 cell_x = int(x // 2.0)
                 cell_y = int(y // 2.0)
                 cell_key = (cell_x, cell_y)
                 
-                # ADAPTIVE exploration rewards based on fire discovery status
+                # BALANCED exploration rewards
                 if cell_key not in self.visited_cells and abs(x) <= self.map_bounds and abs(y) <= self.map_bounds:
                     self.visited_cells.add(cell_key)
                     
                     if not self.total_fire_discovered:
-                        # Pre-discovery: Encourage exploration
-                        reward += 1.0
-                        self.exploration_reward_accumulated += 1.0
+                        # Pre-discovery: Moderate exploration reward
+                        reward += 0.5  # Reduced from 1.0 to prevent reward inflation
+                        self.exploration_reward_accumulated += 0.5
                     else:
-                        # Post-discovery: Discourage random exploration
-                        reward += 0.2  # Much smaller exploration reward
+                        # Post-discovery: Small exploration reward
+                        reward += 0.1  # Minimal exploration reward
                 
-                # === 2. MOVEMENT REWARD - Enhanced for active search ===
+                # === 2. ANTI-MOVEMENT SYSTEM - Penalize large movements near fire ===
                 if drone_name in self.previous_positions:
                     prev_x, prev_y = self.previous_positions[drone_name]
                     movement_distance = np.sqrt((x - prev_x)**2 + (y - prev_y)**2)
                     
+                    # HOVERING BONUS when near fire and moving slowly
+                    fire_distance = np.sqrt(x**2 + y**2)
+                    if fire_distance < 15.0 and movement_distance < 0.2:  # Very small movement near fire
+                        hovering_bonus = (15.0 - fire_distance) * 3.0  # Big bonus for staying put
+                        reward += hovering_bonus
+                        #print(f"Hovering bonus: {hovering_bonus:.1f}")
+                    
+                    # STANDARD movement reward (reduced when near fire)
                     if movement_distance > 0.5:  # Meaningful movement
-                        reward += min(movement_distance * 0.3, 0.8)  # Slightly higher movement reward
-                    elif movement_distance < 0.1:  # Standing still
-                        reward -= 0.2  # Higher penalty for inactivity
+                        movement_multiplier = 1.0
+                        if fire_distance < 15.0:  # Reduce movement reward when near fire
+                            movement_multiplier = 0.2  # Much less movement reward near fire
+                        reward += min(movement_distance * 0.3 * movement_multiplier, 0.8)
+                    elif movement_distance < 0.1 and fire_distance > 20.0:  # Only penalize inactivity when far from fire
+                        reward -= 0.2  # Inactivity penalty only when not near fire
                 
                 # Update position tracking
                 self.previous_positions[drone_name] = (x, y)
+                
+                # === NEW: RETURN HOME BONUS ===
+                # Reward return to center after boundary violation  
+                fire_distance = np.sqrt(x**2 + y**2)
+                if drone_name in self.previous_positions:
+                    prev_x, prev_y = self.previous_positions[drone_name] 
+                    prev_fire_distance = np.sqrt(prev_x**2 + prev_y**2)
+                    
+                    # Reward when returning towards fire/center from far away
+                    if prev_fire_distance > 30.0 and fire_distance < prev_fire_distance:
+                        return_progress = prev_fire_distance - fire_distance
+                        reward += return_progress * 2.0  # Bonus for returning home
+                        #print(f"Return home bonus: {return_progress * 2.0:.1f}")
                 
                 # === 3. FIRE VISIBILITY & TRACKING REWARDS ===
                 fire_visible = False
@@ -305,54 +352,88 @@ class WildfireMARLEnv(gym.Env):
                         fire_visible = True
                         total_fire_visible = True
                         
-                        # MASSIVE continuous fire tracking reward
-                        reward += 50.0  # Much higher than exploration
+                        # === FIXED DISTANCE-BASED FIRE TRACKING REWARD ===
+                        fire_distance = np.sqrt(x**2 + y**2)  # Distance to fire center (0,0)
                         
-                        # Extra bonus při prvním objevení ohně v epizodě
+                        # EXTENDED LINEAR DECAY: No more dead zones!
+                        max_tracking_reward = 15.0  # Maximum tracking reward when very close
+                        tracking_distance_threshold = 42.0  # EXTENDED to boundary warning threshold (50-8)
+                        
+                        if fire_distance <= tracking_distance_threshold:
+                            distance_factor = (tracking_distance_threshold - fire_distance) / tracking_distance_threshold
+                            tracking_reward = max_tracking_reward * distance_factor
+                            reward += tracking_reward
+                            #print(f"Fire tracking reward: {tracking_reward:.1f} (distance: {fire_distance:.1f}m)")
+                        
+                        # One-time discovery bonus remains the same
                         if not self.total_fire_discovered:
-                            reward += 200.0  # HUGE discovery bonus
+                            reward += 50.0  # Discovery bonus
                             self.total_fire_discovered = True
                             print(f"🔥 FIRE DISCOVERED by {drone_name}!")
+                        # === RADICAL STOP BONUS - Reward staying near fire with small actions ===
+                        if fire_distance < 20.0:  # Extended stop zone
+                            # Check action magnitudes if available
+                            if hasattr(self, 'last_actions') and drone_name in self.last_actions:
+                                action_magnitude = np.linalg.norm(self.last_actions[drone_name])
+                                
+                                # MASSIVE stop bonus for small actions near fire
+                                if action_magnitude < 0.30:  # Small actions = hovering
+                                    stop_bonus = (20.0 - fire_distance) * 5.0  # INCREASED from 1.0 to 5.0!
+                                    reward += stop_bonus
+                                    #print(f"MEGA Stop bonus: {stop_bonus:.1f}")
+                                
+                                # ANTI-MOVEMENT PENALTY for large actions near fire  
+                                elif action_magnitude > 0.35 and fire_distance < 15.0:
+                                    movement_penalty = action_magnitude * 20.0  # Strong penalty for big moves near fire
+                                    reward -= movement_penalty
+                                    #print(f"Anti-movement penalty: {movement_penalty:.1f}")
                         
-                        # Bonus za intenzitu ohně (čím blíž, tím více vidí)
-                        intensity_bonus = min(fire_intensity * 5.0, 50.0)  # Higher intensity bonus
+                        # Moderate intensity bonus (unchanged) (unchanged)
+                        intensity_bonus = min(fire_intensity * 2.0, 10.0)  # Reasonable intensity bonus
                         reward += intensity_bonus
-                        
-                        # DISTANCE-BASED FIRE TRACKING
-                        fire_distance = np.sqrt(x**2 + y**2)  # Distance to fire center (0,0)
-                        if fire_distance < 15.0:  # Close to fire
-                            proximity_reward = (15.0 - fire_distance) * 3.0  # Closer = higher reward
-                            reward += proximity_reward
                     
                     else:
-                        # If fire was previously visible but now lost
+                        # === DEAD ZONE ELIMINATION: Guidance back to fire when not visible ===
                         if self.total_fire_discovered:
-                            # PENALTY for losing sight of discovered fire
                             fire_distance = np.sqrt(x**2 + y**2)
-                            if fire_distance > 20.0:  # Too far from fire center
-                                reward -= 5.0  # Penalty for being far from fire when it's known
+                            # Provide gentle guidance when fire not visible but within reasonable range
+                            if 15.0 < fire_distance < 42.0:  # In the former "dead zone"
+                                guidance_factor = (42.0 - fire_distance) / 27.0  # Linear from 0 to 1
+                                guidance_reward = 2.0 * guidance_factor  # Gentle guidance back
+                                reward += guidance_reward
+                                #print(f"Fire guidance: {guidance_reward:.1f} at distance {fire_distance:.1f}m")
+                            elif fire_distance >= 42.0:  # Far from fire - stronger guidance
+                                reward -= 1.0  # Gentle penalty for being too far
                 
-                # === 4. FIRE-SEEKING BEHAVIOR (when fire is known but not visible) ===
+                # === 4. SIMPLIFIED FIRE-SEEKING BEHAVIOR ===
                 if self.total_fire_discovered and not fire_visible:
-                    # Reward for moving towards fire center when fire is known
+                    # Simple distance-based guidance (no movement comparison)
                     fire_distance = np.sqrt(x**2 + y**2)
                     
-                    # Direction-based reward
-                    if drone_name in self.previous_positions:
-                        prev_x, prev_y = self.previous_positions[drone_name]
-                        prev_distance = np.sqrt(prev_x**2 + prev_y**2)
-                        
-                        if fire_distance < prev_distance:  # Moving closer to fire
-                            approach_reward = (prev_distance - fire_distance) * 10.0
-                            reward += min(approach_reward, 20.0)  # Cap at 20
-                        else:  # Moving away from fire
-                            retreat_penalty = (fire_distance - prev_distance) * 5.0
-                            reward -= min(retreat_penalty, 10.0)  # Cap penalty at 10
+                    # Gentle guidance towards fire area
+                    if fire_distance < 15.0:
+                        reward += 2.0  # Small reward for being in fire area even if not visible
+                    elif fire_distance > 30.0:
+                        reward -= 0.5  # Very gentle guidance back to fire area
                 
-                # === 4. SAFETY PENALTIES (POUZE negativní události) ===
-                # Boundary violation - umírněná penalizace
+                # === 4. ENHANCED BOUNDARY AWARENESS & SAFETY ===
+                # Use softer boundary enforcement with distance-based penalties
+                # Since drone now knows boundary distances, it should learn to avoid them
+                boundary_buffer = 8.0  # Increased safety buffer from 5m to 8m
+                if abs(x) > (self.map_bounds - boundary_buffer) or abs(y) > (self.map_bounds - boundary_buffer):
+                    # Soft penalty for approaching boundary (agent should learn to avoid)
+                    boundary_distance = min(self.map_bounds - abs(x), self.map_bounds - abs(y))
+                    if boundary_distance < boundary_buffer:
+                        penalty_factor = (boundary_buffer - boundary_distance) / boundary_buffer
+                        reward -= 5.0 * penalty_factor  # INCREASED from 2.0 to 5.0!
+                
+                # MUCH STRONGER penalty for actual boundary violation
                 if abs(x) > self.map_bounds or abs(y) > self.map_bounds:
-                    reward -= 10.0  # Menší penalizace
+                    # Progressive penalty based on how far outside
+                    excess_distance = max(abs(x) - self.map_bounds, abs(y) - self.map_bounds, 0)
+                    boundary_penalty = 25.0 + excess_distance * 2.0  # Base 25 + progressive
+                    reward -= boundary_penalty
+                    #print(f"BOUNDARY VIOLATION! Penalty: {boundary_penalty:.1f}")
                 
                 # Crash detection
                 if z < 0.5:  # Dron se rozbil
@@ -391,7 +472,13 @@ class WildfireMARLEnv(gym.Env):
         if episode_crashed:
             print(f"🛑 Episode terminated due to drone crash: {crashed_drones}")
         
-        terminated = self.sim.simulation_time > 120 or episode_crashed  # Crash OR timeout
+        # Episode termination: crash always ends, time limit only in training
+        if self.demo_mode:
+            # Demo mode: only terminate on crash, no time limit
+            terminated = episode_crashed
+        else:
+            # Training mode: terminate on crash OR timeout
+            terminated = self.sim.simulation_time > 300 or episode_crashed
         
         # Ensure reward is always a valid number, never None
         reward = float(reward) if reward is not None else -10.0
