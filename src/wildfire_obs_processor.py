@@ -46,8 +46,8 @@ class WildfireObsProcessor:
         fire_grid = sim.environment.fire_grid.I # Intensity layer
 
         # Get map bounds for boundary checking
-        map_size_x = mapper.width * mapper.resolution
-        map_size_y = mapper.height * mapper.resolution
+        map_size_x = mapper.grid_width_cells * mapper.cell_size_m
+        map_size_y = mapper.grid_height_cells * mapper.cell_size_m
         map_bounds_x = map_size_x / 2
         map_bounds_y = map_size_y / 2
 
@@ -66,12 +66,10 @@ class WildfireObsProcessor:
         r_max, c_max = mapper.world_to_cell(max_world)
 
         # 3. Clamp indices to valid grid bounds
-        r_min = max(0, min(r_min, mapper.height - 1))
-        r_max = max(0, min(r_max, mapper.height - 1))
-        c_min = max(0, min(c_min, mapper.width - 1))
-        c_max = max(0, min(c_max, mapper.width - 1))
-
-        print(f"Drone {drone_name} at {pos} -> Fire map indices: rows [{r_min}:{r_max}], cols [{c_min}:{c_max}]") # Debug: Print the calculated indices for the fire map crop
+        r_min = max(0, min(r_min, mapper.grid_height_cells - 1))
+        r_max = max(0, min(r_max, mapper.grid_height_cells - 1))
+        c_min = max(0, min(c_min, mapper.grid_width_cells - 1))
+        c_max = max(0, min(c_max, mapper.grid_width_cells - 1))
 
         # 4. Extract the crop
         # We add 1 to max to ensure we get the full range
@@ -123,8 +121,8 @@ class WildfireObsProcessor:
         
         # Get actual map dimensions from environment
         grid_mapper = sim.environment.grid_mapper
-        map_size_x = grid_mapper.width * grid_mapper.resolution  # Real world width in meters
-        map_size_y = grid_mapper.height * grid_mapper.resolution  # Real world height in meters
+        map_size_x = grid_mapper.grid_width_cells * grid_mapper.cell_size_m  # Real world width in meters
+        map_size_y = grid_mapper.grid_height_cells * grid_mapper.cell_size_m  # Real world height in meters
         map_bounds_x = map_size_x / 2  # Assuming map centered at origin
         map_bounds_y = map_size_y / 2
 
@@ -144,8 +142,6 @@ class WildfireObsProcessor:
         if is_outside:
             print(f"Warning: Drone {drone_name} is outside map boundaries!")
 
-        print(f"Drone {drone_name} Position: {pos}, Normalized: ({norm_x:.2f}, {norm_y:.2f}), Distances to boundaries: L={dist_to_left:.2f}, R={dist_to_right:.2f}, B={dist_to_bottom:.2f}, T={dist_to_top:.2f}, OutOfBounds: {is_outside}") # Debug: Print position and boundary distances
-        
         # Minimum boundary distance (most critical for collision avoidance)
         min_boundary_dist = min(dist_to_left, dist_to_right, dist_to_bottom, dist_to_top)
         
@@ -164,8 +160,6 @@ class WildfireObsProcessor:
             exploration_ratio,         # 14: Exploration progress (placeholder)
             fire_discovery_ratio,      # 15: Fire discovery progress (placeholder)
         ], dtype=np.float32)
-
-        print(f"Generated self_state for {drone_name}: {self_state}") # Debug: Print the generated self_state vector
 
         return {
             "local_map": self.get_local_fire_map(sim, drone_name, boundary_distances),

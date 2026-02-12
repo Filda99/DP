@@ -467,7 +467,6 @@ class Simulation:
                     if dist_sq < zone['radius_sq']:
                         drone.refill_tank()
                 
-                print(f"Applying control to {drone_name}: {control_input}") # Debug: Print control input for each drone
                 # 1. Atmospheric effects
                 atmos = self.get_local_atmospheric_conditions(drone.get_position())
                 drone.apply_environmental_effects(atmos)

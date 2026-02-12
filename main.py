@@ -24,6 +24,11 @@ from tqdm import tqdm
 # Core imports
 from src.wildfire_gym_wrapper import WildfireMARLEnv
 from src.wildfire_models import QuadActor
+
+# TorchRL imports for proper PPO (simplified)
+from tensordict import TensorDict
+from tensordict.nn import TensorDictModule
+
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
@@ -109,126 +114,165 @@ def create_demo_visualization(demo_log, env):
     
     return filepath
 
-class SimplePPOTrainer:
-    """Gentle Action PPO Trainer - STABILNÍ VERZE S POSTUPNÝM ZVYŠOVÁNÍM AKCÍ"""
-    def __init__(self, actor, device='cpu', lr=MainConfig.LEARNING_RATE):
-        self.actor = actor
-        self.optimizer = torch.optim.Adam(actor.parameters(), lr=lr, weight_decay=1e-5)
+class TorchRLTrainer:
+    """TorchRL-based PPO Trainer - SIMPLIFIED FOR COMPATIBILITY"""
+    def __init__(self, actor, critic, device='cpu', lr=MainConfig.LEARNING_RATE, gentle_training=False):
         self.device = device
-        self.memory = []
-        self.update_count = 0
+        self.gentle_training = gentle_training
+        self.action_scale = 0.3 if gentle_training else 1.0  # Start conservative if gentle
         
-        # PPO hyperparameters - stabilní
-        self.gamma = MainConfig.GAMMA
-        self.eps_clip = MainConfig.EPS_CLIP
-        self.entropy_coef = MainConfig.ENTROPY_COEF
-        self.max_grad_norm = MainConfig.MAX_GRAD_NORM
-        self.min_loss_threshold = MainConfig.MIN_LOSS_THRESHOLD
+        # TorchRL PPO Loss Module
+        self.loss_module = ClipPPOLoss(
+            actor_network=actor_module,
+            critic_network=critic_module,
+            clip_epsilon=MainConfig.EPS_CLIP,
+            entropy_coeff=MainConfig.ENTROPY_COEF,
+            normalize_advantage=False,  # Better for MARL
+        )
+        
+        # Set appropriate keys for our environment
+        self.loss_module.set_keys(
+            reward="reward",
+            action="action", 
+            value="state_value",
+            done="done",
+            terminated="terminated",
+        )
+        
+        # GAE Value Estimator - much better than our primitive returns
+        self.loss_module.make_value_estimator(
+            ValueEstimators.GAE, 
+            gamma=MainConfig.GAMMA, 
+            lmbda=0.9  # GAE lambda parameter
+        )
+        
+        # Optimizer
+        self.optimizer = torch.optim.Adam(
+            self.loss_module.parameters(), 
+            lr=lr, 
+            weight_decay=1e-5
+        )
         
         # Training tracking
-        self.gradient_norms = []
+        self.update_count = 0
         self.successful_episodes = 0
-        self.episode_rewards = []
     
     def get_gentle_actions(self, raw_actions):
         """Bezpečné clipping akcí s postupným zvyšováním magnitude"""
         # Standard approach - use tanh to bound actions
         actions = torch.tanh(raw_actions)
+        
+        # Apply gentle scaling if enabled
+        if self.gentle_training:
+            actions = actions * self.action_scale
+        
         return actions
     
-    def store_transition(self, obs, action, reward, log_prob, value, done, hidden):
-        self.memory.append((obs, action, reward, log_prob, value, done, hidden))
+    def increase_action_scale(self, reward_improvement=False):
+        """Postupně zvyšuje action scale při úspěšných epizodách"""
+        if self.gentle_training and reward_improvement and self.action_scale < 1.0:
+            self.action_scale = min(1.0, self.action_scale + 0.05)
+            return True
+        return False
     
-    def update_policy(self):
-        if len(self.memory) < 10:  # Minimální velikost batch
+    def prepare_batch_data(self, memory_transitions):
+        """Convert our memory format to TorchRL TensorDict format"""
+        if len(memory_transitions) < 10:
             return None
             
-        # Compute returns using gamma
-        returns = []
-        R = 0
-        for i in reversed(range(len(self.memory))):
-            obs, action, reward, log_prob, value, done, hidden = self.memory[i]
-            R = reward + self.gamma * R * (1 - done)
-            returns.insert(0, R)
+        batch_size = len(memory_transitions)
         
-        returns = torch.tensor(returns, dtype=torch.float32, device=self.device)
-        returns = (returns - returns.mean()) / (returns.std() + 1e-8)  # Normalizace
+        # Extract components from memory
+        observations = []
+        actions = []
+        rewards = []
+        dones = []
+        values = []
         
-        # Policy update s GENTLE ACTIONS a monitoring
-        total_loss = 0
-        entropy_loss = 0
-        policy_losses = []
-        
-        for i, (obs, action, reward, old_log_prob, value, done, hidden) in enumerate(self.memory):
-            # Forward pass pro nové akce
+        for obs, action, reward, log_prob, value, done, hidden in memory_transitions:
             local_map, self_state = obs
-            raw_actions, _, _ = self.actor(local_map, self_state, hidden)
+            observations.append({
+                'local_map': local_map.cpu(),
+                'self_state': self_state.cpu()
+            })
+            actions.append(action.cpu())
+            rewards.append(reward)
+            dones.append(done)
+            values.append(value if isinstance(value, (int, float)) else value.cpu())
+        
+        # Create TensorDict batch
+        batch_data = TensorDict({
+            'local_map': torch.stack([obs['local_map'] for obs in observations]),
+            'self_state': torch.stack([obs['self_state'] for obs in observations]),
+            'action': torch.stack(actions),
+            'reward': torch.tensor(rewards, dtype=torch.float32),
+            'done': torch.tensor(dones, dtype=torch.bool),
+            'terminated': torch.tensor(dones, dtype=torch.bool),  # For simplicity
+            'state_value': torch.tensor(values, dtype=torch.float32),
+        }, batch_size=[batch_size]).to(self.device)
+        
+        return batch_data
+    
+    def update_policy(self, memory_transitions):
+        """TorchRL-based PPO update"""
+        # Convert memory to TensorDict format
+        batch_data = self.prepare_batch_data(memory_transitions)
+        if batch_data is None:
+            return None
             
-            # Použij STEJNOU gentle action logic jako v training
-            current_actions = self.get_gentle_actions(raw_actions)
+        try:
+            # Compute GAE advantages - this is much better than our primitive approach
+            with torch.no_grad():
+                self.loss_module.value_estimator(
+                    batch_data,
+                    params=self.loss_module.critic_network_params,
+                    target_params=self.loss_module.target_critic_network_params,
+                )
             
-            # Direct action loss - MSE between current and stored actions
-            # Weighted by advantage to simulate policy gradient
-            advantage = returns[i]
-            action_diff = current_actions - action.detach()
-            policy_loss = (action_diff.pow(2) * advantage).mean()
-            policy_losses.append(policy_loss.item())
+            # PPO Loss computation - proper clipped objective
+            loss_vals = self.loss_module(batch_data)
+            total_loss = (
+                loss_vals["loss_objective"] +  # Clipped policy loss
+                loss_vals["loss_critic"] +     # Value function loss  
+                loss_vals["loss_entropy"]      # Entropy bonus
+            )
             
-            # Simple entropy approximation - variance of actions
-            entropy = current_actions.var()
-            entropy_loss += entropy
+            # Backprop with gradient clipping
+            self.optimizer.zero_grad()
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                self.loss_module.parameters(), 
+                MainConfig.MAX_GRAD_NORM
+            )
+            self.optimizer.step()
             
-            total_loss += policy_loss - self.entropy_coef * entropy
-        
-        # *** OPRAVENÁ COLLAPSE DETECTION ***
-        # NEDETEKUJ collapse když se model ZLEPŠUJE!
-        if len(policy_losses) > 15:  # Čekej víc dat
-            recent_avg = np.mean([abs(x) for x in policy_losses[-5:]])  # Posledních 5
-            older_avg = np.mean([abs(x) for x in policy_losses[-10:-5]])  # Předchozích 5
+            # Learning rate decay
+            self.update_count += 1
+            if self.update_count % 20 == 0:
+                for param_group in self.optimizer.param_groups:
+                    if param_group['lr'] > 1e-6:
+                        param_group['lr'] *= 0.99
             
-            # Collapse = loss je malý A nedělá pokrok
-            if recent_avg < 0.01 and abs(recent_avg - older_avg) < 0.001:
-                print(f"⚠️ REAL POLICY COLLAPSE! Recent: {recent_avg:.4f}, Progress: {abs(recent_avg - older_avg):.4f}")
-                return total_loss.item()  # Ukonči training
-            else:
-                print(f"✅ Model learning OK. Recent loss: {recent_avg:.3f}, Progress: {abs(recent_avg - older_avg):.4f}")
-        
-        # Backprop s pokročilým gradient monitoringem
-        self.optimizer.zero_grad()
-        total_loss.backward()
-        
-        # Monitor gradients PŘED clippingem
-        total_norm = 0.0
-        for p in self.actor.parameters():
-            if p.grad is not None:
-                total_norm += p.grad.data.norm(2).item() ** 2
-        total_norm = total_norm ** 0.5
-        
-        # Varování při exploding gradients
-        if total_norm > 100.0:
-            print(f"⚠️ EXPLODING GRADIENTS! Norm: {total_norm:.1f} - možný problém s rewards")
-            # Zmírni gradienty místo ořezání
-            for p in self.actor.parameters():
-                if p.grad is not None:
-                    p.grad.data /= (total_norm / 10.0)  # Normalize místo clip
-        
-        # Normální clipping jen při mírném overflow
-        clipped_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
-        if clipped_norm > self.max_grad_norm and total_norm < 100.0:
-            print(f"🔧 Normal gradients clipped from {clipped_norm:.3f} to {self.max_grad_norm}")
-        
-        self.optimizer.step()
-        
-        # Learning rate decay každých 20 updates (místo 10)
-        self.update_count += 1
-        if self.update_count % 20 == 0:
-            for param_group in self.optimizer.param_groups:
-                if param_group['lr'] > 1e-6:  # Minimum LR
-                    param_group['lr'] *= 0.99  # Ještě pomalejší decay
-        
-        # Clear memory
-        self.memory.clear()
-        return total_loss.item()
+            return total_loss.item()
+            
+        except Exception as e:
+            print(f"❌ TorchRL update error: {e}")
+            return None
+
+class SimpleCritic(torch.nn.Module):
+    """Simple critic network for value estimation"""
+    def __init__(self, self_state_size, hidden_size=256):
+        super().__init__()
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(self_state_size, hidden_size),
+            torch.nn.Tanh(),
+            torch.nn.Linear(hidden_size, hidden_size//2),
+            torch.nn.Tanh(),
+            torch.nn.Linear(hidden_size//2, 1)  # Single value output
+        )
+    
+    def forward(self, self_state):
+        return self.net(self_state)
 
 def train_main():
     """Spustí trénink kvadrokoptéry"""
@@ -244,11 +288,18 @@ def train_main():
     # Get self_state size from environment's observation processor
     self_state_size = marlEnv.obs_proc.get_self_state_size()
     
-    # Actor with proper observation size
+    # Actor and Critic networks
     actor = QuadActor(message_dim=MainConfig.ACTOR_MESSAGE_DIM, self_state_size=self_state_size).to(device)
+    critic = SimpleCritic(self_state_size=self_state_size).to(device)
     
-    # Trainer - s gentle training enabled
-    trainer = SimplePPOTrainer(actor, device, lr=MainConfig.LEARNING_RATE, gentle_training=True)
+    # TorchRL Trainer - much better than our fake PPO
+    trainer = TorchRLTrainer(
+        actor=actor,
+        critic=critic, 
+        device=device, 
+        lr=MainConfig.LEARNING_RATE, 
+        gentle_training=True
+    )
     
     # Training settings
     max_episodes = MainConfig.MAX_EPISODES
@@ -264,9 +315,10 @@ def train_main():
     best_reward = -float('inf')
     crash_count = 0
     stable_episodes = 0
+    memory_buffer = []  # Store transitions for TorchRL
     
     # Progress bar pro epizody
-    episode_pbar = tqdm(range(max_episodes), desc="🚁 Gentle Training", leave=True)
+    episode_pbar = tqdm(range(max_episodes), desc="🚁 TorchRL Training", leave=True)
     
     for episode in episode_pbar:
         # Reset environment
@@ -292,15 +344,19 @@ def train_main():
                 # *** GENTLE ACTIONS - použij trainer method ***
                 actions = trainer.get_gentle_actions(raw_actions)
                 
+                # Value estimation from critic
+                with torch.no_grad():
+                    value = critic(self_state).item()
+                
                 # Step environment - AKCE PRO 1 DRON
                 action_np = actions.cpu().detach().numpy()  # Detach gradients before converting to numpy
                 result = marlEnv.step({"quads": {"action": action_np}})
                 obs_dict, reward, done, info = result
                 
-                # Store transition - simplified for direct action training
-                trainer.store_transition(
-                    (local_map, self_state), actions, reward, 0.0, 0.0, done, hidden_state
-                )
+                # Store transition for TorchRL
+                memory_buffer.append((
+                    (local_map, self_state), actions, reward, 0.0, value, done, hidden_state
+                ))
                 
                 # Update
                 hidden_state = new_hidden
@@ -327,11 +383,12 @@ def train_main():
                 episode_crashed = True
                 break
         
-        # Update policy
-        if episode > 0:
-            loss = trainer.update_policy()
+        # Update policy každé 3 epizody - častější updates pro lepší learning
+        if episode % 3 == 0 and episode > 0 and len(memory_buffer) > 0:
+            loss = trainer.update_policy(memory_buffer)
             if loss:
-                episode_pbar.write(f"📊 Ep {episode}: Policy updated, Loss: {loss:.3f}")
+                episode_pbar.write(f"📊 Ep {episode}: TorchRL PPO updated, Loss: {loss:.3f}")
+            memory_buffer.clear()  # Clear after update
         
         # Stats s crash tracking
         episode_rewards.append(episode_reward)
@@ -403,7 +460,7 @@ def train_main():
     # Uzavři progress bar
     episode_pbar.close()
     
-    print(f"\n🎉 GENTLE TRAINING DOKONČEN!")
+    print(f"\n🎉 TORCHRL TRAINING DOKONČEN!")
     print(f"   Celkem epizod: {episode+1}")
     print(f"   Nejlepší reward: {best_reward:.1f}")
     print(f"   Final action scale: {trainer.action_scale:.3f}")

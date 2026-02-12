@@ -92,8 +92,7 @@ class WildfireGymConfig:
     # Environment settings - FINER RESOLUTION!
     ENVIRONMENT_GRID_WIDTH = 200  # 200 cells
     ENVIRONMENT_GRID_HEIGHT = 200  # 200 cells 
-    ENVIRONMENT_CELL_SIZE_X = 1.0  # 1x1m cells
-    ENVIRONMENT_CELL_SIZE_Y = 1.0  # 1x1m cells
+    ENVIRONMENT_CELL_SIZE = 1.0  # General cell size for compatibility
     ENVIRONMENT_DT = 0.5
     
     # Fire settings - will be randomized in reset()

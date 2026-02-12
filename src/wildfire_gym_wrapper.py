@@ -202,9 +202,6 @@ class WildfireMARLEnv(gym.Env):
                 if name in self.sim.drones:
                     data = self.obs_proc.fetch(self.sim, name)
 
-                    print(f"Fetched self_state for {name}: {data}") # Debug: Print self_state vector
-                    sys.exit(0) # Exit after first fetch to check the output format and values
-
                     # Full enhanced self_state with boundary awareness
                     full_state = data["self_state"].copy()  # Use actual size from processor
                     
@@ -323,8 +320,8 @@ class WildfireMARLEnv(gym.Env):
                 
                 # === 1. IMPROVED EXPLORATION SYSTEM ===
                 # Convert position to grid cell (1m resolution - finer tracking!)
-                cell_x = int(x // WildfireGymConfig.ENVIRONMENT_CELL_SIZE_X)
-                cell_y = int(y // WildfireGymConfig.ENVIRONMENT_CELL_SIZE_Y)
+                cell_x = int(x // WildfireGymConfig.ENVIRONMENT_CELL_SIZE)
+                cell_y = int(y // WildfireGymConfig.ENVIRONMENT_CELL_SIZE)
                 cell_key = (cell_x, cell_y)
 
                 # Check if drone is within map boundaries for exploration tracking
