@@ -9,38 +9,44 @@ import sys
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
+from config import WildfireModelsConfig, MainConfig
+
 class QuadActor(nn.Module):
-    def __init__(self, message_dim=8, self_state_size=16):
+    def __init__(self, message_dim=MainConfig.ACTOR_MESSAGE_DIM, self_state_size=16):
         super().__init__()
         # 1. CNN for Fire Map
         self.cnn = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=3, stride=2), # 32x32 -> 15x15
+            nn.Conv2d(1, WildfireModelsConfig.CNN_LAYER_1_FILTERS, 
+                kernel_size=WildfireModelsConfig.CNN_LAYER_1_KERNEL, 
+                stride=WildfireModelsConfig.CNN_LAYER_1_STRIDE), # 32x32 -> 15x15
             nn.ReLU(),
-            nn.Conv2d(16, 32, kernel_size=3, stride=2), # 15x15 -> 7x7
+            nn.Conv2d(WildfireModelsConfig.CNN_LAYER_1_FILTERS, WildfireModelsConfig.CNN_LAYER_2_FILTERS, 
+                kernel_size=WildfireModelsConfig.CNN_LAYER_2_KERNEL, 
+                stride=WildfireModelsConfig.CNN_LAYER_2_STRIDE), # 15x15 -> 7x7
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(32 * 7 * 7, 64)
+            nn.Linear(WildfireModelsConfig.CNN_FLATTEN_SIZE, WildfireModelsConfig.CNN_OUTPUT_SIZE)
         )
         
         # 2. State & Memory - updated for expanded self_state size
-        self.gru = nn.GRUCell(input_size=64 + self_state_size, hidden_size=128)
+        self.gru = nn.GRUCell(
+            input_size=WildfireModelsConfig.CNN_OUTPUT_SIZE + self_state_size, 
+            hidden_size=MainConfig.ACTOR_HIDDEN_SIZE
+        )
         self.self_state_size = self_state_size
         
-        # 3. Heads - mnohem konzervativnější
-        self.action_head = nn.Linear(128, 8) # 4 for Loc, 4 for Scale (Mean/Std)
-        self.message_head = nn.Linear(128, message_dim)
+        # 3. Heads - direct action output
+        self.action_head = nn.Linear(MainConfig.ACTOR_HIDDEN_SIZE, WildfireModelsConfig.ACTION_HEAD_SIZE)
+        self.message_head = nn.Linear(MainConfig.ACTOR_HIDDEN_SIZE, message_dim)
         
-        # KONZERVATIVNÍ inicializace pro bezpečné hovering
+        # Initialize for stable hovering behavior
         with torch.no_grad():
-            # Inicializuj všechny akce na malé hodnoty kolem nuly
+            # Initialize all actions near zero for gentle start
             self.action_head.bias.fill_(0.0)  
-            self.action_head.weight.fill_(0.0)
+            self.action_head.weight.normal_(0.0, 0.01)  # Small random weights
             
-            # Nastavit jen malý pozitivní bias pro throttle mean (pro hover)
-            self.action_head.bias[3] = 0.1   # throttle mean mírně pozitivní
-            
-            # Scale biasy nastavit na malé pozitivní hodnoty (menší variance)
-            self.action_head.bias[4:] = -1.0  # všechny scale biasy malé
+            # Small positive bias for throttle to help with hovering
+            self.action_head.bias[3] = WildfireModelsConfig.ACTION_BIAS_THROTTLE
 
     def forward(self, local_map, self_state, hidden_state):
         # 1. Handle Scalar Batch (Data Collection) vs Batched (Training)
@@ -86,16 +92,20 @@ class QuadActor(nn.Module):
         return actions, message, new_hidden
 
 class FixedWingActor(nn.Module):
-    def __init__(self, message_dim=8):
+    def __init__(self, message_dim=MainConfig.ACTOR_MESSAGE_DIM):
         super().__init__()
         # 1. Attention Layer (Fixed-Wing queries, Quads provide Keys/Values)
-        self.attention = nn.MultiheadAttention(embed_dim=message_dim, num_heads=2, batch_first=True)
+        self.attention = nn.MultiheadAttention(
+            embed_dim=message_dim, 
+            num_heads=WildfireModelsConfig.FIXED_WING_ATTENTION_HEADS, 
+            batch_first=True
+        )
         
         # 2. Flight Control MLP
         self.mlp = nn.Sequential(
-            nn.Linear(7 + message_dim, 128),
+            nn.Linear(7 + message_dim, WildfireModelsConfig.FIXED_WING_MLP_HIDDEN),
             nn.ReLU(),
-            nn.Linear(128, 8) # 4 Loc, 4 Scale
+            nn.Linear(WildfireModelsConfig.FIXED_WING_MLP_HIDDEN, WildfireModelsConfig.FIXED_WING_OUTPUT_SIZE)
         )
 
     def forward(self, self_state, message_stream):

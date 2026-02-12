@@ -18,6 +18,7 @@ from shapely.geometry import Point
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
+from config import EnvironmentConfig
 from src.fire_grid import FireGrid
 from src.grid_mapper import GridMapper
 
@@ -115,9 +116,6 @@ class Environment:
         # Debug info - ukažme burn times
         grass_burn_time = FUEL_GRASS[0] / FUEL_GRASS[1] if FUEL_GRASS[1] > 0 else 0
         forest_burn_time = FUEL_FOREST[0] / FUEL_FOREST[1] if FUEL_FOREST[1] > 0 else 0 
-        print(f"🔥 Fire config for {cell_size}x{cell_size}m cells:")
-        print(f"   Tráva: {grass_burn_time:.1f}s burn time")
-        print(f"   Les: {forest_burn_time:.1f}s burn time")
         # 1. BASE LAYER: GRASS/OPEN (Default)
         self.fire_grid.F[:] = FUEL_GRASS[0]
         self.fire_grid.fuel_burn_rate[:] = FUEL_GRASS[1]
@@ -307,13 +305,6 @@ class Environment:
             # Použij naše nové fuel properties místo starých konstant!
             self.fire_grid.F[:] = FUEL_GRASS[0]
             self.fire_grid.fuel_burn_rate[:] = FUEL_GRASS[1]
-
-        # Debug info - ukažme burn times pokaždé
-        grass_burn_time = FUEL_GRASS[0] / FUEL_GRASS[1] if FUEL_GRASS[1] > 0 else 0
-        spread_rate_per_second = scaled_spread_rate
-        print(f"🔥 Fire config for {cell_size_m}x{cell_size_m}m cells:")
-        print(f"   Tráva: {grass_burn_time:.1f}s burn time, spread rate: {spread_rate_per_second:.6f}/s")
-        print(f"   Alpha: {alpha}, k_wind: {k_wind}, spread_speed: {PHYSICAL_SPREAD_SPEED} m/s")
 
         self.fire_grid.B[:] = False
         self.fire_grid.I[:] = 0.0

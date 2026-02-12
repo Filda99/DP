@@ -29,6 +29,7 @@ matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
 import matplotlib.patheffects
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from config import MainConfig, WildfireGymConfig
 
 def create_demo_visualization(demo_log, env):
     """Vytvoří vizualizaci demo běhů s trajektoriemi a rewards"""
@@ -37,12 +38,12 @@ def create_demo_visualization(demo_log, env):
     # Vytvoř výstupní složku
     os.makedirs("output", exist_ok=True)
     
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=MainConfig.VISUALIZATION_FIGSIZE)
     
     # === TRAJEKTORIE DRONŮ ===
     ax1.set_title("Trajektorie dronů - Demo běhy", fontsize=14, fontweight='bold')
     
-    colors = ['blue', 'red', 'green']
+    colors = MainConfig.DRONE_COLORS[:3]  # Use first 3 colors
     
     for i, (run_name, data) in enumerate(demo_log['drones'].items()):
         positions = data['positions']
@@ -65,7 +66,7 @@ def create_demo_visualization(demo_log, env):
                         markeredgecolor='black', markeredgewidth=1)
     
     # Přidej pozice ohně - 1 oheň uprostřed!
-    fire_positions = [[0.0, 0.0]]  # 1 oheň uprostřed 50x50m mapy
+    fire_positions = [MainConfig.FIRE_POSITION_CENTER]  # 1 oheň uprostřed 50x50m mapy
     for fire_pos in fire_positions:
         ax1.plot(fire_pos[0], fire_pos[1], '*', color='orange', markersize=15, 
                 markeredgecolor='red', markeredgewidth=2, label='Oheň' if fire_pos == fire_positions[0] else "")
@@ -103,84 +104,37 @@ def create_demo_visualization(demo_log, env):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = f"output/demo_visualization_{timestamp}.png"
     plt.tight_layout()
-    plt.savefig(filepath, dpi=300, bbox_inches='tight')
+    plt.savefig(filepath, dpi=MainConfig.VISUALIZATION_DPI, bbox_inches='tight')
     plt.close()
     
     return filepath
 
 class SimplePPOTrainer:
     """Gentle Action PPO Trainer - STABILNÍ VERZE S POSTUPNÝM ZVYŠOVÁNÍM AKCÍ"""
-    def __init__(self, actor, device='cpu', lr=3e-5, gentle_training=True):
+    def __init__(self, actor, device='cpu', lr=MainConfig.LEARNING_RATE):
         self.actor = actor
         self.optimizer = torch.optim.Adam(actor.parameters(), lr=lr, weight_decay=1e-5)
         self.device = device
         self.memory = []
         self.update_count = 0
         
-        # Gentle training parameters - IMPROVED starting scale for better control
-        self.gentle_training = gentle_training
-        if gentle_training:
-            self.action_scale = 0.4  # Start higher for better control authority!
-            self.max_action_scale = 0.8
-            self.action_scale_increment = 0.05
-            print(f"🎯 GENTLE TRAINING ENABLED - starting action scale: {self.action_scale:.3f}")
-        else:
-            self.action_scale = 1.0
-            
         # PPO hyperparameters - stabilní
-        self.gamma = 0.99   
-        self.eps_clip = 0.1  # Menší clipping pro gentle training
-        self.entropy_coef = 0.05  # Umírněný entropy bonus
-        self.max_grad_norm = 1.0
-        self.min_loss_threshold = 0.01
+        self.gamma = MainConfig.GAMMA
+        self.eps_clip = MainConfig.EPS_CLIP
+        self.entropy_coef = MainConfig.ENTROPY_COEF
+        self.max_grad_norm = MainConfig.MAX_GRAD_NORM
+        self.min_loss_threshold = MainConfig.MIN_LOSS_THRESHOLD
         
         # Training tracking
         self.gradient_norms = []
         self.successful_episodes = 0
         self.episode_rewards = []
     
-    def get_gentle_actions(self, action_params):
-        """Bezpečné získání akcí s postupným zvyšováním magnitude"""
-        if not self.gentle_training:
-            # Standard approach
-            mean = action_params[:, :4]  
-            scale = torch.clamp(action_params[:, 4:], 0.01, 1.0)
-            dist = torch.distributions.Normal(mean, scale)
-            actions = dist.sample()
-            return actions, dist, scale
-        
-        # GENTLE APPROACH
-        mean = action_params[:, :4]  
-        scale = torch.clamp(action_params[:, 4:], 0.01, 0.3)  # Menší variance
-        
-        dist = torch.distributions.Normal(mean, scale)
-        actions = dist.sample()
-        
-        # GENTLE CLIPPING - postupně zvyšujeme rozsah
-        actions = torch.clamp(actions, -self.action_scale, self.action_scale)
-        
-        return actions, dist, scale
-    
-    def maybe_increase_action_scale(self, episode_reward):
-        """Postupně zvyšuj action scale při úspěchu"""
-        if not self.gentle_training:
-            return
-            
-        self.episode_rewards.append(episode_reward)
-        
-        # Zvyš action scale při stabilně dobrém výkonu (adjusted for new reward system)
-        if episode_reward > 2.0:  # Adjusted for more reasonable reward expectations
-            self.successful_episodes += 1
-            
-            # Po 3 úspěšných episodes v řadě
-            if self.successful_episodes >= 3 and self.action_scale < self.max_action_scale:
-                old_scale = self.action_scale
-                self.action_scale += self.action_scale_increment
-                self.action_scale = min(self.action_scale, self.max_action_scale)
-                self.successful_episodes = 0
-                print(f"🚀 Action scale increased: {old_scale:.3f} → {self.action_scale:.3f}")
-        else:
-            self.successful_episodes = 0  # Reset při špatném výkonu
+    def get_gentle_actions(self, raw_actions):
+        """Bezpečné clipping akcí s postupným zvyšováním magnitude"""
+        # Standard approach - use tanh to bound actions
+        actions = torch.tanh(raw_actions)
+        return actions
     
     def store_transition(self, obs, action, reward, log_prob, value, done, hidden):
         self.memory.append((obs, action, reward, log_prob, value, done, hidden))
@@ -206,42 +160,22 @@ class SimplePPOTrainer:
         policy_losses = []
         
         for i, (obs, action, reward, old_log_prob, value, done, hidden) in enumerate(self.memory):
-            # Forward pass pro nový log_prob
+            # Forward pass pro nové akce
             local_map, self_state = obs
-            action_out, _, _ = self.actor(local_map, self_state, hidden)
+            raw_actions, _, _ = self.actor(local_map, self_state, hidden)
             
-            # Použij gentle action distribution SAME as training
-            if self.gentle_training:
-                mean = action_out[:, :4]
-                scale = torch.clamp(action_out[:, 4:], 0.01, 0.3)  # Stejná variance jako v training
-            else:
-                mean = action_out[:, :4]
-                scale = torch.clamp(action_out[:, 4:], 0.01, 1.0)
+            # Použij STEJNOU gentle action logic jako v training
+            current_actions = self.get_gentle_actions(raw_actions)
             
-            dist = torch.distributions.Normal(mean, scale)
-            new_log_prob = dist.log_prob(action).sum()
-            
-            # Advantage 
+            # Direct action loss - MSE between current and stored actions
+            # Weighted by advantage to simulate policy gradient
             advantage = returns[i]
-            
-            # PPO loss s clipping
-            ratio = torch.exp(new_log_prob - old_log_prob.detach())
-            clipped_ratio = torch.clamp(ratio, 1 - self.eps_clip, 1 + self.eps_clip)
-            policy_loss = -torch.min(ratio * advantage, clipped_ratio * advantage)
+            action_diff = current_actions - action.detach()
+            policy_loss = (action_diff.pow(2) * advantage).mean()
             policy_losses.append(policy_loss.item())
             
-            # Entropy bonus pro explorace
-            entropy = dist.entropy().sum()
-            entropy_loss += entropy
-            
-            total_loss += policy_loss - self.entropy_coef * entropy
-            ratio = torch.exp(new_log_prob - old_log_prob.detach())
-            clipped_ratio = torch.clamp(ratio, 1 - self.eps_clip, 1 + self.eps_clip)
-            policy_loss = -torch.min(ratio * advantage, clipped_ratio * advantage)
-            policy_losses.append(policy_loss.item())
-            
-            # Entropy bonus pro explorace
-            entropy = dist.entropy().sum()
+            # Simple entropy approximation - variance of actions
+            entropy = current_actions.var()
             entropy_loss += entropy
             
             total_loss += policy_loss - self.entropy_coef * entropy
@@ -305,22 +239,21 @@ def train_main():
     print(f"🖥️ Device: {device}")
     
     # Environment - 1 dron na mapě s hranicemi definovanými v prostředí
-    env = WildfireMARLEnv(agents_config=["quad_1"])
+    marlEnv = WildfireMARLEnv(agents_config=["quad_1"])
     
     # Get self_state size from environment's observation processor
-    self_state_size = env.obs_proc.get_self_state_size()
-    print(f"🧠 Self-state size: {self_state_size} features")
+    self_state_size = marlEnv.obs_proc.get_self_state_size()
     
     # Actor with proper observation size
-    actor = QuadActor(message_dim=8, self_state_size=self_state_size).to(device)
+    actor = QuadActor(message_dim=MainConfig.ACTOR_MESSAGE_DIM, self_state_size=self_state_size).to(device)
     
     # Trainer - s gentle training enabled
-    trainer = SimplePPOTrainer(actor, device, lr=3e-5, gentle_training=True)
+    trainer = SimplePPOTrainer(actor, device, lr=MainConfig.LEARNING_RATE, gentle_training=True)
     
     # Training settings
-    max_episodes = 100
-    max_steps = 150
-    save_every = 25
+    max_episodes = MainConfig.MAX_EPISODES
+    max_steps = MainConfig.MAX_STEPS
+    save_every = MainConfig.SAVE_EVERY
     
     save_dir = f"models/gentle_training_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     os.makedirs(save_dir, exist_ok=True)
@@ -337,8 +270,8 @@ def train_main():
     
     for episode in episode_pbar:
         # Reset environment
-        obs_dict, _ = env.reset()
-        hidden_state = torch.zeros(1, 128).to(device)  # 1 dron, má 128 hidden dim
+        obs_dict, _ = marlEnv.reset()
+        hidden_state = torch.zeros(1, MainConfig.ACTOR_HIDDEN_SIZE).to(device)  # 1 dron
         episode_reward = 0
         episode_steps = 0
         episode_crashed = False
@@ -354,23 +287,19 @@ def train_main():
                     break  # No quad agent
                 
                 # Forward pass
-                action_params, message, new_hidden = actor(local_map, self_state, hidden_state)
+                raw_actions, message, new_hidden = actor(local_map, self_state, hidden_state)
                 
                 # *** GENTLE ACTIONS - použij trainer method ***
-                actions, dist, scale = trainer.get_gentle_actions(action_params)
-                log_prob = dist.log_prob(actions).sum()
-                
-                # Simple value estimation
-                value = torch.tensor(0.0, device=device)
+                actions = trainer.get_gentle_actions(raw_actions)
                 
                 # Step environment - AKCE PRO 1 DRON
-                action_np = actions.cpu().numpy()  # Already sampled and clipped by gentle method
-                result = env.step({"quads": {"action": action_np}})
+                action_np = actions.cpu().detach().numpy()  # Detach gradients before converting to numpy
+                result = marlEnv.step({"quads": {"action": action_np}})
                 obs_dict, reward, done, info = result
                 
-                # Store transition
+                # Store transition - simplified for direct action training
                 trainer.store_transition(
-                    (local_map, self_state), actions, reward, log_prob, value, done, hidden_state
+                    (local_map, self_state), actions, reward, 0.0, 0.0, done, hidden_state
                 )
                 
                 # Update
@@ -398,22 +327,19 @@ def train_main():
                 episode_crashed = True
                 break
         
-        # === GENTLE PROGRESSION ===
-        trainer.maybe_increase_action_scale(episode_reward)
-        
-        # Update policy každých 5 epizod - stabilnější pro složitější boundary learning
-        if episode % 5 == 0 and episode > 0:
+        # Update policy
+        if episode > 0:
             loss = trainer.update_policy()
             if loss:
                 episode_pbar.write(f"📊 Ep {episode}: Policy updated, Loss: {loss:.3f}")
-            trainer.memory.clear()
         
         # Stats s crash tracking
         episode_rewards.append(episode_reward)
-        if episode_reward > best_reward:
+        reward_improved = episode_reward > best_reward
+        if reward_improved:
             best_reward = episode_reward
         
-        # Track stability
+        # Track stability and increase action scale if improving
         if episode_reward > 0 and not episode_crashed:
             stable_episodes += 1
         else:
@@ -431,11 +357,6 @@ def train_main():
             'Stable': stable_episodes
         })
         
-        # Success condition - vyžaduj dlouhodobou stabilitu pro boundary awareness
-        if stable_episodes >= 15 and trainer.action_scale >= 0.7:  # Přísnější podmínky
-            episode_pbar.write(f"🏆 SUCCESS! Stabilní let s boundary awareness - action scale {trainer.action_scale:.3f}")
-            episode_pbar.write(f"    Stabilní epizody: {stable_episodes}, Crash rate: {crash_rate:.1f}%")
-            
         # Early stopping pokud moc crashuje
         if episode > 20 and crash_rate > 80:
             episode_pbar.write(f"🛑 Too many crashes ({crash_rate:.1f}%) - ending training")
@@ -490,7 +411,7 @@ def train_main():
     print(f"   Stable episodes in row: {stable_episodes}")
     print(f"   Modely uloženy v: {save_dir}")
     
-    env.close()
+    marlEnv.close()
     return save_dir
 
 def create_demo_visualization(env, frame_num):
@@ -524,24 +445,23 @@ def create_demo_visualization(env, frame_num):
         mask_forest = (burn_rate > 0.0002) & (burn_rate <= 0.0005)
         mask_grass = (burn_rate >= 0.0005)
 
-        env_img[mask_grass] = [0.6, 0.7, 0.4]    # Grass
-        env_img[mask_forest] = [0.1, 0.4, 0.1]   # Forest
-        env_img[mask_water] = [0.2, 0.5, 0.9]    # Water
-        env_img[mask_building] = [0.5, 0.5, 0.5] # Buildings
+        env_img[mask_grass] = MainConfig.TERRAIN_COLORS['grass']    # Grass
+        env_img[mask_forest] = MainConfig.TERRAIN_COLORS['forest']   # Forest
+        env_img[mask_water] = MainConfig.TERRAIN_COLORS['water']    # Water
+        env_img[mask_building] = MainConfig.TERRAIN_COLORS['building'] # Buildings
         
         # Fire layer
         burning = state['B']
         fire_overlay = np.zeros((H, W, 4))
-        fire_overlay[burning] = [1.0, 0.2, 0.0, 0.8] # Red fire
+        fire_overlay[burning] = MainConfig.FIRE_OVERLAY_COLOR # Red fire
         
         ax1.imshow(env_img, origin='lower', extent=extent)
         ax1.imshow(fire_overlay, origin='lower', extent=extent)
         
         # Drony - zobraz pozice
-        drone_colors = ['blue', 'green', 'red', 'purple']
         for i, (drone_name, drone) in enumerate(env.sim.drones.items()):
             pos = drone.get_position()
-            color = drone_colors[i % len(drone_colors)]
+            color = MainConfig.DRONE_COLORS[i % len(MainConfig.DRONE_COLORS)]
             ax1.scatter(pos[0], pos[1], c=color, s=100, marker='o', edgecolors='white', linewidth=2, 
                        label=f'{drone_name} (h={pos[2]:.1f}m)', zorder=10)
         
@@ -552,11 +472,15 @@ def create_demo_visualization(env, frame_num):
             arrow_x = x_max - (x_max - x_min) * 0.1
             arrow_y = y_max - (y_max - y_min) * 0.1
             direction = wind_vel[:2] / wind_speed
-            visual_length = 8  # Kratší šipka
+            visual_length = MainConfig.WIND_ARROW_LENGTH
             dx = direction[0] * visual_length
             dy = direction[1] * visual_length
             ax1.arrow(arrow_x - 5, arrow_y - 5, dx, dy, 
-                      head_width=2, head_length=2, fc='yellow', ec='black', width=1, zorder=9)
+                      head_width=MainConfig.WIND_ARROW_HEAD_WIDTH, 
+                      head_length=MainConfig.WIND_ARROW_HEAD_LENGTH, 
+                      fc=MainConfig.WIND_ARROW_COLOR, 
+                      ec=MainConfig.WIND_ARROW_EDGE_COLOR, 
+                      width=MainConfig.WIND_ARROW_WIDTH, zorder=9)
             
             txt = ax1.text(arrow_x + 2, arrow_y + 2, f"{wind_speed:.1f} m/s", color='yellow', 
                          fontsize=8, ha='center', zorder=11)
@@ -608,7 +532,7 @@ def create_demo_visualization(env, frame_num):
         
         # Ulož
         filename = f'{output_dir}/demo_frame_{frame_num:03d}.png'
-        plt.savefig(filename, dpi=150, bbox_inches='tight')
+        plt.savefig(filename, dpi=MainConfig.DEMO_VISUALIZATION_DPI, bbox_inches='tight')
         plt.close()
         
         return filename
@@ -637,15 +561,16 @@ def demo_main():
     self_state_size = temp_env.obs_proc.get_self_state_size()
     temp_env.close()
     
-    model = QuadActor(message_dim=8, self_state_size=self_state_size)
+    model = QuadActor(message_dim=MainConfig.ACTOR_MESSAGE_DIM, self_state_size=self_state_size)
     checkpoint = torch.load(model_path, map_location='cpu')
     model.load_state_dict(checkpoint['actor_state_dict'])
     model.eval()
     
     # Načti action scale z modelu ale SYNCHRONIZOVÁNO s reward thresholds
     model_action_scale = checkpoint.get('action_scale', 0.5)
-    action_scale = min(model_action_scale, 0.40)  # SYNCHRONIZED: 0.40 > stop_bonus_threshold(0.30)
-    print(f"🎯 Action scale z modelu: {model_action_scale:.3f} → synchronizován na {action_scale:.3f} pro demo")
+    # Use model's actual action scale WITHOUT limiting for demo - let's see what happens
+    action_scale = model_action_scale  # Use full trained scale
+    print(f"🎯 Action scale z modelu: {model_action_scale:.3f} → použito {action_scale:.3f} pro demo (bez omezení!)")
     
     # Zobraz statistiky modelu
     if 'crash_count' in checkpoint:
@@ -664,7 +589,7 @@ def demo_main():
     print("🚁 === DEMO: 1 dron na mapě (konzistentní s tréninkem) ===")
     
     # Hidden states pro 1 dron
-    hidden_states = torch.zeros(1, 128)
+    hidden_states = torch.zeros(1, MainConfig.ACTOR_HIDDEN_SIZE)
     total_reward = 0
     steps = 0
     frame_count = 0
@@ -678,7 +603,7 @@ def demo_main():
     except Exception as e:
         print(f"⚠️ Chyba při vizualizaci frame 0: {e}")
     
-    max_steps = 15000 
+    max_steps = MainConfig.DEMO_MAX_STEPS 
     while steps < max_steps:
         try:
             if "quads" in obs:
@@ -688,11 +613,33 @@ def demo_main():
                 break
             
             with torch.no_grad():
-                actions, _, hidden_states = model(local_map, self_state, hidden_states)
+                raw_actions, _, hidden_states = model(local_map, self_state, hidden_states)
                 
-            # OMEZENÝ ACTION SCALE PRO DEMO - aby nevyletěl z mapy!
-            actions_clipped = torch.clamp(actions[:, :4], -action_scale, action_scale)  # Použij omezený scale
+                # Direct action output - no distributions needed
+                actions = torch.tanh(raw_actions)  # Bound to [-1, 1]
+                
+                # Apply gentle policy if needed - conservative scaling for safety
+                if MainConfig.DEMO_CONSERVATIVE_POLICY:
+                    actions = actions * 0.7  # More conservative for demo
+                
+                actions_clipped = torch.clamp(actions, -1.0, 1.0)  # Standard range
+            
             actions_np = actions_clipped.numpy()  # (1, 4)
+            
+            # DEBUG: Print actions every 100 steps to see what model outputs
+            if steps % 100 == 0 and steps < 500:
+                # Also debug observation state to see if model gets proper input
+                alt = self_state[0][0].item() if len(self_state[0]) > 0 else 0
+                
+                # BOUNDARY DEBUG - print key boundary info
+                if len(self_state[0]) >= 14:
+                    boundary_x = self_state[0][12].item()
+                    boundary_y = self_state[0][13].item()
+                    print(f"🐛 Krok {steps}: actions=[{actions_np[0][0]:.4f}, {actions_np[0][1]:.4f}, {actions_np[0][2]:.4f}, {actions_np[0][3]:.4f}]")
+                    print(f"   ↳ Boundary info: X_dist={boundary_x:.1f}, Y_dist={boundary_y:.1f} (negative = outside!)")
+                else:
+                    print(f"🐛 Krok {steps}: actions=[{actions_np[0][0]:.4f}, {actions_np[0][1]:.4f}, {actions_np[0][2]:.4f}, {actions_np[0][3]:.4f}]")
+                print(f"   ↳ altitude={alt:.1f}m, roll/pitch/yaw/throttle")
             
             # ===== AKCE PRO 1 DRON =====
             action_dict = {
@@ -707,8 +654,8 @@ def demo_main():
             
             # Track rewards pro vizualizaci
             env._recent_rewards.append(reward)
-            if len(env._recent_rewards) > 50:  # Drž pouze posledních 50 kroků
-                env._recent_rewards = env._recent_rewards[-50:]
+            if len(env._recent_rewards) > MainConfig.DEMO_RECENT_REWARDS_MAX:  # Drž pouze posledních N kroků
+                env._recent_rewards = env._recent_rewards[-MainConfig.DEMO_RECENT_REWARDS_MAX:]
             
             if steps % (max_steps / 10) == 0 and steps > 0:
                 try:
@@ -779,42 +726,9 @@ def demo_main():
     
     env.close()
 
-def validate_main():
-    """Ověří že prostředí funguje"""
-    print("✅ VALIDACE PROSTŘEDÍ")
-    
-    env = WildfireMARLEnv(agents_config=["quad_1", "quad_2", "quad_3", "quad_4"])
-    obs, _ = env.reset()
-    
-    print(f"🌍 Prostředí úspěšně inicializováno")
-    print(f"   Observace klíče: {list(obs.keys())}")
-    print(f"   Map bounds: ±{env.map_bounds}m")
-    print(f"   Self-state size: {env.obs_proc.get_self_state_size()} features")
-    if "quads" in obs:
-        print(f"   Quad local_map shape: {obs['quads']['local_map'].shape}")
-        print(f"   Quad self_state shape: {obs['quads']['self_state'].shape}")
-    
-    # Test jednoho kroku - hovering pro všechny drony v environmentu
-    num_quads = obs['quads']['self_state'].shape[0] if 'quads' in obs else 0
-    if num_quads > 0:
-        # Create hovering actions for all quadcopters
-        hover_actions = np.array([[0.0, 0.0, 0.0, 0.1] for _ in range(num_quads)])
-        action = {
-            "quads": {
-                "action": hover_actions
-            }
-        }
-        obs, reward, done, info = env.step(action)
-        print(f"✅ Test krok: reward={reward:.1f}, drony={num_quads}")
-    else:
-        print("⚠️ Žádné kvadrokoptéry v prostředí")
-    
-    env.close()
-    print("✅ Validace dokončena!")
-
 def main():
     parser = argparse.ArgumentParser(description="Quadcopter Fire Detection Training")
-    parser.add_argument("command", choices=["train", "demo", "validate"], 
+    parser.add_argument("command", choices=["train", "demo"], 
                       help="Co spustit")
     
     args = parser.parse_args()
@@ -823,8 +737,6 @@ def main():
         train_main()
     elif args.command == "demo":
         demo_main()
-    elif args.command == "validate":
-        validate_main()
 
 if __name__ == "__main__":
     main()

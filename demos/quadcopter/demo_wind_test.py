@@ -21,7 +21,7 @@ sys.path.insert(0, project_root)
 from src.simulation import Simulation
 
 def plot_flight_analysis(name, times, positions, output_file):
-    fig = plt.figure(figsize=(10, 8))
+    fig = plt.figure(figsize=DemoConfig.QUAD_WIND_TEST_FIGURE_SIZE)
     
     # Position vs Time
     plt.plot(times, positions[:, 0], 'r-', label='Pos X', linewidth=2)
@@ -50,8 +50,8 @@ def run_wind_test():
     
     # --- PHASE 1: SAFE WIND (10 m/s) ---
     print("\nTesting Safe Wind (10 m/s)...")
-    sim.set_wind([10.0, 0.0, 0.0]) 
-    sim.add_quadcopter("Quad_Test", position=[0, 0, 5])
+    sim.set_wind(DemoConfig.QUAD_WIND_INITIAL) 
+    sim.add_quadcopter("Quad_Test", position=[0, 0, DemoConfig.QUAD_SPAWN_HEIGHT])
     
     log_times = []
     log_pos = []
