@@ -10,8 +10,8 @@ All hardcoded values have been extracted here for centralized configuration.
 class MainConfig:
     """Configuration for main training and demo"""
     # Training parameters
-    MAX_EPISODES = 100
-    MAX_STEPS = 150
+    MAX_EPISODES = 10
+    MAX_STEPS = 1000  # Zvýšeno pro delší epizody
     SAVE_EVERY = 25
     
     # Visualization parameters
@@ -25,7 +25,7 @@ class MainConfig:
     ACTOR_HIDDEN_SIZE = 128
     
     # PPO Trainer parameters
-    LEARNING_RATE = 3e-5
+    LEARNING_RATE = 1e-3  # Zvýšeno z 3e-5 pro rychlejší učení
     GAMMA = 0.99
     EPS_CLIP = 0.1
     ENTROPY_COEF = 0.05
@@ -171,7 +171,7 @@ class WildfireModelsConfig:
     
     # MLP parameters
     MLP_FUSION_SIZE = 128
-    ACTION_HEAD_SIZE = 4  # Direct actions: [roll, pitch, yaw, throttle]
+    ACTION_HEAD_SIZE = 8  # Loc + Scale: [loc_roll, loc_pitch, loc_yaw, loc_throttle, scale_roll, scale_pitch, scale_yaw, scale_throttle]
     
     # Initialization parameters
     ACTION_BIAS_THROTTLE = 0.1

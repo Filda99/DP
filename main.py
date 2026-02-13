@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🚁 QUADCOPTER FIRE DETECTION TRAINING - MAIN SCRIPT
+QUADCOPTER FIRE DETECTION TRAINING - MAIN SCRIPT
 
 JEDNODUCHÉ POUŽITÍ:
     python main.py train     # Spustí trénink
@@ -27,7 +27,10 @@ from src.wildfire_models import QuadActor
 
 # TorchRL imports for proper PPO (simplified)
 from tensordict import TensorDict
-from tensordict.nn import TensorDictModule
+from tensordict.nn import TensorDictModule, NormalParamExtractor
+
+from torchrl.objectives import ClipPPOLoss, ValueEstimators  
+from torchrl.modules import ProbabilisticActor, TanhNormal
 
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
@@ -114,151 +117,6 @@ def create_demo_visualization(demo_log, env):
     
     return filepath
 
-class TorchRLTrainer:
-    """TorchRL-based PPO Trainer - SIMPLIFIED FOR COMPATIBILITY"""
-    def __init__(self, actor, critic, device='cpu', lr=MainConfig.LEARNING_RATE, gentle_training=False):
-        self.device = device
-        self.gentle_training = gentle_training
-        self.action_scale = 0.3 if gentle_training else 1.0  # Start conservative if gentle
-        
-        # TorchRL PPO Loss Module
-        self.loss_module = ClipPPOLoss(
-            actor_network=actor_module,
-            critic_network=critic_module,
-            clip_epsilon=MainConfig.EPS_CLIP,
-            entropy_coeff=MainConfig.ENTROPY_COEF,
-            normalize_advantage=False,  # Better for MARL
-        )
-        
-        # Set appropriate keys for our environment
-        self.loss_module.set_keys(
-            reward="reward",
-            action="action", 
-            value="state_value",
-            done="done",
-            terminated="terminated",
-        )
-        
-        # GAE Value Estimator - much better than our primitive returns
-        self.loss_module.make_value_estimator(
-            ValueEstimators.GAE, 
-            gamma=MainConfig.GAMMA, 
-            lmbda=0.9  # GAE lambda parameter
-        )
-        
-        # Optimizer
-        self.optimizer = torch.optim.Adam(
-            self.loss_module.parameters(), 
-            lr=lr, 
-            weight_decay=1e-5
-        )
-        
-        # Training tracking
-        self.update_count = 0
-        self.successful_episodes = 0
-    
-    def get_gentle_actions(self, raw_actions):
-        """Bezpečné clipping akcí s postupným zvyšováním magnitude"""
-        # Standard approach - use tanh to bound actions
-        actions = torch.tanh(raw_actions)
-        
-        # Apply gentle scaling if enabled
-        if self.gentle_training:
-            actions = actions * self.action_scale
-        
-        return actions
-    
-    def increase_action_scale(self, reward_improvement=False):
-        """Postupně zvyšuje action scale při úspěšných epizodách"""
-        if self.gentle_training and reward_improvement and self.action_scale < 1.0:
-            self.action_scale = min(1.0, self.action_scale + 0.05)
-            return True
-        return False
-    
-    def prepare_batch_data(self, memory_transitions):
-        """Convert our memory format to TorchRL TensorDict format"""
-        if len(memory_transitions) < 10:
-            return None
-            
-        batch_size = len(memory_transitions)
-        
-        # Extract components from memory
-        observations = []
-        actions = []
-        rewards = []
-        dones = []
-        values = []
-        
-        for obs, action, reward, log_prob, value, done, hidden in memory_transitions:
-            local_map, self_state = obs
-            observations.append({
-                'local_map': local_map.cpu(),
-                'self_state': self_state.cpu()
-            })
-            actions.append(action.cpu())
-            rewards.append(reward)
-            dones.append(done)
-            values.append(value if isinstance(value, (int, float)) else value.cpu())
-        
-        # Create TensorDict batch
-        batch_data = TensorDict({
-            'local_map': torch.stack([obs['local_map'] for obs in observations]),
-            'self_state': torch.stack([obs['self_state'] for obs in observations]),
-            'action': torch.stack(actions),
-            'reward': torch.tensor(rewards, dtype=torch.float32),
-            'done': torch.tensor(dones, dtype=torch.bool),
-            'terminated': torch.tensor(dones, dtype=torch.bool),  # For simplicity
-            'state_value': torch.tensor(values, dtype=torch.float32),
-        }, batch_size=[batch_size]).to(self.device)
-        
-        return batch_data
-    
-    def update_policy(self, memory_transitions):
-        """TorchRL-based PPO update"""
-        # Convert memory to TensorDict format
-        batch_data = self.prepare_batch_data(memory_transitions)
-        if batch_data is None:
-            return None
-            
-        try:
-            # Compute GAE advantages - this is much better than our primitive approach
-            with torch.no_grad():
-                self.loss_module.value_estimator(
-                    batch_data,
-                    params=self.loss_module.critic_network_params,
-                    target_params=self.loss_module.target_critic_network_params,
-                )
-            
-            # PPO Loss computation - proper clipped objective
-            loss_vals = self.loss_module(batch_data)
-            total_loss = (
-                loss_vals["loss_objective"] +  # Clipped policy loss
-                loss_vals["loss_critic"] +     # Value function loss  
-                loss_vals["loss_entropy"]      # Entropy bonus
-            )
-            
-            # Backprop with gradient clipping
-            self.optimizer.zero_grad()
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                self.loss_module.parameters(), 
-                MainConfig.MAX_GRAD_NORM
-            )
-            self.optimizer.step()
-            
-            # Learning rate decay
-            self.update_count += 1
-            if self.update_count % 20 == 0:
-                for param_group in self.optimizer.param_groups:
-                    if param_group['lr'] > 1e-6:
-                        param_group['lr'] *= 0.99
-            
-            return total_loss.item()
-            
-        except Exception as e:
-            print(f"❌ TorchRL update error: {e}")
-            return None
-
 class SimpleCritic(torch.nn.Module):
     """Simple critic network for value estimation"""
     def __init__(self, self_state_size, hidden_size=256):
@@ -276,30 +134,107 @@ class SimpleCritic(torch.nn.Module):
 
 def train_main():
     """Spustí trénink kvadrokoptéry"""
-    print("🚁 SPOUŠTÍM TRÉNINK KVADROKOPTÉRY...")
+    print("SPOUŠTÍM TRÉNINK KVADROKOPTÉRY...")
     
-    # Setup
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"🖥️ Device: {device}")
+    # Setup - force CPU for now to avoid TorchRL device issues
+    device = "cpu"  # Force CPU for stability
     
-    # Environment - 1 dron na mapě s hranicemi definovanými v prostředí
+    # Environment - Multi-agent setup (více kvadrokoptér)
     marlEnv = WildfireMARLEnv(agents_config=["quad_1"])
+    num_agents = 1
     
     # Get self_state size from environment's observation processor
     self_state_size = marlEnv.obs_proc.get_self_state_size()
     
-    # Actor and Critic networks
-    actor = QuadActor(message_dim=MainConfig.ACTOR_MESSAGE_DIM, self_state_size=self_state_size).to(device)
-    critic = SimpleCritic(self_state_size=self_state_size).to(device)
+    # Actor and Critic networks - TorchRL style probabilistic setup
+    actor_net_base = QuadActor(message_dim=MainConfig.ACTOR_MESSAGE_DIM, self_state_size=self_state_size).to(device)
+    critic_net = SimpleCritic(self_state_size=self_state_size).to(device)
     
-    # TorchRL Trainer - much better than our fake PPO
-    trainer = TorchRLTrainer(
-        actor=actor,
-        critic=critic, 
-        device=device, 
-        lr=MainConfig.LEARNING_RATE, 
-        gentle_training=True
+    # Create policy network that outputs loc and scale (following mappo_hello_world pattern)
+    # Need wrapper that handles our observation format AND outputs distribution parameters
+    class PolicyNetwork(torch.nn.Module):
+        def __init__(self, actor_net):
+            super().__init__()
+            self.actor_net = actor_net
+            
+        def forward(self, observation):
+            # Split combined observation back to local_map + self_state
+            # observation shape: (batch, features)
+            
+            # observation shape: (batch, 1024 + self_state_size) 
+            local_map_flat = observation[:, :1024]  # First 1024 features  
+            self_state = observation[:, 1024:]      # Remaining features (variable size)
+            
+            # Reshape local_map back to (batch, 1, 32, 32)
+            batch_size = observation.shape[0]
+            local_map = local_map_flat.reshape(batch_size, 1, 32, 32)
+            
+            # Add hidden state (zeros for now)
+            hidden_state = torch.zeros(batch_size, 128, device=observation.device)
+            
+            # Get distribution parameters from actor (now returns 8 values: 4 loc + 4 scale)
+            dist_params, _, _ = self.actor_net(local_map, self_state, hidden_state)
+            
+            return dist_params  # Shape: (batch, 8)
+    
+    policy_net = torch.nn.Sequential(
+        PolicyNetwork(actor_net_base),
+        NormalParamExtractor(),  # Splits into loc and scale
     )
+    
+    policy_module = TensorDictModule(
+        policy_net,
+        in_keys=[("agents", "observation")],  # [agents, batch, obs_dim]
+        out_keys=[("agents", "loc"), ("agents", "scale")],  # [agents, batch, 4], [agents, batch, 4]
+    )
+    
+    # ProbabilisticActor handles sampling from the distribution (like mappo_hello_world)
+    # This will automatically generate log_prob for PPO!
+    policy = ProbabilisticActor(
+        module=policy_module,
+        in_keys=[("agents", "loc"), ("agents", "scale")],  # [agents, batch, 4], [agents, batch, 4]
+        out_keys=[("agents", "action")],  # [agents, batch, 4]
+        distribution_class=TanhNormal,  # TanhNormal keeps actions inside [-1, 1] 
+        distribution_kwargs={
+            "low": -1.0,   # Our actions are in [-1, 1]
+            "high": 1.0,
+        },
+        return_log_prob=True,  # Required for PPO loss calculation!
+    )
+    
+    # Critic wrapper to handle combined observation  
+    class CriticWrapper(torch.nn.Module):
+        def __init__(self, critic_net):
+            super().__init__()
+            self.critic_net = critic_net
+            
+        def forward(self, observation):
+            # Extract self_state from combined observation (variable size)
+            # observation shape: (batch, features)
+            
+            self_state = observation[:, 1024:]  # Everything after local_map features
+            value = self.critic_net(self_state)
+            
+            return value
+    
+    critic_wrapper = CriticWrapper(critic_net)
+    
+    critic_module = TensorDictModule(
+        critic_wrapper,
+        in_keys=[("agents", "observation")],  # [agents, batch, obs_dim]
+        out_keys=[("agents", "state_value")],  # [agents, batch, 1]
+    )
+    
+    # Manual PPO Loss (avoid TorchRL GAE issues with multi-agent setup)
+    # We'll compute PPO loss manually with our own advantage calculation
+    print("Using manual PPO loss computation (TorchRL GAE has multi-agent issues)")
+    
+    # Optimizer for manual PPO (policy + critic parameters)
+    optimizer = torch.optim.Adam(
+        list(policy.parameters()) + list(critic_module.parameters()), 
+        lr=MainConfig.LEARNING_RATE
+    )
+    print("Manual PPO optimizer setup complete")
     
     # Training settings
     max_episodes = MainConfig.MAX_EPISODES
@@ -308,7 +243,7 @@ def train_main():
     
     save_dir = f"models/gentle_training_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     os.makedirs(save_dir, exist_ok=True)
-    print(f"💾 Modely se ukládají do: {save_dir}")
+    print(f"Modely se ukládají do: {save_dir}")
     
     # Training stats
     episode_rewards = deque(maxlen=10)
@@ -323,57 +258,110 @@ def train_main():
     for episode in episode_pbar:
         # Reset environment
         obs_dict, _ = marlEnv.reset()
-        hidden_state = torch.zeros(1, MainConfig.ACTOR_HIDDEN_SIZE).to(device)  # 1 dron
+        hidden_states = torch.zeros(num_agents, MainConfig.ACTOR_HIDDEN_SIZE).to(device)  # Multiple agents
         episode_reward = 0
         episode_steps = 0
         episode_crashed = False
         
         for step in range(max_steps):
             try:
-                # Extract observations
+                # Extract observations for all agents
+                agent_observations = []
+                agent_actions = []
+                agent_log_probs = []
+                agent_values = []
+                
                 if "quads" in obs_dict:
-                    # Jeden dron
-                    local_map = torch.FloatTensor(obs_dict["quads"]["local_map"]).to(device)  # (1, 1, 32, 32)
-                    self_state = torch.FloatTensor(obs_dict["quads"]["self_state"]).to(device)  # (1, 6)
+                    # Handle multiple agents
+                    local_maps = torch.FloatTensor(obs_dict["quads"]["local_map"]).to(device)  # Shape will be [num_agents, 1, 32, 32]
+                    self_states = torch.FloatTensor(obs_dict["quads"]["self_state"]).to(device)  # Shape will be [num_agents, self_state_size]
+                    
+                    # Process each agent
+                    for i in range(min(num_agents, local_maps.shape[0])):
+                        local_map = local_maps[i:i+1]  # [1, 1, 32, 32]
+                        self_state = self_states[i:i+1]  # [1, 6]
+                        
+                        # Combine observation - adjust for actual self_state size
+                        local_map_flat = local_map.reshape(1, -1)  # [1, 1024]
+                        self_state_flat = self_state.reshape(1, -1)  # [1, actual_size] 
+                        combined_obs = torch.cat([local_map_flat, self_state_flat], dim=-1)  # [1, 1024+actual_size]
+                        
+                        # Create TensorDict for this agent with nested structure
+                        obs_td = TensorDict({
+                            "agents": TensorDict({
+                                "observation": combined_obs.to(device),  # [1, total_obs_dim]
+                            }, batch_size=[1], device=device)
+                        }, batch_size=[1], device=device)
+                        
+                        # Get action and value for this agent
+                        with torch.no_grad():
+                            action_td = policy(obs_td)
+                            action = action_td[("agents", "action")][0]  # [4] 
+                            action_log_prob = action_td[("agents", "action_log_prob")][0]  # scalar
+                            
+                            # Ensure action_log_prob is proper tensor shape
+                            if action_log_prob.dim() == 0:
+                                action_log_prob = action_log_prob.unsqueeze(0)  # [1]
+                            
+                            value_td = critic_module(obs_td)
+                            value = value_td[("agents", "state_value")][0].item()  # scalar from [1,1] -> scalar
+                        
+                        agent_observations.append((local_map, self_state))
+                        agent_actions.append(action)
+                        agent_log_probs.append(action_log_prob)
+                        agent_values.append(value)
                 else:
-                    break  # No quad agent
+                    break  # No agents available
                 
-                # Forward pass
-                raw_actions, message, new_hidden = actor(local_map, self_state, hidden_state)
-                
-                # *** GENTLE ACTIONS - použij trainer method ***
-                actions = trainer.get_gentle_actions(raw_actions)
-                
-                # Value estimation from critic
-                with torch.no_grad():
-                    value = critic(self_state).item()
-                
-                # Step environment - AKCE PRO 1 DRON
-                action_np = actions.cpu().detach().numpy()  # Detach gradients before converting to numpy
-                result = marlEnv.step({"quads": {"action": action_np}})
-                obs_dict, reward, done, info = result
-                
-                # Store transition for TorchRL
-                memory_buffer.append((
-                    (local_map, self_state), actions, reward, 0.0, value, done, hidden_state
-                ))
-                
-                # Update
-                hidden_state = new_hidden
-                episode_reward += reward
-                episode_steps += 1
+                # Step environment with multiple agents
+                if agent_actions:
+                    # Convert actions to numpy for environment
+                    actions_np = torch.stack(agent_actions).cpu().detach().numpy()  # [num_agents, 4]
+                    
+                    action_dict = {
+                        "quads": {
+                            "action": actions_np
+                        }
+                    }
+                    
+                    result = marlEnv.step(action_dict)
+                    obs_dict, reward, done, info = result
+                    
+                    # Store transition for each agent (simplified - use average reward for now)
+                    avg_reward = reward if isinstance(reward, (int, float)) else np.mean(reward)
+                    avg_value = np.mean(agent_values) if agent_values else 0.0
+                    
+                    # Store one representative transition (for now)
+                    if agent_observations and agent_actions:
+                        memory_buffer.append((
+                            agent_observations[0], agent_actions[0], avg_reward, 0.0, 
+                            agent_values[0], done, hidden_states[0:1], agent_log_probs[0]
+                        ))
+                    
+                    # Update hidden states for all agents
+                    with torch.no_grad():
+                        for i, (local_map, self_state) in enumerate(agent_observations[:len(hidden_states)]):
+                            if i < len(hidden_states):
+                                _, _, new_hidden = actor_net_base(local_map, self_state, hidden_states[i:i+1])
+                                hidden_states[i] = new_hidden[0]
+                    
+                    episode_reward += avg_reward
+                    episode_steps += 1
+                else:
+                    break
                 
                 if done:
-                    # Check if episode ended due to crash (altitude < 0.5m) rather than just low reward
+                    # Check if episode ended due to crash for any agent
                     drone_crashed = False
-                    if "quads" in obs_dict:
-                        for i in range(obs_dict["quads"]["self_state"].shape[0]):
-                            altitude = obs_dict["quads"]["self_state"][i][0]  # First feature is altitude
+                    if "quads" in obs_dict and obs_dict["quads"]["self_state"] is not None:
+                        self_states = obs_dict["quads"]["self_state"]
+                        for i in range(self_states.shape[0]):
+                            altitude = self_states[i][0]  # First feature is altitude
                             if altitude < 0.5:
                                 drone_crashed = True
                                 break
                     
-                    if drone_crashed or reward < -10:  # Actual crash or severe penalty
+                    if drone_crashed or avg_reward < -10:  # Actual crash or severe penalty
                         episode_crashed = True
                         crash_count += 1
                     break
@@ -385,9 +373,185 @@ def train_main():
         
         # Update policy každé 3 epizody - častější updates pro lepší learning
         if episode % 3 == 0 and episode > 0 and len(memory_buffer) > 0:
-            loss = trainer.update_policy(memory_buffer)
-            if loss:
-                episode_pbar.write(f"📊 Ep {episode}: TorchRL PPO updated, Loss: {loss:.3f}")
+            try:
+                # Convert memory_buffer to TensorDict format for TorchRL
+                batch_size = len(memory_buffer)
+                
+                # Extract data from memory_buffer
+                observations = []
+                next_observations = []
+                actions = []
+                rewards = []
+                values = []
+                next_values = []
+                dones = []
+                action_log_probs = []
+                
+                for i, transition in enumerate(memory_buffer):
+                    obs_tuple, action, reward, next_obs, value, done, hidden, action_log_prob = transition
+                    local_map, self_state = obs_tuple
+                    
+                    # Flatten observation for TensorDict (combine local_map + self_state)
+                    local_map_flat = local_map.reshape(1, -1)  # (1, 1*32*32)
+                    self_state_flat = self_state.reshape(1, -1)  # (1, self_state_size)
+                    combined_obs = torch.cat([local_map_flat, self_state_flat], dim=-1)  # (1, 1024+self_state_size)
+                    
+                    observations.append(combined_obs)
+                    actions.append(action.unsqueeze(0))  # Ensure [1, 4] shape
+                    rewards.append(torch.tensor([reward], dtype=torch.float32))  # [1]
+                    values.append(torch.tensor([value], dtype=torch.float32))   # [1]
+                    dones.append(torch.tensor([done], dtype=torch.bool))        # [1]
+                    action_log_probs.append(action_log_prob.detach())  # Already [1]
+                    
+                    # For "next" - use next transition or current for last step
+                    if i < len(memory_buffer) - 1:
+                        # Use next observation
+                        next_transition = memory_buffer[i + 1]
+                        next_obs_tuple = next_transition[0]  # (local_map, self_state)
+                        next_local_map, next_self_state = next_obs_tuple
+                        
+                        next_local_map_flat = next_local_map.reshape(1, -1)
+                        next_self_state_flat = next_self_state.reshape(1, -1)
+                        next_combined_obs = torch.cat([next_local_map_flat, next_self_state_flat], dim=-1)
+                        
+                        next_observations.append(next_combined_obs)
+                        next_values.append(torch.tensor([next_transition[4]], dtype=torch.float32))  # [1]
+                    else:
+                        # Last step - use current obs as next (or zeros if terminal)
+                        if done:
+                            next_observations.append(torch.zeros_like(combined_obs))
+                            next_values.append(torch.tensor([0.0], dtype=torch.float32))  # [1]
+                        else:
+                            next_observations.append(combined_obs)
+                            next_values.append(torch.tensor([value], dtype=torch.float32))  # [1]
+                
+                # Stack into tensors
+                batch_obs = torch.cat(observations, dim=0)  # (batch_size, obs_dim)
+                batch_next_obs = torch.cat(next_observations, dim=0)  # (batch_size, obs_dim)
+                batch_actions = torch.cat(actions, dim=0)  # (batch_size, action_dim)
+                batch_rewards = torch.cat(rewards, dim=0)  # (batch_size,)
+                batch_values = torch.cat(values, dim=0)  # (batch_size,)
+                batch_next_values = torch.cat(next_values, dim=0)  # (batch_size,)
+                batch_dones = torch.cat(dones, dim=0)  # (batch_size,)
+                batch_action_log_probs = torch.cat(action_log_probs, dim=0)  # (batch_size,)
+                
+                # Create TensorDict with structure matching mappo_hello_world EXACTLY  
+                # Need to add top-level done/terminated as in mappo debug output
+                tensordict_data = TensorDict({
+                    # All data under "agents" like in mappo_hello_world
+                    "agents": TensorDict({
+                        "observation": batch_obs.to(device),  # [batch, obs_dim] 
+                        "action": batch_actions.to(device),   # [batch, 4]
+                        "sample_log_prob": batch_action_log_probs.to(device),  # [batch]
+                        "reward": batch_rewards.to(device),   # [batch] - reward under agents!
+                        "state_value": batch_values.to(device), # [batch]
+                        "done": batch_dones.to(device),       # [batch] 
+                        "terminated": batch_dones.to(device), # [batch]
+                    }, batch_size=[batch_size], device=device),
+                    
+                    # Top-level done/terminated as seen in mappo debug output
+                    "done": batch_dones.unsqueeze(-1).to(device),  # [batch, 1] 
+                    "terminated": batch_dones.unsqueeze(-1).to(device),  # [batch, 1]
+                    
+                    "next": TensorDict({
+                        "agents": TensorDict({
+                            "observation": batch_next_obs.to(device),
+                            "state_value": batch_next_values.to(device),
+                            "done": batch_dones.to(device),
+                            "terminated": batch_dones.to(device),
+                        }, batch_size=[batch_size], device=device),
+                        # Top-level done/terminated in next too
+                        "done": batch_dones.unsqueeze(-1).to(device),
+                        "terminated": batch_dones.unsqueeze(-1).to(device),
+                    }, batch_size=[batch_size], device=device),
+                }, batch_size=[batch_size], device=device)
+                
+                # 🧠 MANUAL ADVANTAGE COMPUTATION 🧠
+                # Advantage = "Jak moc lepší byla tato akce než průměr"
+                # Formula: Advantage = R + γ*V(s') - V(s)
+                # kde: R = reward, γ = discount, V(s') = next state value, V(s) = current state value
+                
+                with torch.no_grad():
+                    gamma = 0.99  # Discount factor - jak moc si ceníme budoucích rewards
+                    
+                    # TD Target = R + γ*V(next) * (1 - done)  (Temporal Difference target)
+                    td_targets = batch_rewards + gamma * batch_next_values * (1 - batch_dones.float())
+                    
+                    # Advantage = TD_Target - V(current) = "Překvapení" - jak moc lepší/horší než očekávané
+                    advantages = td_targets - batch_values
+                    
+                    # Normalize advantages (zlepšuje stabilitu tréninku)
+                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                    
+                    print(f"📊 Advantage stats: mean={advantages.mean():.4f}, std={advantages.std():.4f}")
+                    print(f"📊 TD targets: mean={td_targets.mean():.4f}, rewards: mean={batch_rewards.mean():.4f}")
+                
+                # 🔥 MANUAL PPO LOSS COMPUTATION 🔥
+                # PPO = Proximal Policy Optimization - "Nechoď příliš daleko od staré policy"
+                
+                try:
+                    # 1. Policy ratio = new_prob / old_prob (jak moc jsme změnili policy)
+                    with torch.no_grad():
+                        old_log_probs = batch_action_log_probs  # Zalogované pravděpodobnosti z inference
+                    
+                    # 2. Forward pass přes current policy pro nové log_probs (use batch_obs místo reconstructing)
+                    current_obs = batch_obs
+                    policy_output = policy(TensorDict({
+                        "agents": TensorDict({
+                            "observation": current_obs.to(device)
+                        }, batch_size=[batch_size], device=device)
+                    }, batch_size=[batch_size], device=device))
+                    
+                    new_log_probs = policy_output[("agents", "action_log_prob")]
+                    
+                    # 3. Policy ratio
+                    ratio = torch.exp(new_log_probs - old_log_probs)
+                    
+                    # 4. Clipped PPO objective
+                    clip_epsilon = 0.2
+                    clipped_ratio = torch.clamp(ratio, 1 - clip_epsilon, 1 + clip_epsilon)
+                    
+                    # 5. PPO loss = -min(ratio * advantage, clipped_ratio * advantage)
+                    policy_loss_1 = ratio * advantages
+                    policy_loss_2 = clipped_ratio * advantages
+                    policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
+                    
+                    # 6. Value loss (critic chce predikovat správné TD targets)
+                    current_values = critic_module(TensorDict({
+                        "agents": TensorDict({
+                            "observation": current_obs.to(device)
+                        }, batch_size=[batch_size], device=device)
+                    }, batch_size=[batch_size], device=device))[("agents", "state_value")]
+                    
+                    value_loss = torch.nn.functional.mse_loss(current_values.squeeze(), td_targets)
+                    
+                    # 7. Entropy bonus (encouraguje exploration)
+                    entropy_coeff = 1e-4
+                    # Pro TanhNormal distribution, entropy je trochu komplexní, použijeme approximation
+                    entropy_bonus = 0.0  # Simplified for now
+                    
+                    # 8. Total loss
+                    total_loss = policy_loss + 0.5 * value_loss - entropy_coeff * entropy_bonus
+                    
+                    # Backward pass
+                    optimizer.zero_grad()
+                    total_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(list(policy.parameters()) + list(critic_module.parameters()), max_norm=0.5)
+                    optimizer.step()
+                    
+                    loss = total_loss.item()
+                    episode_pbar.write(f"📊 Ep {episode}: Manual PPO Loss: {loss:.4f} (Policy: {policy_loss:.4f}, Value: {value_loss:.4f})")
+                    
+                except Exception as e:
+                    print(f"❌ Manual PPO loss computation failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    loss = 0.0
+                
+            except Exception as e:
+                episode_pbar.write(f"❌ PPO training error: {e}")
+                loss = 0.0
+                
             memory_buffer.clear()  # Clear after update
         
         # Stats s crash tracking
@@ -409,7 +573,7 @@ def train_main():
         episode_pbar.set_postfix({
             'Reward': f"{episode_reward:.1f}",
             'Avg': f"{avg_reward:.1f}", 
-            'Scale': f"{trainer.action_scale:.2f}",
+            'Loss': f"{loss:.3f}" if 'loss' in locals() else "N/A",
             'Crash%': f"{crash_rate:.1f}",
             'Stable': stable_episodes
         })
@@ -423,9 +587,9 @@ def train_main():
         if (episode + 1) % save_every == 0:
             checkpoint = {
                 'episode': episode,
-                'actor_state_dict': actor.state_dict(),
-                'optimizer_state_dict': trainer.optimizer.state_dict(),
-                'action_scale': trainer.action_scale,
+                'actor_state_dict': actor_net_base.state_dict(),
+                'critic_state_dict': critic_net.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
                 'episode_rewards': list(episode_rewards),
                 'crash_count': crash_count,
                 'best_reward': best_reward
@@ -436,14 +600,14 @@ def train_main():
             newest_dir = "models/newest"
             os.makedirs(newest_dir, exist_ok=True)
             torch.save(checkpoint, f"{newest_dir}/latest_model.pt")
-            episode_pbar.write(f"💾 Model uložen (Ep {episode+1}, Scale: {trainer.action_scale:.3f}) a zkopírován do newest/")
+            episode_pbar.write(f"💾 Model uložen (Ep {episode+1}) a zkopírován do newest/")
     
     # Final save s complete stats
     final_checkpoint = {
         'episode': max_episodes,
-        'actor_state_dict': actor.state_dict(),
-        'optimizer_state_dict': trainer.optimizer.state_dict(),
-        'action_scale': trainer.action_scale,
+        'actor_state_dict': actor_net_base.state_dict(),
+        'critic_state_dict': critic_net.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
         'episode_rewards': list(episode_rewards),
         'crash_count': crash_count,
         'stable_episodes': stable_episodes,
@@ -463,7 +627,7 @@ def train_main():
     print(f"\n🎉 TORCHRL TRAINING DOKONČEN!")
     print(f"   Celkem epizod: {episode+1}")
     print(f"   Nejlepší reward: {best_reward:.1f}")
-    print(f"   Final action scale: {trainer.action_scale:.3f}")
+
     print(f"   Crash rate: {crash_rate:.1f}%")
     print(f"   Stable episodes in row: {stable_episodes}")
     print(f"   Modely uloženy v: {save_dir}")
@@ -614,7 +778,7 @@ def demo_main():
     
     # Load model with proper configuration
     # First create env to get configuration
-    temp_env = WildfireMARLEnv(agents_config=["quad_1"])
+    temp_env = WildfireMARLEnv(agents_config=["quad_1", "quad_2", "quad_3"])
     self_state_size = temp_env.obs_proc.get_self_state_size()
     temp_env.close()
     
@@ -637,16 +801,17 @@ def demo_main():
         print(f"📊 Model stats: Crash rate {crash_rate:.1f}%, Best reward {checkpoint.get('best_reward', 'N/A')}")
     
     # Environment with unlimited runtime for demo
-    env = WildfireMARLEnv(agents_config=["quad_1"], demo_mode=True)
+    env = WildfireMARLEnv(agents_config=["quad_1", "quad_2", "quad_3"], demo_mode=True)  # 3 agents
     obs, _ = env.reset()
+    num_agents = 3
     
     # Přidej reward tracking pro vizualizaci
     env._recent_rewards = []
     
-    print("🚁 === DEMO: 1 dron na mapě (konzistentní s tréninkem) ===")
+    print("🚁 === DEMO: 3 drony na mapě (multi-agent) ===")
     
-    # Hidden states pro 1 dron
-    hidden_states = torch.zeros(1, MainConfig.ACTOR_HIDDEN_SIZE)
+    # Hidden states for multiple agents
+    hidden_states = torch.zeros(num_agents, MainConfig.ACTOR_HIDDEN_SIZE)
     total_reward = 0
     steps = 0
     frame_count = 0
@@ -664,48 +829,79 @@ def demo_main():
     while steps < max_steps:
         try:
             if "quads" in obs:
-                local_map = torch.FloatTensor(obs["quads"]["local_map"])  # (1, 1, 32, 32)
-                self_state = torch.FloatTensor(obs["quads"]["self_state"])  # (1, 6)
-            else:
-                break
-            
-            with torch.no_grad():
-                raw_actions, _, hidden_states = model(local_map, self_state, hidden_states)
+                # Handle multiple agents
+                local_maps = torch.FloatTensor(obs["quads"]["local_map"])  # [num_agents, 1, 32, 32]
+                self_states = torch.FloatTensor(obs["quads"]["self_state"])  # [num_agents, 6]
                 
-                # Direct action output - no distributions needed
-                actions = torch.tanh(raw_actions)  # Bound to [-1, 1]
+                agent_actions = []
                 
-                # Apply gentle policy if needed - conservative scaling for safety
-                if MainConfig.DEMO_CONSERVATIVE_POLICY:
-                    actions = actions * 0.7  # More conservative for demo
+                # Process each agent
+                for i in range(min(num_agents, local_maps.shape[0])):
+                    local_map = local_maps[i:i+1]  # [1, 1, 32, 32]
+                    self_state = self_states[i:i+1]  # [1, 6]
+                    
+                    with torch.no_grad():
+                        raw_actions, _, new_hidden = model(local_map, self_state, hidden_states[i:i+1])
+                        
+                        # Direct action output - no distributions needed
+                        actions = torch.tanh(raw_actions)  # Bound to [-1, 1]
+                        
+                        # Apply gentle policy if needed - conservative scaling for safety
+                        if MainConfig.DEMO_CONSERVATIVE_POLICY:
+                            actions = actions * 0.7  # More conservative for demo
+                        
+                        actions_clipped = torch.clamp(actions, -1.0, 1.0)  # Standard range
+                        agent_actions.append(actions_clipped)
+                        
+                        # Update hidden state for this agent
+                        hidden_states[i] = new_hidden[0]
                 
-                actions_clipped = torch.clamp(actions, -1.0, 1.0)  # Standard range
-            
-            actions_np = actions_clipped.numpy()  # (1, 4)
+                if not agent_actions:
+                    break
+                    
+                # Stack actions for environment step
+                actions_np = torch.cat(agent_actions, dim=0).numpy()  # [num_agents, 4]
             
             # DEBUG: Print actions every 100 steps to see what model outputs
             if steps % 100 == 0 and steps < 500:
-                # Also debug observation state to see if model gets proper input
-                alt = self_state[0][0].item() if len(self_state[0]) > 0 else 0
-                
-                # BOUNDARY DEBUG - print key boundary info
-                if len(self_state[0]) >= 14:
-                    boundary_x = self_state[0][12].item()
-                    boundary_y = self_state[0][13].item()
-                    print(f"🐛 Krok {steps}: actions=[{actions_np[0][0]:.4f}, {actions_np[0][1]:.4f}, {actions_np[0][2]:.4f}, {actions_np[0][3]:.4f}]")
-                    print(f"   ↳ Boundary info: X_dist={boundary_x:.1f}, Y_dist={boundary_y:.1f} (negative = outside!)")
-                else:
-                    print(f"🐛 Krok {steps}: actions=[{actions_np[0][0]:.4f}, {actions_np[0][1]:.4f}, {actions_np[0][2]:.4f}, {actions_np[0][3]:.4f}]")
-                print(f"   ↳ altitude={alt:.1f}m, roll/pitch/yaw/throttle")
+                # Debug first agent only for brevity
+                if len(self_states) > 0:
+                    alt = self_states[0][0].item()
+                    
+                    # BOUNDARY DEBUG - print key boundary info for first agent
+                    if len(self_states[0]) >= 14:
+                        boundary_x = self_states[0][12].item()
+                        boundary_y = self_states[0][13].item()
+                        print(f"🐛 Krok {steps}: Agent 0 actions=[{actions_np[0][0]:.4f}, {actions_np[0][1]:.4f}, {actions_np[0][2]:.4f}, {actions_np[0][3]:.4f}]")
+                        print(f"   ↳ Boundary info: X_dist={boundary_x:.1f}, Y_dist={boundary_y:.1f} (negative = outside!)")
+                    else:
+                        print(f"🐛 Krok {steps}: Agent 0 actions=[{actions_np[0][0]:.4f}, {actions_np[0][1]:.4f}, {actions_np[0][2]:.4f}, {actions_np[0][3]:.4f}]")
+                    print(f"   ↳ altitude={alt:.1f}m, {len(actions_np)} agents active")
             
-            # ===== AKCE PRO 1 DRON =====
+            # ===== AKCE PRO VÍCE DRONŮ =====
             action_dict = {
                 "quads": {
-                    "action": actions_np  # (1, 4)
+                    "action": actions_np  # [num_agents, 4]
                 }
             }
             
-            obs, reward, done, info = env.step(action_dict)
+            # DEBUG: Check action shape
+            print(f"🔍 actions_np shape: {actions_np.shape}")
+            print(f"🔍 actions_np content: {actions_np}")
+            
+            try:
+                result = env.step(action_dict)
+                print(f"🔍 env.step returned: {len(result)} items")
+                if len(result) == 4:
+                    obs, reward, done, info = result
+                else:
+                    print(f"❌ Unexpected return count: {len(result)}")
+                    break
+            except Exception as step_error:
+                print(f"❌ Error in env.step: {step_error}")
+                import traceback
+                traceback.print_exc()
+                break
             total_reward += reward
             steps += 1
             
@@ -773,7 +969,7 @@ def demo_main():
     destroyed_count = len(env.sim.destroyed_drones)
     
     print(f"\n✅ Demo dokončeno!")
-    print(f"   🚁 Aktivní drony: {active_drones}/1")
+    print(f"   🚁 Aktivní drony: {active_drones}/{num_agents}")
     print(f"   💥 Zničené drony: {destroyed_count}")
     print(f"   🏆 Celkový reward: {total_reward:.1f}")
     print(f"   📷 Vytvořeno {frame_count + 1} snímků")

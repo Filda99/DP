@@ -111,10 +111,10 @@ env = VmasEnv(
 )
 
 # Print specs to inspect shapes (Batch_Size, N_Agents, Dim)
-# print("action_spec:", env.full_action_spec)
-# print("reward_spec:", env.full_reward_spec)
-# print("done_spec:", env.full_done_spec)
-# print("observation_spec:", env.observation_spec)
+print("action_spec:", env.full_action_spec)
+print("reward_spec:", env.full_reward_spec)
+print("done_spec:", env.full_done_spec)
+print("observation_spec:", env.observation_spec)
 
 # Transformations: Compute sum of rewards for logging
 # For our environment, 
@@ -409,11 +409,31 @@ for tensordict_data in collector:
 
     # --- 2. Compute GAE ---
     with torch.no_grad():
+        print(f"🔍 DEBUG MAPPO GAE input keys: {tensordict_data.keys()}")
+        print(f"🔍 DEBUG MAPPO GAE input shapes: {[(k, v.shape if hasattr(v, 'shape') else type(v)) for k, v in tensordict_data.items()]}")
+        print(f"🔍 DEBUG MAPPO GAE env.reward_key: {env.reward_key}")
+        print(f"🔍 DEBUG MAPPO GAE env.action_key: {env.action_key}")
+        print(f"🔍 DEBUG MAPPO GAE agents keys: {tensordict_data['agents'].keys()}")
+        print(f"🔍 DEBUG MAPPO GAE agents shapes: {[(k, v.shape if hasattr(v, 'shape') else type(v)) for k, v in tensordict_data['agents'].items()]}")
+        print(f"🔍 DEBUG MAPPO GAE next keys: {tensordict_data['next'].keys()}")
+        print(f"🔍 DEBUG MAPPO GAE next shapes: {[(k, v.shape if hasattr(v, 'shape') else type(v)) for k, v in tensordict_data['next'].items()]}")
+        if 'reward' in tensordict_data['agents'].keys():
+            print(f"🔍 DEBUG MAPPO GAE reward sample: {tensordict_data['agents']['reward'][:3]}")
+        if 'done' in tensordict_data['agents'].keys():
+            print(f"🔍 DEBUG MAPPO GAE done sample: {tensordict_data['agents']['done'][:3]}")
+        
         GAE(
             tensordict_data,
             params=loss_module.critic_network_params,
             target_params=loss_module.target_critic_network_params,
         )
+        
+        print(f"🔍 DEBUG MAPPO GAE output keys after GAE: {tensordict_data.keys()}")
+        print(f"🔍 DEBUG MAPPO GAE output agents keys after GAE: {tensordict_data['agents'].keys()}")
+        if 'advantage' in tensordict_data['agents'].keys():
+            print(f"🔍 DEBUG MAPPO GAE advantage stats: mean={tensordict_data['agents']['advantage'].mean():.4f}, std={tensordict_data['agents']['advantage'].std():.4f}")
+        if 'value_target' in tensordict_data['agents'].keys():
+            print(f"🔍 DEBUG MAPPO GAE value_target stats: mean={tensordict_data['agents']['value_target'].mean():.4f}, std={tensordict_data['agents']['value_target'].std():.4f}")
 
     # --- 3. Add to Buffer ---
     # Reshape to flatten batch and agent dimensions if needed, or just flatten batch

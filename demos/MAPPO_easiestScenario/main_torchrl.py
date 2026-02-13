@@ -59,14 +59,15 @@ torch.manual_seed(0)
 
 # --- Hyperparameters ---
 
-# Device configuration
-is_fork = multiprocessing.get_start_method() == "fork"
-device = (
-    torch.device(0)
-    if torch.cuda.is_available() and not is_fork
-    else torch.device("cpu")
-)
-vmas_device = device  # VMAS runs physics directly on the GPU
+# Device configuration - Force CPU for compatibility
+# is_fork = multiprocessing.get_start_method() == "fork"
+# device = (
+#     torch.device(0)
+#     if torch.cuda.is_available() and not is_fork
+#     else torch.device("cpu")
+# )
+device = torch.device("cpu")  # Force CPU for now
+vmas_device = device  # Using CPU device
 
 # Sampling settings
 frames_per_batch = 6_000   # Total frames collected per iteration across all parallel envs

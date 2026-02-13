@@ -35,8 +35,8 @@ class QuadActor(nn.Module):
         )
         self.self_state_size = self_state_size
         
-        # 3. Heads - direct action output
-        self.action_head = nn.Linear(MainConfig.ACTOR_HIDDEN_SIZE, WildfireModelsConfig.ACTION_HEAD_SIZE)
+        # 3. Heads - output loc and scale for action distribution
+        self.action_head = nn.Linear(MainConfig.ACTOR_HIDDEN_SIZE, WildfireModelsConfig.ACTION_HEAD_SIZE)  # Now 8: 4 loc + 4 scale
         self.message_head = nn.Linear(MainConfig.ACTOR_HIDDEN_SIZE, message_dim)
         
         # Initialize for stable hovering behavior

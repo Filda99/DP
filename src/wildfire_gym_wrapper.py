@@ -154,15 +154,35 @@ class WildfireMARLEnv(gym.Env):
             random_drone_pos = MainConfig.DEMO_DRONE_POSITION
             fire_x, fire_y = MainConfig.DEMO_FIRE_POSITION
         else:
-            # RANDOM positions for training variety  
+            # RANDOM positions for training variety with CONTROLLED DISTANCE
             safe_margin = 20.0  # Keep 20m away from edges
-            random_x = np.random.uniform(-self.map_bounds + safe_margin, self.map_bounds - safe_margin)
-            random_y = np.random.uniform(-self.map_bounds + safe_margin, self.map_bounds - safe_margin) 
-            random_drone_pos = [random_x, random_y, 10.0]  # Always start at 10m height
+            min_distance = 30.0  # Minimum 30m between drone and fire
+            max_distance = 60.0  # Maximum 60m between drone and fire
             
-            # Random fire position anywhere within boundaries
-            fire_x = np.random.uniform(-self.map_bounds + 10, self.map_bounds - 10)  # 10m margin
-            fire_y = np.random.uniform(-self.map_bounds + 10, self.map_bounds - 10)
+            # Generate positions until we get good distance
+            attempts = 0
+            while attempts < 50:  # Safety limit
+                # Random drone position
+                drone_x = np.random.uniform(-self.map_bounds + safe_margin, self.map_bounds - safe_margin)
+                drone_y = np.random.uniform(-self.map_bounds + safe_margin, self.map_bounds - safe_margin) 
+                random_drone_pos = [drone_x, drone_y, 10.0]  # Always start at 10m height
+                
+                # Random fire position anywhere within boundaries
+                fire_x = np.random.uniform(-self.map_bounds + 10, self.map_bounds - 10)  # 10m margin
+                fire_y = np.random.uniform(-self.map_bounds + 10, self.map_bounds - 10)
+                
+                # Check distance
+                distance = np.sqrt((drone_x - fire_x)**2 + (drone_y - fire_y)**2)
+                
+                if min_distance <= distance <= max_distance:
+                    break
+                    
+                attempts += 1
+            
+            # If we couldn't find good positions after 50 attempts, use defaults
+            if attempts >= 50:
+                random_drone_pos = [-60.0, -60.0, 10.0]  # České komentáře: bezpečná pozice uvnitř hranic
+                fire_x, fire_y = 0.0, 0.0  # Distance ~85m
 
         # Setup scenario with chosen positions
         if len(self.quad_agents) >= 1:
@@ -309,6 +329,7 @@ class WildfireMARLEnv(gym.Env):
 
         # 4. ===== EXPLORATION-BASED REWARD SYSTÉM =====
         reward = 0.0  
+        terminated = False  # Initialize termination flag
         
         # Tracking for fire discovery
         total_fire_visible = False
@@ -472,42 +493,36 @@ class WildfireMARLEnv(gym.Env):
                             # Reduce movement reward when fire is visible (encourage tracking)
                             movement_multiplier = 0.3
                         else:
-                            # Normal movement reward when exploring
-                            movement_multiplier = 1.0
-                        reward += min(movement_distance * 0.3 * movement_multiplier, 0.8)
+                            # INCREASED movement reward when exploring
+                            movement_multiplier = 2.0  # Zvýšeno z 1.0 pro větší exploraci
+                        reward += min(movement_distance * 0.5 * movement_multiplier, 2.0)  # Zvýšen bonus
                     elif movement_distance < 0.1:
                         if not current_fire_visible:
                             # Only penalize inactivity when no fire is visible
-                            reward -= 0.2
-                
-                # === 3. SLOW FLIGHT POLICY - Reward calm flying ===
-                # Get current velocity from drone
-                drone_velocity = self.sim.drones[drone_name].get_velocity()
-                vertical_speed = abs(drone_velocity[2])  # Z speed (absolute value)
-                total_speed = np.sqrt(drone_velocity[0]**2 + drone_velocity[1]**2 + drone_velocity[2]**2)
+                            reward -= 0.5  # Zvýšena penalty za neačnost
                 
                 # SLOW FLYING BONUSES
-                if total_speed < 2.0:  # Very slow flight
-                    slow_bonus = (2.0 - total_speed) * 2.0  # Up to 4.0 bonus for nearly stationary
-                    reward += slow_bonus
-                    #print(f"Slow flight bonus: {slow_bonus:.1f}")
-                elif total_speed < 5.0:  # Moderate slow flight
-                    slow_bonus = (5.0 - total_speed) * 0.5  # Up to 1.5 bonus for moderate speed
-                    reward += slow_bonus
+                # if total_speed < 2.0:  # Very slow flight
+                #     slow_bonus = (2.0 - total_speed) * 2.0  # Up to 4.0 bonus for nearly stationary
+                #     reward += slow_bonus
+                #     #print(f"Slow flight bonus: {slow_bonus:.1f}")
+                # elif total_speed < 5.0:  # Moderate slow flight
+                #     slow_bonus = (5.0 - total_speed) * 0.5  # Up to 1.5 bonus for moderate speed
+                #     reward += slow_bonus
                 
-                # FAST FLYING PENALTIES
-                if total_speed > 8.0:  # Too fast!
-                    speed_penalty = (total_speed - 8.0) * 3.0  # Progressive penalty
-                    reward -= speed_penalty
-                    #print(f"Speed penalty: {speed_penalty:.1f}")
-                elif total_speed > 5.0:  # Moderate speed warning
-                    speed_warning = (total_speed - 5.0) * 1.0
-                    reward -= speed_warning
+                # # FAST FLYING PENALTIES
+                # if total_speed > 8.0:  # Too fast!
+                #     speed_penalty = (total_speed - 8.0) * 3.0  # Progressive penalty
+                #     reward -= speed_penalty
+                #     #print(f"Speed penalty: {speed_penalty:.1f}")
+                # elif total_speed > 5.0:  # Moderate speed warning
+                #     speed_warning = (total_speed - 5.0) * 1.0
+                #     reward -= speed_warning
                 
-                # ADDITIONAL: Extra penalty for erratic vertical movement
-                if vertical_speed > 3.0:  # Too much up/down movement
-                    vertical_penalty = (vertical_speed - 3.0) * 2.0
-                    reward -= vertical_penalty
+                # # ADDITIONAL: Extra penalty for erratic vertical movement
+                # if vertical_speed > 3.0:  # Too much up/down movement
+                #     vertical_penalty = (vertical_speed - 3.0) * 2.0
+                #     reward -= vertical_penalty
                     #print(f"Vertical speed penalty: {vertical_penalty:.1f}")
                 
                 # === 4. FIRE VISIBILITY & TRACKING REWARDS ===
@@ -519,10 +534,8 @@ class WildfireMARLEnv(gym.Env):
                         total_fire_visible = True
                         
                         # === SIMPLE FIRE VISIBILITY REWARD ===
-                        # One-time discovery bonus 
+                        # Tracking flag but no discovery bonus
                         if not self.total_fire_discovered:
-                            discovery_bonus = 200.0  # HUGE discovery bonus
-                            reward += discovery_bonus
                             self.total_fire_discovered = True
                         
                         # Simple visibility bonus (only when actually seeing fire)
@@ -530,29 +543,28 @@ class WildfireMARLEnv(gym.Env):
                         reward += visibility_bonus
                 
                 # === 7. ENHANCED BOUNDARY ENFORCEMENT ===
-                # Zero tolerance for boundary violations!
+                # IMMEDIATE EPISODE TERMINATION for boundary violations!
                 
                 # Check if outside boundaries
                 outside_boundaries = abs(x) > self.map_bounds or abs(y) > self.map_bounds
                 
                 if outside_boundaries:
                     # CANCEL ALL POSITIVE REWARDS when outside!
-                    if reward > 0:
-                        reward = 0  # No positive rewards outside boundaries!
+                    reward = -200.0  # MASSIVE penalty for leaving boundaries
                     
-                    # MASSIVE penalty for being outside
-                    excess_distance = max(abs(x) - self.map_bounds, abs(y) - self.map_bounds, 0)
-                    boundary_penalty = 50.0 + excess_distance * 5.0  # MUCH stronger penalty!
-                    reward -= boundary_penalty
+                    # TERMINATE EPISODE IMMEDIATELY!
+                    print(f"🚫 {drone_name} OUT OF BOUNDS at [{x:.1f}, {y:.1f}] - EPISODE TERMINATED!")
+                    terminated = True
+                    return new_obs, reward, terminated, {}  # 4 hodnoty pro starý gym format
                     
                 else:
-                    # Warning when approaching boundary
-                    boundary_buffer = 8.0
+                    # STRONG warning when approaching boundary
+                    boundary_buffer = 15.0  # Increased buffer zone
                     if abs(x) > (self.map_bounds - boundary_buffer) or abs(y) > (self.map_bounds - boundary_buffer):
                         boundary_distance = min(self.map_bounds - abs(x), self.map_bounds - abs(y))
                         if boundary_distance < boundary_buffer:
                             penalty_factor = (boundary_buffer - boundary_distance) / boundary_buffer
-                            reward -= 5.0 * penalty_factor
+                            reward -= 20.0 * penalty_factor  # Much stronger approach penalty
                 
                 # Crash detection
                 if z < 0.5:  # Dron se rozbil
