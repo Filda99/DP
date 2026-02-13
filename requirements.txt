@@ -20,3 +20,4 @@ tensordict
 torchrl
 gymnasium
 tqdm
+pettingzoo
