@@ -156,9 +156,12 @@ class DroneFireEnv(ParallelEnv):
         """
         # 1. Zmenšený globální oheň (např. 16x16)
         if self.sim.environment.fire_grid is not None:
+            # TADY získáme aktuální matici ohně (např. těch tvých 200x200 buněk)
             full_grid = self.sim.environment.fire_grid.I
             import cv2
+            # TADY proběhne ta rychlá matematika zmenšení na 16x16 pomocí zprůměrování plochy
             small_grid = cv2.resize(full_grid, (16, 16), interpolation=cv2.INTER_AREA)
+            # TADY z 2D matice 16x16 uděláme 1D pole o 256 hodnotách, které umí sežrat Kritik
             fire_summary = small_grid.flatten()
         else:
             fire_summary = np.zeros(16 * 16, dtype=np.float32)
@@ -283,17 +286,29 @@ class DroneFireEnv(ParallelEnv):
                     terminations[agent] = True
                     step_reward -= 50.0  # Trest za uletění z mapy
                     print(f"🚫 {agent} uletěl z mapy na pozici {pos[:2]}")
+                    self.sim._destroy_drone(agent)
                     
-                # C) Kontrola objevení ohně (Pokud dron žije)
+                # C) Kontrola objevení ohně a hlídání (Pokud dron žije)
                 else:
-                    # Načteme lokální výřez ohně pro tohoto drona
                     local_map = self._extract_local_fire_map(pos)
                     fire_intensity = np.sum(local_map)
                     
-                    if fire_intensity > 0.1 and not self.fire_discovered:
-                        self.fire_discovered = True
-                        step_reward += 50.0  # Velká odměna za první detekci ohně celým týmem
-                        print(f"🔥 {agent} jako první objevil oheň!")
+                    if fire_intensity > 0.1:
+                        # 1. První objev ohně (Velký bonus pro tým)
+                        if not self.fire_discovered:
+                            self.fire_discovered = True
+                            step_reward += 50.0  
+                            print(f"✅ {agent} jako první objevil oheň!")
+                        
+                        # 2. Kontinuální bonus za to, že se drží nad ohněm
+                        # Tím se ruší těch -0.1 a dron naopak začne vydělávat +0.4 za každý krok
+                        step_reward += 0.5
+                
+                # D) KONTROLA VÝŠKY (Obrana proti vesmírnému programu :D)
+                if pos[2] > 25.0:
+                    # Za každý metr nad 25m dostane dron pokutu
+                    # Pokud je ve 30m, ztratí -0.5. To vyruší jeho odměnu za hlídání!
+                    step_reward -= (pos[2] - 25.0) * 0.1
             
             # 4. ZÁPIS VÝSLEDKŮ PRO AGENTA
             rewards[agent] = step_reward
