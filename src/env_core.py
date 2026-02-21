@@ -9,52 +9,69 @@ from src.simulation import Simulation  # Uprav cestu podle tvé složky!
 import random
 
 class DroneFireEnv(ParallelEnv):
-    metadata = {"render_modes": ["human"], "name": "drone_fire_v1"}
+    metadata = {"render_modes": ["human"], "name": "drone_fire_v2"}
 
-    def __init__(self, num_quads=1, grid_size_m=200.0, local_map_size=32):
+    def __init__(self, num_quads=1, num_fixed=1, grid_size_m=200.0, local_map_size=32):
         super().__init__()
         
         self.max_steps = 500
-
         self.num_quads = num_quads
+        self.num_fixed = num_fixed
         self.grid_size_m = grid_size_m
-        self.map_bounds = self.grid_size_m / 2.0 
+        self.map_bounds = self.grid_size_m / 2.0
         
-        self.possible_agents = [f"quad_{i}" for i in range(self.num_quads)]
+        # Seznamy agentů
+        self.quad_agents = [f"quad_{i}" for i in range(self.num_quads)]
+        self.fixed_agents = [f"fixed_{i}" for i in range(self.num_fixed)]
+        self.possible_agents = self.quad_agents + self.fixed_agents
         self.agents = self.possible_agents[:]
         
-        # ACTION SPACE: [Roll, Pitch, Yaw, Throttle]
+        # === ACTION SPACE ===
+        # Quad: [Roll, Pitch, Yaw, Throttle]
+        # Fixed: [Roll, Pitch, Throttle, Water_Trigger] (Mapování se děje ve step())
         self._action_spaces = {
             agent: gym.spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32) 
             for agent in self.possible_agents
         }
+
+        # === OBSERVATION SPACE (ASYMETRICKÝ) ===
         
-        # OBSERVATION SPACE (Upraveno podle tvé specifikace!)
+        # 1. Konfigurace pro SCOUTA (Quad)
         # Co znamená 10 čísel v self_state:
         # 0-2: pozice x, y, z (relativně k mapě)
         # 3-5: rychlost vx, vy, vz
-        # 6-9: vzdálenost k okrajům (sever, jih, východ, západ) -> super pro boundary awareness!
-        self.self_state_size = 10 
+        # 6-9: vzdálenost k okrajům (sever, jih, východ, západ)
+        self.quad_self_dim = 10 
+        self.max_neighbors = self.num_quads - 1 if self.num_quads > 1 else 1 # Aby to nepadlo při 1 dronu
         
-        # Pokud máme více než 1 dron, přidáme (num_quads - 1) * 3 čísel pro relativní pozice ostatních
-        # To nahradí Lidar a pomůže jim se nesrazit a koordinovat roj.
-        self.other_drones_state_size = (self.num_quads - 1) * 3
-        self.total_vector_size = self.self_state_size + self.other_drones_state_size
+        quad_obs_space = gym.spaces.Dict({
+            "local_map": gym.spaces.Box(low=0.0, high=1.0, shape=(1, local_map_size, local_map_size), dtype=np.float32),
+            "self_state": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.quad_self_dim,), dtype=np.float32),
+            # Pozice sousedů (pro Self-Attention)
+            "neighbor_states": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.max_neighbors, 3), dtype=np.float32),
+            # Maska: True = Ignorovat (Mrtvý/Padding), False = Validní
+            "neighbor_mask": gym.spaces.Box(low=0, high=1, shape=(self.max_neighbors,), dtype=bool)
+        })
 
-        self._observation_spaces = {
-            agent: gym.spaces.Dict({
-                "local_map": gym.spaces.Box(low=0.0, high=1.0, shape=(1, local_map_size, local_map_size), dtype=np.float32),
-                "self_state": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.total_vector_size,), dtype=np.float32)
-            })
-            for agent in self.possible_agents
-        }
-
-        # STATE SPACE (Pohled boha pro Kritika)
-        # Zmenšený fire_grid 16x16 pixelů + stavy všech dronů
-        global_fire_cells = 16 * 16
-        global_state_size = global_fire_cells + (self.num_quads * self.total_vector_size)
+        # 2. Konfigurace pro COMMANDERA (Fixed)
+        # Pos(3) + Vel(3) + Walls(4) + WaterLvl(1) = 11
+        self.fixed_self_dim = 11 
         
-        self.state_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(global_state_size,), dtype=np.float32)
+        fixed_obs_space = gym.spaces.Dict({
+            "self_state": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.fixed_self_dim,), dtype=np.float32)
+            # Zprávy (Messages) se sem nedávají, ty přijdou zvenčí v train.py!
+        })
+
+        self._observation_spaces = {}
+        for agent in self.quad_agents:
+            self._observation_spaces[agent] = quad_obs_space
+        for agent in self.fixed_agents:
+            self._observation_spaces[agent] = fixed_obs_space
+        
+        # === GLOBAL STATE SPACE (Kritik) ===
+        # Mapa(256) + Všechny Quads(10 * N) + Všechny Fixed(11 * M)
+        self.global_state_size = (16 * 16) + (self.num_quads * self.quad_self_dim) + (self.num_fixed * self.fixed_self_dim)
+        self.state_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.global_state_size,), dtype=np.float32)
 
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent):
@@ -65,53 +82,130 @@ class DroneFireEnv(ParallelEnv):
         return self._action_spaces[agent]
 
     # Metody, které napíšeme v dalších krocích:
-    def _get_obs(self, agent_name):
+    def _get_quad_obs(self, agent_name):
         """
         Vygeneruje pozorování pro konkrétního agenta (kvadrokoptéru).
         """
         drone = self.sim.drones[agent_name]
         pos = drone.get_position()  # [x, y, z]
         vel = drone.get_velocity()  # [vx, vy, vz]
+
+        # === NORMALIZACE VSTUPŮ (Kritické pro stabilitu sítě!) ===
+        # Pozice dělíme hranicí mapy (aby byly cca -1..1)
+        norm_pos = pos / self.map_bounds 
+        # Rychlost dělíme 20 m/s (max speed)
+        norm_vel = vel / 20.0 
         
         # 1. Výpočet vzdáleností k okrajům mapy (Boundary Awareness)
         # self.map_bounds je např. 100.0. Dron je na pozici x=80.
         # Vzdálenost k východu = 100 - 80 = 20m.
-        dist_north = self.map_bounds - pos[1]
-        dist_south = pos[1] - (-self.map_bounds)
-        dist_east  = self.map_bounds - pos[0]
-        dist_west  = pos[0] - (-self.map_bounds)
+        # Nasledne znormalizujeme
+        dist_north = (self.map_bounds - pos[1]) / self.grid_size_m
+        dist_south = (pos[1] - (-self.map_bounds)) / self.grid_size_m
+        dist_east  = (self.map_bounds - pos[0]) / self.grid_size_m
+        dist_west  = (pos[0] - (-self.map_bounds)) / self.grid_size_m
         
         # 2. Sestavení Self-State
         self_state = np.array([
-            pos[0], pos[1], pos[2],    # 0-2: Pozice (x,y,z)
-            vel[0], vel[1], vel[2],    # 3-5: Rychlost (vx,vy,vz)
+            norm_pos[0], norm_pos[1], norm_pos[2],    # 0-2: Pozice (x,y,z)
+            norm_vel[0], norm_vel[1], norm_vel[2],    # 3-5: Rychlost (vx,vy,vz)
             dist_north, dist_south, dist_east, dist_west  # 6-9: Vzdálenosti ke zdem
         ], dtype=np.float32)
 
-        # 3. Získání pozic OSTATNÍCH dronů (pro tvůj Broadcast / Attention)
-        other_drones_positions = []
-        for other_agent in self.possible_agents:
-            if other_agent != agent_name:
-                if other_agent in self.sim.drones:
-                    # Pokud dron žije, přidáme jeho relativní pozici vůči nám
-                    other_pos = self.sim.drones[other_agent].get_position()
-                    rel_pos = other_pos - pos
-                    other_drones_positions.extend(rel_pos)
-                else:
-                    # Pokud dron naboural a neexistuje, dáme tam nuly (nebo hodnoty daleko mimo mapu)
-                    other_drones_positions.extend([0.0, 0.0, 0.0])
+        # 3. Získání pozic OSTATNÍCH dronů (Self-Attention Inputs)
+        neighbor_states = []
+        neighbor_mask = []
         
-        # Spojíme self_state a ostatní drony do jednoho vektoru
-        full_vector_state = np.concatenate([self_state, other_drones_positions]).astype(np.float32)
+        # Projdeme ostatní Scouty
+        for other in self.quad_agents:
+            if other == agent_name: continue # Sebe nepočítám
+            
+            if other in self.sim.drones:
+                # Validní soused
+                other_pos = self.sim.drones[other].get_position()
+                rel_pos = other_pos - pos
+                # Normalizace relativní pozice
+                neighbor_states.append(rel_pos / self.grid_size_m)
+                neighbor_mask.append(False) # False = Validní (neignorovat)
+            # else:
+            #     # Mrtvý soused (Padding)
+            #     neighbor_states.append(np.zeros(3, dtype=np.float32))
+            #     neighbor_mask.append(True)  # True = Ignorovat
 
+            else:
+                # Mrtvý soused: Místo maskování ho "odsuneme" daleko mimo mapu (např. 2.0 = 2x velikost mapy)
+                # Tím zajistíme, že Attention má vždy platná data a nevybuchne na NaN.
+                neighbor_states.append(np.array([2.0, 2.0, 2.0], dtype=np.float32))
+                neighbor_mask.append(False) # False = Validní (síť ho vidí, ale je daleko)
+        
+        # Padding pro případ, že je jen 1 dron (aby se nerozbil shape)
+        # if not neighbor_states:
+        #     neighbor_states.append(np.zeros(3, dtype=np.float32))
+        #     neighbor_mask.append(True)
+
+        if not neighbor_states:
+            # Případ pro 1 drona: Vytvoříme fiktivního souseda daleko pryč
+            neighbor_states.append(np.array([2.0, 2.0, 2.0], dtype=np.float32))
+            neighbor_mask.append(False) # False = Validní
+        
         # 4. Získání lokální mapy (Local Map 32x32)
-        # Použijeme zjednodušenou logiku z tvého starého obs_processor
         local_map = self._extract_local_fire_map(pos)
 
         return {
             "local_map": local_map,
-            "self_state": full_vector_state
+            "self_state": self_state,
+            "neighbor_states": np.array(neighbor_states, dtype=np.float32),
+            "neighbor_mask": np.array(neighbor_mask, dtype=bool)
         }
+    
+    def _get_fixed_obs(self, agent_name):
+        """Generuje pozorování pro Commandera (Jen fyzika + Voda)."""
+        drone = self.sim.drones[agent_name]
+        pos = drone.get_position()
+        vel = drone.get_velocity()
+        
+        # Voda
+        water_lvl = drone.current_water / drone.water_capacity if drone.water_capacity > 0 else 0.0
+
+        # === NORMALIZACE ===
+        norm_pos = pos / self.map_bounds
+        norm_vel = vel / 20.0
+        
+        dist_north = (self.map_bounds - pos[1]) / self.grid_size_m
+        dist_south = (pos[1] - (-self.map_bounds)) / self.grid_size_m
+        dist_east  = (self.map_bounds - pos[0]) / self.grid_size_m
+        dist_west  = (pos[0] - (-self.map_bounds)) / self.grid_size_m
+
+        self_state = np.array([
+            norm_pos[0], norm_pos[1], norm_pos[2],
+            norm_vel[0], norm_vel[1], norm_vel[2],
+            dist_north, dist_south, dist_east, dist_west,
+            water_lvl # 11. hodnota
+        ], dtype=np.float32)
+        
+        return {
+            "self_state": self_state
+        }
+
+    def _get_obs(self, agent_name):
+        # Rozcestník podle typu agenta
+        if "fixed" in agent_name:
+            if agent_name in self.sim.drones:
+                return self._get_fixed_obs(agent_name)
+            else:
+                # Mrtvé letadlo
+                return {"self_state": np.zeros(self.fixed_self_dim, dtype=np.float32)}
+        else:
+            if agent_name in self.sim.drones:
+                return self._get_quad_obs(agent_name)
+            else:
+                # Mrtvý dron
+                return {
+                    "local_map": np.zeros((1, 32, 32), dtype=np.float32),
+                    "self_state": np.zeros(self.quad_self_dim, dtype=np.float32),
+                    "neighbor_states": np.zeros((self.max_neighbors, 3), dtype=np.float32),
+                    "neighbor_mask": np.ones((self.max_neighbors,), dtype=bool) # True = Ignorovat vše
+                }
 
     def _extract_local_fire_map(self, pos, window_size_m=30.0, resolution_px=32):
         """
@@ -144,7 +238,7 @@ class DroneFireEnv(ParallelEnv):
         if crop.size == 0:
             processed_map = np.zeros((resolution_px, resolution_px), dtype=np.float32)
         else:
-            import cv2  # Předpokládám, že máš OpenCV
+            import cv2
             processed_map = cv2.resize(crop, (resolution_px, resolution_px), interpolation=cv2.INTER_LINEAR)
             
         return processed_map[np.newaxis, ...].astype(np.float32)
@@ -167,18 +261,24 @@ class DroneFireEnv(ParallelEnv):
             fire_summary = np.zeros(16 * 16, dtype=np.float32)
 
         # 2. Sezbíráme stavy všech dronů (abychom věděli, kde celý tým je)
-        all_agent_states = []
-        for agent in self.possible_agents:
-            if agent in self.agents:
-                # Agent žije, vezmeme jeho data (můžeme recyklovat naši _get_obs funkci)
-                obs = self._get_obs(agent)
-                all_agent_states.append(obs["self_state"])
+        agent_states = []
+        
+        # Nejdřív Quady
+        for agent in self.quad_agents:
+            if agent in self.sim.drones:
+                agent_states.append(self._get_quad_obs(agent)["self_state"])
             else:
-                # Agent je mrtvý (naboural), pošleme nuly
-                all_agent_states.append(np.zeros(self.total_vector_size, dtype=np.float32))
+                agent_states.append(np.zeros(self.quad_self_dim, dtype=np.float32))
+                
+        # Pak Fixed
+        for agent in self.fixed_agents:
+            if agent in self.sim.drones:
+                agent_states.append(self._get_fixed_obs(agent)["self_state"])
+            else:
+                agent_states.append(np.zeros(self.fixed_self_dim, dtype=np.float32))
 
         # Spojíme oheň a stavy dronů do jednoho obřího 1D pole pro Kritika
-        global_state = np.concatenate([fire_summary] + all_agent_states)
+        global_state = np.concatenate([fire_summary] + agent_states)
         return global_state
         
     def reset(self, seed=None, options=None):
@@ -211,9 +311,15 @@ class DroneFireEnv(ParallelEnv):
         
         # 4. Přidáme drony na náhodné startovní pozice (např. 30m od ohně)
         for agent in self.agents:
-            start_x = random.uniform(-30, 30)
-            start_y = random.uniform(-30, 30)
-            self.sim.add_quadcopter(agent, position=[start_x, start_y, 10.0])
+            start_x = random.uniform(-40, 40)
+            start_y = random.uniform(-40, 40)
+            
+            if "fixed" in agent:
+                # Startuje výš
+                self.sim.add_fixedwing(agent, position=[start_x, start_y, 60.0], water_capacity=100.0)
+            else:
+                # Startuje níž
+                self.sim.add_quadcopter(agent, position=[start_x, start_y, 10.0])
             
         # 5. Inicializace sledování (Trackerů) pro Odměny
         self.visited_cells = set() # Sem si budeme ukládat, kde už drony byly
@@ -238,11 +344,19 @@ class DroneFireEnv(ParallelEnv):
         # by neviděla výsledek své akce). Zopakujeme stejnou akci např. 5x za sebou.
         frame_skip = 5
         
-        # Převod formátu akcí pro tvou simulaci
+        # Mapování akcí pro simulaci
         drone_controls = {}
         for agent_name, action in actions.items():
-            # Akce je np.array o 4 hodnotách [-1.0 až 1.0]
-            drone_controls[agent_name] = action
+            if "fixed" in agent_name:
+                # FixedWing: [Roll, Pitch, Throttle, Water]
+                # NN vrací [-1, 1], my to mapujeme
+                mapped_action = np.copy(action)
+                mapped_action[2] = (action[2] + 1.0) / 2.0  # Throttle 0..1
+                mapped_action[3] = (action[3] + 1.0) / 2.0  # Water 0..1
+                drone_controls[agent_name] = mapped_action
+            else:
+                # Quad: [Roll, Pitch, Yaw, Throttle]
+                drone_controls[agent_name] = action
             
         # Pustíme fyziku
         for _ in range(frame_skip):
@@ -268,12 +382,12 @@ class DroneFireEnv(ParallelEnv):
             infos[agent] = {}
             
             # Časová penalizace (Nutí je jednat rychle)
-            step_reward = -0.1
+            step_reward = 0.0
             
             # A) Je dron zničený fyzikálně? (Tvoje simulace ho smazala nebo spadl)
             if agent not in self.sim.drones:
                 terminations[agent] = True
-                step_reward -= 100.0  # Trest za pád
+                step_reward -= 50.0  # Trest za pád
                 print(f"💥 {agent} havaroval!")
                 
             else:
@@ -288,27 +402,61 @@ class DroneFireEnv(ParallelEnv):
                     print(f"🚫 {agent} uletěl z mapy na pozici {pos[:2]}")
                     self.sim._destroy_drone(agent)
                     
-                # C) Kontrola objevení ohně a hlídání (Pokud dron žije)
                 else:
-                    local_map = self._extract_local_fire_map(pos)
-                    fire_intensity = np.sum(local_map)
+                    # === ZMĚNA STRATEGIE: UČÍME SE LÉTAT ===
                     
-                    if fire_intensity > 0.1:
-                        # 1. První objev ohně (Velký bonus pro tým)
-                        if not self.fire_discovered:
-                            self.fire_discovered = True
-                            step_reward += 50.0  
-                            print(f"✅ {agent} jako první objevil oheň!")
+                    # A) Survival Bonus (Každý krok, co žije, je dobrý)
+                    step_reward += 0.1 
+
+                    # B) Magnet ke středu (Navigace)
+                    # Pomáhá síti pochopit, že "uprostřed" je bezpečno a "na kraji" je smrt.
+                    dist_to_center = np.linalg.norm(pos[:2])
+                    norm_dist = dist_to_center / self.map_bounds
+                    # Bonus je vyšší, čím je blíže středu (max 0.2)
+                    step_reward += (1.0 - norm_dist) * 0.2
+
+                    # C) Penalizace za divoké létání (Velocity Penalty)
+                    # Chceme, aby létal klidně, ne jako raketa
+                    vel = drone.get_velocity()
+                    speed = np.linalg.norm(vel)
+                    if speed > 10.0: # Pokud letí moc rychle
+                        step_reward -= 0.1
+
+                    # D) Specifické úkoly
+                    if "fixed" in agent:
+                        # NOVÁ ODMĚNA ZA HAŠENÍ!
+                        # Získáme info ze simulace, kolik vody dopadlo na oheň
+                        extinguished_amount = self.sim.drone_extinguish_stats.get(agent, 0.0)
                         
-                        # 2. Kontinuální bonus za to, že se drží nad ohněm
-                        # Tím se ruší těch -0.1 a dron naopak začne vydělávat +0.4 za každý krok
-                        step_reward += 0.5
+                        if extinguished_amount > 0:
+                            # Masivní odměna za zásah
+                            step_reward += extinguished_amount * 10.0 
+                            # print(f"💦 {agent} zasáhl oheň! (+{step_reward:.2f})")
+                        
+                        # Malý bonus za rychlost (aby nestál)
+                        step_reward += drone.get_speed() * 0.01 
+                    else:
+                        # Quad: Odměna za sledování ohně
+                        local_map = self._extract_local_fire_map(pos)
+                        fire_intensity = np.sum(local_map)
+                        
+                        if fire_intensity > 0.1:
+                            # 1. První objev ohně (Velký bonus pro tým)
+                            # if not self.fire_discovered:
+                            #     self.fire_discovered = True
+                            #     step_reward += 50.0  
+                            #     print(f"✅ {agent} jako první objevil oheň!")
+                            
+                            # 2. Kontinuální bonus za to, že se drží nad ohněm
+                            # Tím se ruší těch -0.1 a dron naopak začne vydělávat +0.4 za každý krok
+                            step_reward += 1.0
                 
-                # D) KONTROLA VÝŠKY (Obrana proti vesmírnému programu :D)
-                if pos[2] > 25.0:
-                    # Za každý metr nad 25m dostane dron pokutu
-                    # Pokud je ve 30m, ztratí -0.5. To vyruší jeho odměnu za hlídání!
-                    step_reward -= (pos[2] - 25.0) * 0.1
+                # Výškový limit
+                max_alt = 80.0 if "fixed" in agent else 25.0
+                if pos[2] > max_alt:
+                    # Za každý metr nad 25m kvartokoptera dostane pokutu
+                    # Pokud je ve 30m, ztratí -0.1.
+                    step_reward -= 0.1
             
             # 4. ZÁPIS VÝSLEDKŮ PRO AGENTA
             rewards[agent] = step_reward
@@ -319,11 +467,15 @@ class DroneFireEnv(ParallelEnv):
                 agents_to_keep.append(agent)
             else:
                 # PettingZoo API vyžaduje, abychom pro mrtvého agenta vrátili "terminální" pozorování
-                # Použijeme prostě samé nuly
-                observations[agent] = {
-                    "local_map": np.zeros((1, 32, 32), dtype=np.float32),
-                    "self_state": np.zeros(self.total_vector_size, dtype=np.float32)
-                }
+                if "fixed" in agent:
+                    observations[agent] = {"self_state": np.zeros(self.fixed_self_dim, dtype=np.float32)}
+                else:
+                    observations[agent] = {
+                        "local_map": np.zeros((1, 32, 32), dtype=np.float32),
+                        "self_state": np.zeros(self.quad_self_dim, dtype=np.float32),
+                        "neighbor_states": np.zeros((self.max_neighbors, 3), dtype=np.float32),
+                        "neighbor_mask": np.ones((self.max_neighbors,), dtype=bool)
+                    }
                 
         # 5. AKTUALIZACE SEZNAMU ŽIJÍCÍCH AGENTŮ
         self.agents = agents_to_keep

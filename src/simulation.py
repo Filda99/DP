@@ -70,6 +70,10 @@ class Simulation:
         self.drone_trajectories = {}
         self.trajectory_sample_rate = 3
         self._step_counter = 0
+
+        # --- REWARD TRACKING (NOVÉ) ---
+        # Zde budeme ukládat, kolik "efektivní vody" (na oheň) dron shodil v tomto kroku
+        self.drone_extinguish_stats = {} 
         
         # Setup file logging
         self._setup_logging(log_file)
@@ -142,6 +146,7 @@ class Simulation:
             'positions': [], 'forces': [], 'velocities': [], 'control_inputs': []
         }
         self.drone_trajectories[name] = [[position[0], position[1], position[2], 0.0]]
+        self.drone_extinguish_stats[name] = 0.0 # Init stats
         # print(f"✅ Added quadcopter '{name}' at {position}")
         return quad
     
@@ -154,6 +159,7 @@ class Simulation:
         }
         self.drone_trajectories[name] = [[position[0], position[1], position[2], 0.0]]
         start_orientation = p.getQuaternionFromEuler([0, 0.2, 0.0])
+        self.drone_extinguish_stats[name] = 0.0 # Init stats
         # p.resetBasePositionAndOrientation(fw.drone_id, position, start_orientation)
 
         # p.changeDynamics(fw.drone_id, -1, linearDamping=0.0, angularDamping=0.0)
@@ -227,6 +233,10 @@ class Simulation:
         """
         OPTIMIZED VERSION: Calculates water dispersion only at impact sites.
         """
+        # Reset stats for this step
+        for name in self.drone_extinguish_stats:
+            self.drone_extinguish_stats[name] = 0.0
+
         # 1. Quick check if grid exists
         if self.environment.fire_grid is None or self.environment.grid_mapper is None:
             return {}
@@ -238,7 +248,10 @@ class Simulation:
         # Grid dimensions for boundary checks
         H, W = self.environment.fire_grid.H, self.environment.fire_grid.W
 
-        for drone in self.drones.values():
+        # Pro přímý přístup k stavu ohně (pro odměny)
+        fire_active = self.environment.fire_grid.B 
+
+        for drone_name, drone in self.drones.items():
             # If drone is not dropping water, skip (saves CPU)
             if not drone.can_drop_water(): continue
 
@@ -274,6 +287,9 @@ class Simulation:
 
             two_sigma_sq = 2 * sigma_cells**2
 
+            # Kolik vody tento dron shodil "užitečně" (na hořící buňky)
+            drone_effective_drop = 0.0
+
             for r in range(r_min, r_max):
                 for c in range(c_min, c_max):
                     # Squared distance from center
@@ -287,12 +303,19 @@ class Simulation:
                     
                     dropped_value = water_amount * weight * 10.0 # Scaling factor
                     
-                    # Store in dictionary (accumulate if multiple drones hit same spot)
+                    # 1. Store in dictionary (accumulate if multiple drones hit same spot)
                     coord = (r, c)
                     if coord in water_drops:
                         water_drops[coord] += dropped_value
                     else:
                         water_drops[coord] = dropped_value
+
+                    # 2. Započítat odměnu, POKUD buňka hoří
+                    if fire_active[r, c]:
+                        drone_effective_drop += dropped_value
+
+            # Uložíme statistiku pro odměnu
+            self.drone_extinguish_stats[drone_name] = drone_effective_drop
 
         # 6. Clip to max 1.0 (Saturation)
         for k in water_drops:
@@ -546,6 +569,9 @@ class Simulation:
         self._log_event('drone_destroyed', {'drone': drone_name})
         del self.drones[drone_name]
         print(f"🔥 DESTROYED: {drone_name}")
+        
+        if drone_name in self.drone_extinguish_stats:
+             del self.drone_extinguish_stats[drone_name]
     
     def run_scenario(self, scenario_function, steps=1000):
         # print(f"🚁 Running scenario for {steps} steps...")
