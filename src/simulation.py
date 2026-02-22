@@ -546,13 +546,13 @@ class Simulation:
             
             collision, obstacle = self.environment.is_position_in_obstacle(position)
             if collision:
-                print(f"💥 COLLISION: {drone_name} hit {obstacle['type']}")
+                # print(f"💥 COLLISION: {drone_name} hit {obstacle['type']}")
                 self._log_event('collision', {'drone': drone_name, 'obstacle': obstacle['type']})
                 drones_to_destroy.append(drone_name)
                 continue
             
             if position[2] < 0.5:
-                print(f"💥 GROUND CRASH: {drone_name}")
+                # print(f"💥 GROUND CRASH: {drone_name}")
                 self._log_event('ground_crash', {'drone': drone_name})
                 drones_to_destroy.append(drone_name)
                 continue
@@ -568,7 +568,7 @@ class Simulation:
         self.destroyed_drones.append(drone_name)
         self._log_event('drone_destroyed', {'drone': drone_name})
         del self.drones[drone_name]
-        print(f"🔥 DESTROYED: {drone_name}")
+        # print(f"🔥 DESTROYED: {drone_name}")
         
         if drone_name in self.drone_extinguish_stats:
              del self.drone_extinguish_stats[drone_name]

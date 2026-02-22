@@ -275,7 +275,7 @@ class Environment:
         # 0.001 m/s = very slow creep (realističky pomalé)
         # 0.01 m/s = slow creep  
         # 0.1 m/s = moderate spread
-        PHYSICAL_SPREAD_SPEED = 0.01  # Rychlejší šíření pro viditelnost
+        PHYSICAL_SPREAD_SPEED = 0.1  # Rychlejší šíření pro viditelnost
         
         # CALCULATE RATE PARAMETER (Lambda)
         # Speed = Cell_Size * Rate  =>  Rate = Speed / Cell_Size
@@ -311,18 +311,41 @@ class Environment:
         
         # print(f"✅ Fire simulation ready: {H}x{W} cells, {cell_size_m}m resolution.")
 
-    def start_fire_at_position(self, world_pos, intensity=0.2):
+    def start_fire_at_position(self, world_pos, intensity=0.2, radius_m=5.0):
+        """
+        Založí oheň na dané pozici a v jejím okolí (vytvoří velkou počáteční skvrnu).
+        radius_m=5.0 vytvoří čtverec o straně cca 10x10 metrů.
+        """
         if not self.fire_enabled: return False
         try:
-            i, j = self.grid_mapper.world_to_cell(world_pos)
-            if self.fire_grid.F[i, j] > 0:
-                self.fire_grid.B[i, j] = True
-                self.fire_grid.I[i, j] = np.minimum(1.0, self.fire_grid.F[i, j])
-                # print(f"🔥 Fire started at {world_pos} (Cell {i},{j})")
+            # Střed ohně
+            center_i, center_j = self.grid_mapper.world_to_cell(world_pos)
+            
+            # Kolik buněk odpovídá zadanému poloměru
+            radius_cells = int(radius_m / self.grid_mapper.cell_size_m)
+            
+            ignited_any = False
+            
+            # Projdeme čtverec kolem středu
+            for i in range(center_i - radius_cells, center_i + radius_cells + 1):
+                for j in range(center_j - radius_cells, center_j + radius_cells + 1):
+                    # Kontrola, abychom nezapisovali mimo matici
+                    if 0 <= i < self.fire_grid.H and 0 <= j < self.fire_grid.W:
+                        # Pokud je na políčku palivo, zapal ho
+                        if self.fire_grid.F[i, j] > 0:
+                            self.fire_grid.B[i, j] = True
+                            # Intenzitu omezíme podle množství paliva
+                            self.fire_grid.I[i, j] = np.minimum(1.0, self.fire_grid.F[i, j] * intensity)
+                            ignited_any = True
+                            
+            if ignited_any:
+                # print(f"🔥 Oheň založen na {world_pos} (blok {radius_m*2}x{radius_m*2}m)")
                 return True
-        except IndexError:
+                
+        except Exception as e:
             pass
-        print(f"❌ Could not start fire at {world_pos} (No Fuel/Out of bounds)")
+            
+        print(f"❌ Nepodařilo se založit oheň na {world_pos} (Žádné palivo / Mimo mapu)")
         return False
 
     def update_fire_simulation(self, suppression_assignments=None, water_drops=None, real_dt=None):

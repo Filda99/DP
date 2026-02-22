@@ -207,7 +207,7 @@ class DroneFireEnv(ParallelEnv):
                     "neighbor_mask": np.ones((self.max_neighbors,), dtype=bool) # True = Ignorovat vše
                 }
 
-    def _extract_local_fire_map(self, pos, window_size_m=30.0, resolution_px=32):
+    def _extract_local_fire_map(self, pos, window_size_m=50.0, resolution_px=32):
         """
         Vyřízne 30x30m čtverec z velkého FireGridu kolem dronu a zmenší ho na 32x32 pixelů.
         """
@@ -307,7 +307,10 @@ class DroneFireEnv(ParallelEnv):
             cell_size_m=1.0,
             dt=0.1
         )
-        self.sim.start_fire([0, 0], intensity=0.5)
+        # Oheň spawne kdekoli ve čtverci 100x100m kolem středu
+        fire_x = random.uniform(-50, 50)
+        fire_y = random.uniform(-50, 50)
+        self.sim.start_fire([fire_x, fire_y], intensity=0.5)
         
         # 4. Přidáme drony na náhodné startovní pozice (např. 30m od ohně)
         for agent in self.agents:
@@ -387,8 +390,8 @@ class DroneFireEnv(ParallelEnv):
             # A) Je dron zničený fyzikálně? (Tvoje simulace ho smazala nebo spadl)
             if agent not in self.sim.drones:
                 terminations[agent] = True
-                step_reward -= 50.0  # Trest za pád
-                print(f"💥 {agent} havaroval!")
+                step_reward = -100.0  # Trest za pád
+                print(f"💥 {agent} havaroval ve stepu {self.current_step}")
                 
             else:
                 # Získáme aktuální data dronu
@@ -398,22 +401,23 @@ class DroneFireEnv(ParallelEnv):
                 # B) Zkontrolujeme hranice mapy (Out of Bounds)
                 if abs(pos[0]) > self.map_bounds or abs(pos[1]) > self.map_bounds:
                     terminations[agent] = True
-                    step_reward -= 50.0  # Trest za uletění z mapy
-                    print(f"🚫 {agent} uletěl z mapy na pozici {pos[:2]}")
+                    step_reward = -100.0  # Trest za uletění z mapy
+                    print(f"🚫 {agent} uletěl z mapy ve stepu {self.current_step}")
                     self.sim._destroy_drone(agent)
                     
                 else:
                     # === ZMĚNA STRATEGIE: UČÍME SE LÉTAT ===
                     
                     # A) Survival Bonus (Každý krok, co žije, je dobrý)
-                    step_reward += 0.1 
+                    step_reward += 0.05
 
-                    # B) Magnet ke středu (Navigace)
-                    # Pomáhá síti pochopit, že "uprostřed" je bezpečno a "na kraji" je smrt.
-                    dist_to_center = np.linalg.norm(pos[:2])
-                    norm_dist = dist_to_center / self.map_bounds
-                    # Bonus je vyšší, čím je blíže středu (max 0.2)
-                    step_reward += (1.0 - norm_dist) * 0.2
+                    # B) Explorační bonus (Nutí ho to létat a hledat)
+                    grid_x = int(pos[0] / 10.0)
+                    grid_y = int(pos[1] / 10.0)
+                    cell_key = (grid_x, grid_y)
+                    if cell_key not in self.visited_cells:
+                        self.visited_cells.add(cell_key)
+                        step_reward += 0.2 # Odměna za objev nového 10x10 sektoru!
 
                     # C) Penalizace za divoké létání (Velocity Penalty)
                     # Chceme, aby létal klidně, ne jako raketa
@@ -422,7 +426,14 @@ class DroneFireEnv(ParallelEnv):
                     if speed > 10.0: # Pokud letí moc rychle
                         step_reward -= 0.1
 
-                    # D) Specifické úkoly
+                    # D) Penalizace za výškový limit
+                    max_alt = 80.0 if "fixed" in agent else 25.0
+                    if pos[2] > max_alt:
+                        # Za každý metr nad 25m kvartokoptera dostane pokutu
+                        # Pokud je ve 30m, ztratí -0.1.
+                        step_reward -= 0.1
+
+                    # E) Specifické úkoly
                     if "fixed" in agent:
                         # NOVÁ ODMĚNA ZA HAŠENÍ!
                         # Získáme info ze simulace, kolik vody dopadlo na oheň
@@ -441,23 +452,11 @@ class DroneFireEnv(ParallelEnv):
                         fire_intensity = np.sum(local_map)
                         
                         if fire_intensity > 0.1:
-                            # 1. První objev ohně (Velký bonus pro tým)
-                            # if not self.fire_discovered:
-                            #     self.fire_discovered = True
-                            #     step_reward += 50.0  
-                            #     print(f"✅ {agent} jako první objevil oheň!")
-                            
-                            # 2. Kontinuální bonus za to, že se drží nad ohněm
-                            # Tím se ruší těch -0.1 a dron naopak začne vydělávat +0.4 za každý krok
-                            step_reward += 1.0
+                            # Masivní odměna za to, že vidí oheň.
+                            # Přebije explorační bonus, takže dron nad ohněm zůstane viset.
+                            # Bonus roste s tím, kolik ohně vidí (aby stál přímo nad ním).
+                            step_reward += 1.0 + (fire_intensity * 0.01)
                 
-                # Výškový limit
-                max_alt = 80.0 if "fixed" in agent else 25.0
-                if pos[2] > max_alt:
-                    # Za každý metr nad 25m kvartokoptera dostane pokutu
-                    # Pokud je ve 30m, ztratí -0.1.
-                    step_reward -= 0.1
-            
             # 4. ZÁPIS VÝSLEDKŮ PRO AGENTA
             rewards[agent] = step_reward
             

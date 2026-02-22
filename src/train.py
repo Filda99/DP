@@ -16,12 +16,12 @@ def train():
     
     # 1. Hyperparametry
     num_episodes = 2000
-    max_steps = 400          # Prodlouženo, aby letadlo stihlo doletět
-    learning_rate = 3e-4
+    max_steps = 1000
+    learning_rate = 5e-5
     gamma = 0.99
     clip_coef = 0.2
     update_epochs = 4
-    episodes_per_batch = 5
+    episodes_per_batch = 15
     
     # Konfigurace týmu
     N_QUADS = 1
@@ -301,7 +301,7 @@ def train():
                 
                 value_loss = nn.MSELoss()(new_values, b_returns)
                 
-                loss = policy_loss + 0.5 * value_loss - 0.01 * entropy_sum
+                loss = policy_loss + 0.5 * value_loss - 0.002 * entropy_sum
                 
                 optimizer.zero_grad()
                 loss.backward()
