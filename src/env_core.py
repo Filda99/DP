@@ -37,11 +37,12 @@ class DroneFireEnv(ParallelEnv):
         # === OBSERVATION SPACE (ASYMETRICKÝ) ===
         
         # 1. Konfigurace pro SCOUTA (Quad)
-        # Co znamená 10 čísel v self_state:
+        # Co znamená 12 čísel v self_state:
         # 0-2: pozice x, y, z (relativně k mapě)
         # 3-5: rychlost vx, vy, vz
         # 6-9: vzdálenost k okrajům (sever, jih, východ, západ)
-        self.quad_self_dim = 10 
+        # 10-11: informace o ohni (smer dx, dy)
+        self.quad_self_dim = 12
         self.max_neighbors = self.num_quads - 1 if self.num_quads > 1 else 1 # Aby to nepadlo při 1 dronu
         
         quad_obs_space = gym.spaces.Dict({
@@ -95,21 +96,24 @@ class DroneFireEnv(ParallelEnv):
         norm_pos = pos / self.map_bounds 
         # Rychlost dělíme 20 m/s (max speed)
         norm_vel = vel / 20.0 
+
+        # KOMPAS: Relativní vektor k ohni (normalizovaný na mapu)
+        # fire_x/y jsou definovány v reset()
+        rel_fire_x = (self.fire_x - pos[0]) / self.map_bounds
+        rel_fire_y = (self.fire_y - pos[1]) / self.map_bounds
         
         # 1. Výpočet vzdáleností k okrajům mapy (Boundary Awareness)
         # self.map_bounds je např. 100.0. Dron je na pozici x=80.
         # Vzdálenost k východu = 100 - 80 = 20m.
         # Nasledne znormalizujeme
-        dist_north = (self.map_bounds - pos[1]) / self.grid_size_m
-        dist_south = (pos[1] - (-self.map_bounds)) / self.grid_size_m
-        dist_east  = (self.map_bounds - pos[0]) / self.grid_size_m
-        dist_west  = (pos[0] - (-self.map_bounds)) / self.grid_size_m
+        dist_measurements = self._get_boundary_measurements(pos)
         
         # 2. Sestavení Self-State
         self_state = np.array([
             norm_pos[0], norm_pos[1], norm_pos[2],    # 0-2: Pozice (x,y,z)
             norm_vel[0], norm_vel[1], norm_vel[2],    # 3-5: Rychlost (vx,vy,vz)
-            dist_north, dist_south, dist_east, dist_west  # 6-9: Vzdálenosti ke zdem
+            dist_measurements[0], dist_measurements[1], dist_measurements[2], dist_measurements[3], # 6-9: Vzdálenosti ke zdem
+            rel_fire_x, rel_fire_y # 10-11: Směr k ohni (dx, dy)
         ], dtype=np.float32)
 
         # 3. Získání pozic OSTATNÍCH dronů (Self-Attention Inputs)
@@ -127,26 +131,15 @@ class DroneFireEnv(ParallelEnv):
                 # Normalizace relativní pozice
                 neighbor_states.append(rel_pos / self.grid_size_m)
                 neighbor_mask.append(False) # False = Validní (neignorovat)
-            # else:
-            #     # Mrtvý soused (Padding)
-            #     neighbor_states.append(np.zeros(3, dtype=np.float32))
-            #     neighbor_mask.append(True)  # True = Ignorovat
-
             else:
-                # Mrtvý soused: Místo maskování ho "odsuneme" daleko mimo mapu (např. 2.0 = 2x velikost mapy)
-                # Tím zajistíme, že Attention má vždy platná data a nevybuchne na NaN.
-                neighbor_states.append(np.array([2.0, 2.0, 2.0], dtype=np.float32))
-                neighbor_mask.append(False) # False = Validní (síť ho vidí, ale je daleko)
-        
-        # Padding pro případ, že je jen 1 dron (aby se nerozbil shape)
-        # if not neighbor_states:
-        #     neighbor_states.append(np.zeros(3, dtype=np.float32))
-        #     neighbor_mask.append(True)
+                # Mrtvý soused (Padding)
+                neighbor_states.append(np.zeros(3, dtype=np.float32))
+                neighbor_mask.append(True) # True = IGNOROVAT v Attention
 
-        if not neighbor_states:
-            # Případ pro 1 drona: Vytvoříme fiktivního souseda daleko pryč
-            neighbor_states.append(np.array([2.0, 2.0, 2.0], dtype=np.float32))
-            neighbor_mask.append(False) # False = Validní
+        # Pokud máš celkově jen 1 dron, doplň do max_neighbors
+        while len(neighbor_states) < self.max_neighbors:
+            neighbor_states.append(np.zeros(3, dtype=np.float32))
+            neighbor_mask.append(True)
         
         # 4. Získání lokální mapy (Local Map 32x32)
         local_map = self._extract_local_fire_map(pos)
@@ -157,6 +150,17 @@ class DroneFireEnv(ParallelEnv):
             "neighbor_states": np.array(neighbor_states, dtype=np.float32),
             "neighbor_mask": np.array(neighbor_mask, dtype=bool)
         }
+    
+    def _get_boundary_measurements(self, pos):
+        """
+        Výpočet vzdáleností k okrajům mapy.
+        Vrací: (dist_north, dist_south, dist_east, dist_west) - všechny normalizované 0..1
+        """
+        dist_north = (self.map_bounds - pos[1]) / self.grid_size_m
+        dist_south = (pos[1] - (-self.map_bounds)) / self.grid_size_m
+        dist_east  = (self.map_bounds - pos[0]) / self.grid_size_m
+        dist_west  = (pos[0] - (-self.map_bounds)) / self.grid_size_m
+        return dist_north, dist_south, dist_east, dist_west
     
     def _get_fixed_obs(self, agent_name):
         """Generuje pozorování pro Commandera (Jen fyzika + Voda)."""
@@ -171,15 +175,12 @@ class DroneFireEnv(ParallelEnv):
         norm_pos = pos / self.map_bounds
         norm_vel = vel / 20.0
         
-        dist_north = (self.map_bounds - pos[1]) / self.grid_size_m
-        dist_south = (pos[1] - (-self.map_bounds)) / self.grid_size_m
-        dist_east  = (self.map_bounds - pos[0]) / self.grid_size_m
-        dist_west  = (pos[0] - (-self.map_bounds)) / self.grid_size_m
+        dist_boundaries = self._get_boundary_measurements(pos)
 
         self_state = np.array([
             norm_pos[0], norm_pos[1], norm_pos[2],
             norm_vel[0], norm_vel[1], norm_vel[2],
-            dist_north, dist_south, dist_east, dist_west,
+            dist_boundaries[0], dist_boundaries[1], dist_boundaries[2], dist_boundaries[3],
             water_lvl # 11. hodnota
         ], dtype=np.float32)
         
@@ -239,7 +240,13 @@ class DroneFireEnv(ParallelEnv):
             processed_map = np.zeros((resolution_px, resolution_px), dtype=np.float32)
         else:
             import cv2
-            processed_map = cv2.resize(crop, (resolution_px, resolution_px), interpolation=cv2.INTER_LINEAR)
+            # processed_map = cv2.resize(crop, (resolution_px, resolution_px), interpolation=cv2.INTER_LINEAR)
+            
+            # Přidáme ochranu: pokud je matice intenzity prázdná, resize selže
+            try:
+                processed_map = cv2.resize(crop, (resolution_px, resolution_px), interpolation=cv2.INTER_LINEAR)
+            except:
+                processed_map = np.zeros((resolution_px, resolution_px), dtype=np.float32)
             
         return processed_map[np.newaxis, ...].astype(np.float32)
 
@@ -308,9 +315,9 @@ class DroneFireEnv(ParallelEnv):
             dt=0.1
         )
         # Oheň spawne kdekoli ve čtverci 100x100m kolem středu
-        fire_x = random.uniform(-50, 50)
-        fire_y = random.uniform(-50, 50)
-        self.sim.start_fire([fire_x, fire_y], intensity=0.5)
+        self.fire_x = random.uniform(-50, 50)
+        self.fire_y = random.uniform(-50, 50)
+        self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
         
         # 4. Přidáme drony na náhodné startovní pozice (např. 30m od ohně)
         for agent in self.agents:
@@ -412,26 +419,30 @@ class DroneFireEnv(ParallelEnv):
                     step_reward += 0.05
 
                     # B) Explorační bonus (Nutí ho to létat a hledat)
-                    grid_x = int(pos[0] / 10.0)
-                    grid_y = int(pos[1] / 10.0)
-                    cell_key = (grid_x, grid_y)
-                    if cell_key not in self.visited_cells:
-                        self.visited_cells.add(cell_key)
-                        step_reward += 0.2 # Odměna za objev nového 10x10 sektoru!
+                    # grid_x = int(pos[0] / 10.0)
+                    # grid_y = int(pos[1] / 10.0)
+                    # cell_key = (grid_x, grid_y)
+                    # if cell_key not in self.visited_cells:
+                    #     self.visited_cells.add(cell_key)
+                    #     step_reward += 0.1 # Odměna za objev nového 10x10 sektoru!
 
                     # C) Penalizace za divoké létání (Velocity Penalty)
                     # Chceme, aby létal klidně, ne jako raketa
-                    vel = drone.get_velocity()
-                    speed = np.linalg.norm(vel)
-                    if speed > 10.0: # Pokud letí moc rychle
-                        step_reward -= 0.1
+                    # vel = drone.get_velocity()
+                    # speed = np.linalg.norm(vel)
+                    # if speed > 10.0:
+                    #     step_reward -= 0.1
 
                     # D) Penalizace za výškový limit
-                    max_alt = 80.0 if "fixed" in agent else 25.0
+                    max_alt = 150.0 if "fixed" in agent else 80.0
                     if pos[2] > max_alt:
-                        # Za každý metr nad 25m kvartokoptera dostane pokutu
-                        # Pokud je ve 30m, ztratí -0.1.
                         step_reward -= 0.1
+
+                    # E) Penazilace za přílišné přiblíženi k hranicím mapy (Boundary Proximity)
+                    dist_boundaries = self._get_boundary_measurements(pos)
+                    dist_to_edge = min(dist_boundaries[0], dist_boundaries[1], dist_boundaries[2], dist_boundaries[3])
+                    if dist_to_edge < 0.10: # Pokud je blíž než 10% od zdi
+                        step_reward -= 1 * (1.0 - dist_to_edge * 10) # Rostoucí penalizace
 
                     # E) Specifické úkoly
                     if "fixed" in agent:
@@ -447,18 +458,39 @@ class DroneFireEnv(ParallelEnv):
                         # Malý bonus za rychlost (aby nestál)
                         step_reward += drone.get_speed() * 0.01 
                     else:
-                        # Quad: Odměna za sledování ohně
-                        local_map = self._extract_local_fire_map(pos)
-                        fire_intensity = np.sum(local_map)
+                        # Pro výpočet odměny si vytáhneme jen úzký okruh 30x30m kolem dronu.
+                        # Do neuronové sítě dál půjde těch 200m (to řeší metoda _get_obs),
+                        # ale body dostane, jen když je fyzicky přímo nad ohněm!
+                        reward_zone = self._extract_local_fire_map(pos, window_size_m=30.0)
+                        fire_under_drone = np.sum(reward_zone)
                         
-                        if fire_intensity > 0.1:
-                            # Masivní odměna za to, že vidí oheň.
-                            # Přebije explorační bonus, takže dron nad ohněm zůstane viset.
-                            # Bonus roste s tím, kolik ohně vidí (aby stál přímo nad ním).
-                            step_reward += 1.0 + (fire_intensity * 0.01)
+                        if fire_under_drone > 0.1:
+                        #     if not self.fire_discovered:
+                        #         self.fire_discovered = True
+                        #         print(f"🎯 {agent} OBJVIL OHEŇ ve stepu {self.current_step}!")
+                            
+                        #     # Masivní odměna za visení PŘÍMO nad ohněm
+                        #     step_reward += 0.5 + (fire_under_drone * 0.005)
+
+                            # Bonus za oheň (výrazně vyšší)
+                            step_reward += 1.0 + (fire_under_drone * 0.05)
+
+                            # PENALIZACE ZA RYCHLOST nad ohněm (nutí ho zastavit)
+                            speed = np.linalg.norm(drone.get_velocity())
+                            step_reward -= speed * 0.01  # Čím rychleji letí nad ohněm, tím míň dostane
+
+                        # # Quad: Odměna za sledování ohně
+                        # local_map = self._extract_local_fire_map(pos)
+                        # fire_intensity = np.sum(local_map)
+                        
+                        # if fire_intensity > 0.1:
+                        #     # Masivní odměna za to, že vidí oheň.
+                        #     # Přebije explorační bonus, takže dron nad ohněm zůstane viset.
+                        #     # Bonus roste s tím, kolik ohně vidí (aby stál přímo nad ním).
+                        #     step_reward += 1.0 + (fire_intensity * 0.01)
                 
             # 4. ZÁPIS VÝSLEDKŮ PRO AGENTA
-            rewards[agent] = step_reward
+            rewards[agent] = np.clip(step_reward, -10, 10)
             
             # Pokud agent žije a neukončil epizodu, přidáme jeho pozorování a necháme si ho
             if not terminations[agent]:

@@ -43,8 +43,8 @@ class Quadcopter(BaseDrone):
         self.max_wind_resistance = 14.7 # V_max_stable [m/s]
         
         # --- 2. Controller Gains (K_p matrix) ---
-        self.kp_xy = 2.0   # Horizontal velocity gain
-        self.kp_z = 10.0   # Vertical velocity gain
+        self.kp_xy = 6.0   # Horizontal velocity gain
+        self.kp_z = 25.0   # Vertical velocity gain
         self.kp_yaw = 1.0  # Yaw rate gain
         self.kp_attitude = 5.0 # Torque to keep level
 
@@ -58,47 +58,96 @@ class Quadcopter(BaseDrone):
             baseVisualShapeIndex=visual_shape,
             basePosition=position
         )
-        p.changeDynamics(body_id, -1, linearDamping=0.05, angularDamping=0.05)
+        p.changeDynamics(body_id, -1, linearDamping=0.5, angularDamping=0.5)
+        # p.changeDynamics(body_id, -1, linearDamping=0.05, angularDamping=0.05)
         return body_id
+
+    # def apply_control(self, inputs, dt):
+    #     """
+    #     Improved control with better physics and stability.
+    #     """
+    #     # --- Stage 1: Input Mapping ---
+    #     u_roll, u_pitch, u_yaw, u_vert = inputs
+        
+    #     # IMPROVED CONTROL - better force scaling and stability
+    #     # Reduced force scale for more gentle control
+    #     force_scale = 1.5  # Reduced from 2.0 for better stability
+        
+    #     force_x = u_roll * force_scale  # Roll force (X axis)
+    #     force_y = u_pitch * force_scale  # Pitch force (Y axis) - CORRECTED: removed negative sign
+        
+    #     # IMPROVED VERTICAL CONTROL with better hover stability
+    #     gravity_comp = self.mass * 9.81
+    #     # Add velocity damping for better hover stability
+    #     current_vel = self.get_velocity()
+    #     z_damping = -0.5 * current_vel[2]  # Vertical velocity damping
+        
+    #     # Hover point is at u_vert=0, with improved stability
+    #     throttle_input = u_vert * force_scale * 0.5  # Reduced throttle sensitivity
+    #     force_z = gravity_comp + throttle_input + z_damping
+        
+    #     # IMPROVED YAW CONTROL
+    #     target_yaw_rate = u_yaw * self.max_yaw_rate
+    #     ang_vel = np.array(p.getBaseVelocity(self.drone_id)[1])
+    #     torque_z = self.kp_yaw * (target_yaw_rate - ang_vel[2])
+        
+    #     # MUCH STRONGER ATTITUDE STABILIZATION
+    #     current_rpy = self.get_orientation_rpy()
+    #     # Increased stabilization gains significantly
+    #     torque_x = -8.0 * current_rpy[0] - 2.0 * ang_vel[0]  # Roll stabilization + damping
+    #     torque_y = -8.0 * current_rpy[1] - 2.0 * ang_vel[1]  # Pitch stabilization + damping
+
+    #     # --- Apply Forces ---
+    #     current_pos = self.get_position()
+        
+    #     p.applyExternalForce(self.drone_id, -1, [force_x, force_y, force_z], current_pos, p.WORLD_FRAME)
+    #     p.applyExternalTorque(self.drone_id, -1, [torque_x, torque_y, torque_z], p.WORLD_FRAME)
+        
+    #     return np.array([force_x, force_y, force_z])
 
     def apply_control(self, inputs, dt):
         """
-        Improved control with better physics and stability.
+        Implementation strictly following Thesis Section 2.2.2
+        (High-Level Velocity Control Model).
         """
-        # --- Stage 1: Input Mapping ---
         u_roll, u_pitch, u_yaw, u_vert = inputs
         
-        # IMPROVED CONTROL - better force scaling and stability
-        # Reduced force scale for more gentle control
-        force_scale = 1.5  # Reduced from 2.0 for better stability
-        
-        force_x = u_roll * force_scale  # Roll force (X axis)
-        force_y = u_pitch * force_scale  # Pitch force (Y axis) - CORRECTED: removed negative sign
-        
-        # IMPROVED VERTICAL CONTROL with better hover stability
-        gravity_comp = self.mass * 9.81
-        # Add velocity damping for better hover stability
         current_vel = self.get_velocity()
-        z_damping = -0.5 * current_vel[2]  # Vertical velocity damping
-        
-        # Hover point is at u_vert=0, with improved stability
-        throttle_input = u_vert * force_scale * 0.5  # Reduced throttle sensitivity
-        force_z = gravity_comp + throttle_input + z_damping
-        
-        # IMPROVED YAW CONTROL
-        target_yaw_rate = u_yaw * self.max_yaw_rate
-        ang_vel = np.array(p.getBaseVelocity(self.drone_id)[1])
-        torque_z = self.kp_yaw * (target_yaw_rate - ang_vel[2])
-        
-        # MUCH STRONGER ATTITUDE STABILIZATION
-        current_rpy = self.get_orientation_rpy()
-        # Increased stabilization gains significantly
-        torque_x = -8.0 * current_rpy[0] - 2.0 * ang_vel[0]  # Roll stabilization + damping
-        torque_y = -8.0 * current_rpy[1] - 2.0 * ang_vel[1]  # Pitch stabilization + damping
-
-        # --- Apply Forces ---
         current_pos = self.get_position()
+        current_rpy = self.get_orientation_rpy()
+        yaw = current_rpy[2]
         
+        # --- Eq 2.12: Input Mapping to Target Body Velocity ---
+        target_v_body_x = u_pitch * self.max_xy_velocity # Dopředu/Dozadu
+        target_v_body_y = u_roll * self.max_xy_velocity  # Doleva/Doprava
+        target_v_z = u_vert * self.max_z_velocity        # Nahoru/Dolu
+        
+        # --- Eq 2.13: Frame Transformation R_z(psi) ---
+        # Převedení rychlosti z pohledu dronu do pohledu mapy (aby vždy letěl dopředu tam, kam se dívá)
+        cos_y = np.cos(yaw)
+        sin_y = np.sin(yaw)
+        target_v_world_x = target_v_body_x * cos_y - target_v_body_y * sin_y
+        target_v_world_y = target_v_body_x * sin_y + target_v_body_y * cos_y
+        
+        # --- Eq 2.14: Proportional Force Control ---
+        # Vytvoření síly na základě rozdílu mezi cílovou a skutečnou rychlostí
+        force_x = self.mass * self.kp_xy * (target_v_world_x - current_vel[0])
+        force_y = self.mass * self.kp_xy * (target_v_world_y - current_vel[1])
+        
+        # Osa Z obsahuje kompenzaci gravitace (g_comp = m * g)
+        gravity_comp = self.mass * 9.81
+        force_z = self.mass * self.kp_z * (target_v_z - current_vel[2]) + gravity_comp
+        
+        # --- Eq 2.15: Attitude Stabilization and Yaw Control ---
+        target_yaw_rate = u_yaw * self.max_yaw_rate
+        ang_vel = p.getBaseVelocity(self.drone_id)[1]
+        
+        torque_z = self.kp_yaw * (target_yaw_rate - ang_vel[2])
+        # PD regulátor pro udržení roviny (Roll a Pitch se snaží být 0)
+        torque_x = -self.kp_attitude * current_rpy[0] - 1.0 * ang_vel[0]
+        torque_y = -self.kp_attitude * current_rpy[1] - 1.0 * ang_vel[1]
+
+        # --- Aplikace sil ---
         p.applyExternalForce(self.drone_id, -1, [force_x, force_y, force_z], current_pos, p.WORLD_FRAME)
         p.applyExternalTorque(self.drone_id, -1, [torque_x, torque_y, torque_z], p.WORLD_FRAME)
         

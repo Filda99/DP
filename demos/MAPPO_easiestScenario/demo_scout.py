@@ -20,10 +20,10 @@ def run_demo():
     # 1. Konfigurace (Stejná jako při tréninku)
     N_QUADS = 1
     N_FIXED = 0
-    MAX_STEPS = 1000
+    MAX_STEPS = 800
     
     # Který model chceme načíst? (Změň číslo podle toho, který měl u tebe nejlepší Reward)
-    MODEL_PATH = "saved_models/scout_ep1650.pt" 
+    MODEL_PATH = "saved_models/scout_ep3000.pt" 
     
     # 2. Inicializace prostředí
     env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=200.0)
@@ -57,6 +57,13 @@ def run_demo():
     
     drone_path_x = []
     drone_path_y = []
+
+    # Seznamy pro logování dat
+    inputs_log = []      # Akce [Roll, Pitch, Yaw, Throttle]
+    velocity_log = []    # Rychlost (velikost vektoru)
+    position_log = []    # Pozice [X, Y, Z]
+    fire_seen_log = []   # Kolik ohně dron vidí
+    reward_step_log = [] # Odměna v daném kroku
 
     print("🚁 Dron startuje...")
     
@@ -104,6 +111,19 @@ def run_demo():
         # Krok prostředí
         obs, rewards, terminations, truncations, infos = env.step(actions)
         total_reward += rewards.get(agent, 0.0)
+
+        # Výpočet viděného ohně (již v kódu máš jako fire_pixels)
+        fire_pixels = np.sum(obs[agent]["local_map"])
+        
+        # Uložení do historie
+        fire_seen_log.append(fire_pixels)
+        reward_step_log.append(rewards.get(agent, 0.0))
+        
+        # (Zde zůstává i to minulé logování rychlosti, pozice a vstupů)
+        drone = env.sim.drones[agent]
+        velocity_log.append(np.linalg.norm(drone.get_velocity()))
+        position_log.append(drone.get_position().copy())
+        inputs_log.append(action.squeeze(0).numpy().copy())
         
         # --- VYKRESLOVÁNÍ (Každý 2. krok, ať GIF není zbytečně obrovský) ---
         if step % 2 == 0 and agent in env.sim.drones:
@@ -158,6 +178,59 @@ def run_demo():
     # Zrychlíme to na 15 FPS
     imageio.mimsave(output_filename, frames, fps=15, loop=0) 
     print("✅ Video úspěšně uloženo!")
+
+    # === GENEROVÁNÍ GRAFU ANALÝZY ===
+    steps_range = range(len(inputs_log))
+    plt.figure(figsize=(12, 18)) # Vyšší graf pro 5 částí
+
+    # 1. Graf Vstupů (Actions)
+    plt.subplot(5, 1, 1)
+    inputs_np = np.array(inputs_log)
+    labels = ['Roll', 'Pitch', 'Yaw', 'Throttle']
+    for i in range(4):
+        plt.plot(steps_range, inputs_np[:, i], label=labels[i])
+    plt.title("Vstupy do dronu (Actions - NN Output)")
+    plt.ylabel("Intenzita [-1, 1]")
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
+
+    # 2. Graf Rychlosti
+    plt.subplot(5, 1, 2)
+    plt.plot(steps_range, velocity_log, color='red', label='Rychlost')
+    plt.title("Velikost vektoru pohybu (Aktuální rychlost)")
+    plt.ylabel("m/s")
+    plt.grid(True, alpha=0.3)
+
+    # 3. Graf Pozice
+    plt.subplot(5, 1, 3)
+    pos_np = np.array(position_log)
+    plt.plot(steps_range, pos_np[:, 0], label='X (North)')
+    plt.plot(steps_range, pos_np[:, 1], label='Y (East)')
+    plt.plot(steps_range, pos_np[:, 2], label='Z (Altitude)')
+    plt.title("Pozice dronu v mapě")
+    plt.ylabel("Metry")
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
+
+    # 4. Graf Viděného ohně (Senzor)
+    plt.subplot(5, 1, 4)
+    plt.fill_between(steps_range, fire_seen_log, color='orange', alpha=0.5, label='Intenzita ohně')
+    plt.title("Detekce ohně senzorem (Local Map Pixels)")
+    plt.ylabel("Suma pixelů")
+    plt.grid(True, alpha=0.3)
+
+    # 5. Graf Odměny (Reward per Step)
+    plt.subplot(5, 1, 5)
+    plt.bar(steps_range, reward_step_log, color='green', alpha=0.6, label='Step Reward')
+    plt.axhline(0, color='black', linewidth=0.8)
+    plt.title("Odměna v jednotlivých krocích (Step Reward)")
+    plt.ylabel("Reward")
+    plt.xlabel("Krok epizody")
+    plt.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig("demo_analysis_full.png")
+    print("📊 Komplexní analýza uložena jako 'demo_analysis_full.png'")
 
 if __name__ == "__main__":
     run_demo()

@@ -13,14 +13,15 @@ from models import ScoutActor, CommanderActor, MAPPOCritic
 
 def train():
     print("🚀 Spouštím Heterogenní MAPPO Trénink (Communication Link)...")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 1. Hyperparametry
-    num_episodes = 2000
-    max_steps = 1000
-    learning_rate = 5e-5
-    gamma = 0.99
-    clip_coef = 0.2
-    update_epochs = 4
+    num_episodes = 3000
+    max_steps = 200
+    learning_rate = 3e-5
+    gamma = 0.99    # Jak moc se agent zajímá o budoucí odměny (0.99 = velmi, 0.9 = méně)
+    clip_coef = 0.2 # PPO klipovací faktor (jak moc se může nová politika odchýlit od staré), aby se zabránilo příliš velkým updateům
+    update_epochs = 8
     episodes_per_batch = 15
     
     # Konfigurace týmu
@@ -50,18 +51,26 @@ def train():
     # 3. Inicializace Sítí
     # Scout má paměť (GRU), Commander zatím ne
     scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim)
-    commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim)
+    
+    if N_FIXED > 0:
+        commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim)
+    else:
+        commander_actor = None # Nevytvářej síť, když není letadlo
+    
     critic = MAPPOCritic(global_state_dim)
     
     # Společný optimalizátor pro celý "mozkový trust"
-    optimizer = optim.Adam(
-        list(scout_actor.parameters()) + 
-        list(commander_actor.parameters()) + 
-        list(critic.parameters()), 
-        lr=learning_rate
-    )
+    params = list(scout_actor.parameters()) + list(critic.parameters())
+    if commander_actor:
+        params += list(commander_actor.parameters())
+    optimizer = optim.Adam(params, lr=learning_rate)
     
+    # Historie pro grafy
     episode_rewards_history = []
+    loss_history = []  # Celková ztráta
+    entropy_history = []
+    v_loss_history = [] # Ztráta kritika (Value Loss)
+
     os.makedirs("saved_models", exist_ok=True)
     
     # Globální buffery
@@ -71,6 +80,8 @@ def train():
         "g_states": [], "actions": [], "logprobs": [], "returns": [], "values": [], # Common
         "agent_types": [], "hiddens": []                                            # Meta
     }
+
+    best_avg_reward = -1000.0
 
     # --- HLAVNÍ SMYČKA ---
     for episode in range(1, num_episodes + 1):
@@ -88,7 +99,7 @@ def train():
         episode_reward = 0.0
         
         for step in range(max_steps):
-            if not env.agents: break
+            # if not env.agents: break
             
             global_state = env.state()
             g_state_tensor = torch.FloatTensor(global_state).unsqueeze(0)
@@ -138,6 +149,20 @@ def train():
                     scout_messages.append(torch.zeros(1, scout_msg_dim))
                     scout_alive_mask.append(True) # Mrtvý (Ignorovat v Attention)
 
+                    current_step_data[q_agent] = {
+                        "type": "scout",
+                        "map": torch.zeros(1, 1, 32, 32), # nuly
+                        "self": torch.zeros(1, scout_self_dim), # nuly
+                        "neigh_s": torch.zeros(1, env.max_neighbors, 3),
+                        "neigh_m": torch.ones(1, env.max_neighbors, dtype=torch.bool),
+                        "hidden": torch.zeros(1, 1, scout_hidden_dim),
+                        "action": torch.zeros(1, 4),
+                        "logprob": torch.tensor([0.0]),
+                        "value": torch.tensor([[0.0]]),
+                        "g_state": g_state_tensor # globální stav můžeme nechat
+                    }
+                    actions[q_agent] = np.zeros(4) # prostředí ignoruje akce mrtvých
+
             # Sestavení komunikačního balíčku pro Commandera
             # Shape: [1, N_Scouts, Msg_Dim]
             if scout_messages:
@@ -150,7 +175,7 @@ def train():
 
             # === FÁZE 2: COMMANDER (Rozhodování) ===
             for f_agent in env.fixed_agents:
-                if f_agent in env.agents:
+                if f_agent in env.agents and commander_actor is not None:
                     self_state = torch.FloatTensor(obs[f_agent]["self_state"]).unsqueeze(0)
                     
                     # Akce sítě (Dostává zprávy od scoutů!)
@@ -167,6 +192,17 @@ def train():
                         "self": self_state, "msgs": msgs_tensor, "msg_mask": msgs_mask,
                         "action": action, "logprob": logprob, "value": value, "g_state": g_state_tensor
                     }
+                else:
+                    current_step_data[f_agent] = {
+                        "type": "commander",
+                        "self": torch.zeros(1, fixed_self_dim if N_FIXED > 0 else 1),
+                        "msgs": msgs_tensor, "msg_mask": msgs_mask,
+                        "action": torch.zeros(1, 4),
+                        "logprob": torch.tensor([0.0]),
+                        "value": torch.tensor([[0.0]]),
+                        "g_state": g_state_tensor
+                    }
+                    actions[f_agent] = np.zeros(4)
 
             # === KROK PROSTŘEDÍ ===
             next_obs, rewards, terminations, truncations, infos = env.step(actions)
@@ -190,18 +226,25 @@ def train():
         episode_rewards_history.append(episode_reward)
 
         # == ZPRACOVÁNÍ EPIZODY (Discounted Returns) ==
+        # Pro každý agent spočítáme discounted returns a uložíme je do ep_data, aby byly spárovány s akcemi v rollout_memory.
+        # To znamená, že pro každého agenta půjdeme jeho odměny pozpátku a spočítáme kumulativní sumu s diskontem gamma.
+        # Tato hodnota nám řekne, jak dobrá byla akce v daném kroku s ohledem na budoucí odměny.
         for agent in ep_data:
             rewards = ep_data[agent]["rewards"]
             if not rewards: continue
             
             discounted_sum = 0
             returns = []
+            # Jdeme pozpátku, abychom mohli kumulativně sčítat odměny s diskontem
+            # což znamená, že poslední odměna v epizodě má největší váhu, a čím dál od ní jsme, tím menší váhu mají předchozí odměny.
             for r in reversed(rewards):
                 discounted_sum = r + gamma * discounted_sum
                 returns.insert(0, discounted_sum)
             ep_data[agent]["returns"] = returns
 
         # Přesun dat z Rollout Memory do Global Batch
+        # Tady se spárují akce, logproby, hodnoty a nyní i returns pro každý krok a každého agenta do jednoho velkého batch_data, který použijeme pro PPO update.
+        # Každý záznam v rollout_memory obsahuje odkaz na agenta, index kroku v epizodě a data (akce, logprob, value, g_state, atd.).
         for item in rollout_memory:
             agent = item["agent"]
             idx = item["step_idx"]
@@ -238,9 +281,25 @@ def train():
                 batch_data["neighbor_masks"].append(torch.ones(1, N_QUADS-1, dtype=torch.bool))
                 batch_data["hiddens"].append(torch.zeros(1, 1, scout_hidden_dim))
 
-        print(f"Epizoda {episode:03d} | Reward: {episode_reward:.2f}")
+        # Vypočítáme průměr za posledních 15 epizod
+        if len(episode_rewards_history) >= 15:
+            avg_reward = np.mean(episode_rewards_history[-15:])
+        else:
+            avg_reward = np.mean(episode_rewards_history)
+            
+        print(f"Epizoda {episode:03d} | Reward: {episode_reward:.2f} | Průměr(15): {avg_reward:.2f}")
+
+        # === UKLÁDÁNÍ ZLATÉHO STANDARDU ===
+        # Model se uloží POUZE tehdy, pokud je jeho PRŮMĚRNÁ úspěšnost za 15 her lepší než dřív.
+        if episode >= 15 and avg_reward > best_avg_reward:
+            best_avg_reward = avg_reward
+            torch.save(scout_actor.state_dict(), "saved_models/scout_best.pt")
+            print(f"⭐ Uložen nový NEJLEPŠÍ model (Průměr: {best_avg_reward:.2f})!")
 
         # == PPO UPDATE ==
+        # Když nasbíráme data z 15 epizod, provedeme aktualizaci sítí pomocí PPO algoritmu. To zahrnuje výpočet nových logprobs, hodnot a ztrát, a poté zpětnou propagaci a optimalizaci.
+        # PPO update se provádí několikrát (update_epochs) nad stejnými daty, aby se z nich vytěžilo maximum, ale zároveň s klipováním, aby se zabránilo příliš velkým změnám v politice.
+        # Po update se batch_data vyčistí, aby se začalo znovu sbírat data pro další sadu epizod.
         if episode % episodes_per_batch == 0 and len(batch_data["returns"]) > 0:
             print(f"🛠️ UPDATE SÍTÍ ({len(batch_data['returns'])} vzorků)...")
             
@@ -255,32 +314,64 @@ def train():
             # Advantages
             advantages = b_returns - b_values.detach()
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            b_returns = (b_returns - b_returns.mean()) / (b_returns.std() + 1e-8)
             
-            for _ in range(update_epochs):
+            for epoch in range(update_epochs):
                 new_logprobs = torch.zeros_like(b_logprobs)
-                entropy_sum = 0
+                entropy_sum = torch.tensor(0.0, device=device)
                 
                 # 1. SCOUT UPDATE
                 idx_s = (b_types == 0)
                 if idx_s.any():
+                    # Hidden state pro GRU musí mít vždy tvar 
+                    # (Počet_vrstev, Batch, Hidden_Dim). Naše hiddens v batch_data mají (1, 1, 128).
+                    # Po cat(0) vznikne (Samples, 1, 128), po transpose(0, 1) vznikne (1, Samples, 128).
+                    # b_hiddens = torch.cat([batch_data["hiddens"][i] for i in range(len(b_types)) if b_types[i]==0], dim=0)
+                    # b_hiddens = b_hiddens.transpose(0, 1).contiguous()
+                    
                     # Forward pass s původními hidden states (Truncated BPTT window=1)
+                    # dist, _, _ = scout_actor(
+                    #     torch.cat([batch_data["maps"][i] for i in range(len(b_types)) if b_types[i]==0]),
+                    #     torch.cat([batch_data["self_states"][i] for i in range(len(b_types)) if b_types[i]==0]),
+                    #     torch.cat([batch_data["neighbor_states"][i] for i in range(len(b_types)) if b_types[i]==0]),
+                    #     torch.cat([batch_data["neighbor_masks"][i] for i in range(len(b_types)) if b_types[i]==0]),
+                    #     b_hiddens
+                    # )
+                    # actions_s = b_actions[idx_s]
+                    # new_logprobs[idx_s] = dist.log_prob(actions_s).sum(1)
+                    # entropy_sum += dist.entropy().sum(1).mean()
+
+
+                    # Tady je trik: Necháme data v pořadí, jak šla v epizodě
+                    # a řekneme GRU, že jde o sekvenci.
+                    # B_hiddens vezmeme jen ty ze STARTU epizod (každých 300 kroků)
+                    b_hiddens = torch.stack([batch_data["hiddens"][i] for i in range(0, len(b_types), max_steps)])
+                    # Tvar b_hiddens musí být (1, Batch_Epizod, 128)
+                    b_hiddens = b_hiddens.squeeze(2).transpose(0, 1).contiguous()
+
+                    # Vstupy musíme 'reshape' na (Batch_Epizod, Max_Steps, Vlastnosti)
+                    def to_seq(data_list):
+                        t = torch.cat(data_list)
+                        return t.view(episodes_per_batch, max_steps, *t.shape[1:])
+
                     dist, _, _ = scout_actor(
-                        torch.cat([batch_data["maps"][i] for i in range(len(b_types)) if b_types[i]==0]),
-                        torch.cat([batch_data["self_states"][i] for i in range(len(b_types)) if b_types[i]==0]),
-                        torch.cat([batch_data["neighbor_states"][i] for i in range(len(b_types)) if b_types[i]==0]),
-                        torch.cat([batch_data["neighbor_masks"][i] for i in range(len(b_types)) if b_types[i]==0]),
-                        # Funkce torch.cat spojila paměti všech dronů pod sebe a vytvořila tvar (Počet_vzorků, 1, 128).
-                        # Ale GRU vrstva (která je uvnitř scout_actor) očekává tvar (1, Počet_vzorků, 128).
-                        # Prostě to máme otočené o 90 stupňů.
-                        torch.cat([batch_data["hiddens"][i] for i in range(len(b_types)) if b_types[i]==0]).transpose(0, 1)
+                        to_seq([batch_data["maps"][i] for i in range(len(b_types)) if b_types[i]==0]),
+                        to_seq([batch_data["self_states"][i] for i in range(len(b_types)) if b_types[i]==0]),
+                        to_seq([batch_data["neighbor_states"][i] for i in range(len(b_types)) if b_types[i]==0]),
+                        to_seq([batch_data["neighbor_masks"][i] for i in range(len(b_types)) if b_types[i]==0]),
+                        b_hiddens
                     )
+
+                    # Musíme zploštit akce, abychom spočítali log_prob pro všech 3000 vzorků
                     actions_s = b_actions[idx_s]
                     new_logprobs[idx_s] = dist.log_prob(actions_s).sum(1)
+                    
+                    # Přičtení entropie pro Scouta
                     entropy_sum += dist.entropy().sum(1).mean()
 
                 # 2. COMMANDER UPDATE
                 idx_c = (b_types == 1)
-                if idx_c.any():
+                if idx_c.any() and commander_actor is not None:
                     dist, _, _ = commander_actor(
                         torch.cat([batch_data["fixed_states"][i] for i in range(len(b_types)) if b_types[i]==1]),
                         torch.cat([batch_data["incoming_msgs"][i] for i in range(len(b_types)) if b_types[i]==1]),
@@ -301,14 +392,19 @@ def train():
                 
                 value_loss = nn.MSELoss()(new_values, b_returns)
                 
-                loss = policy_loss + 0.5 * value_loss - 0.002 * entropy_sum
+                loss = policy_loss + 0.5 * value_loss - 0.01 * entropy_sum
+                # Uložíme si průměrné hodnoty pro graf (převod na float z tensoru)
+                loss_history.append(loss.item())
+                v_loss_history.append(value_loss.item())
+                entropy_history.append(float(entropy_sum))
                 
                 optimizer.zero_grad()
                 loss.backward()
                 # === GRADIENT CLIPPING (Prevence explozí) ===
-                nn.utils.clip_grad_norm_(list(scout_actor.parameters()) + 
-                                         list(commander_actor.parameters()) + 
-                                         list(critic.parameters()), max_norm=0.5)
+                params = list(scout_actor.parameters()) + list(critic.parameters())
+                if commander_actor:
+                    params += list(commander_actor.parameters())
+                nn.utils.clip_grad_norm_(params, max_norm=0.5)
                 optimizer.step()
             
             # Reset bufferů
@@ -316,7 +412,8 @@ def train():
 
         if episode % 50 == 0:
             torch.save(scout_actor.state_dict(), f"saved_models/scout_ep{episode}.pt")
-            torch.save(commander_actor.state_dict(), f"saved_models/commander_ep{episode}.pt")
+            if commander_actor:
+                torch.save(commander_actor.state_dict(), f"saved_models/commander_ep{episode}.pt")
             
             # Graf
             plt.figure(figsize=(10, 5))
@@ -326,6 +423,42 @@ def train():
             plt.title("Heterogenní Tým (Communication Enabled)")
             plt.savefig("training_comm.png")
             plt.close()
+
+    # === FINÁLNÍ GRAFY (Opraveno pro Agg backend) ===
+    plt.figure(figsize=(15, 5)) # Trochu širší pro 3 grafy
+    
+    # 1. Graf odměn
+    plt.subplot(1, 3, 1)
+    plt.plot(episode_rewards_history, label="Reward", alpha=0.3, color='green')
+    if len(episode_rewards_history) > 20:
+        plt.plot(np.convolve(episode_rewards_history, np.ones(20)/20, mode='valid'), label="MA 20", color='darkgreen')
+    plt.title("Vývoj odměn")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+
+    # 2. Graf Loss (Kritik a celková)
+    plt.subplot(1, 3, 2)
+    plt.plot(loss_history, label="Total Loss", color='red', alpha=0.5)
+    plt.plot(v_loss_history, label="Value Loss (Critic)", color='blue', alpha=0.5)
+    plt.title("Vývoj Loss (Log)")
+    plt.yscale('log') 
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+
+    # 3. Graf Entropie (Jak moc dron experimentuje)
+    plt.subplot(1, 3, 3)
+    # entropy_history si musíš přidat do train smyčky podobně jako loss_history
+    if 'entropy_history' in locals() or 'entropy_history' in globals():
+        plt.plot(entropy_history, color='purple')
+        plt.title("Vývoj Entropie (Průzkum)")
+    else:
+        plt.text(0.5, 0.5, 'Pro graf entropie\npřidej logování do update smyčky', ha='center')
+    plt.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig("final_training_plot.png")
+    plt.close() # DŮLEŽITÉ: Uvolní paměť, místo plt.show()
+    print("📈 Finální graf tréninku uložen jako 'final_training_plot.png'")
 
 if __name__ == "__main__":
     train()
