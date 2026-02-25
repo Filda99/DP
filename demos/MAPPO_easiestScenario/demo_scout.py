@@ -20,10 +20,10 @@ def run_demo():
     # 1. Konfigurace (Stejná jako při tréninku)
     N_QUADS = 1
     N_FIXED = 0
-    MAX_STEPS = 800
+    MAX_STEPS = 300
     
     # Který model chceme načíst? (Změň číslo podle toho, který měl u tebe nejlepší Reward)
-    MODEL_PATH = "saved_models/scout_ep3000.pt" 
+    MODEL_PATH = "saved_models/scout_best.pt" 
     
     # 2. Inicializace prostředí
     env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=200.0)

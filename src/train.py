@@ -16,7 +16,7 @@ def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 1. Hyperparametry
-    num_episodes = 3000
+    num_episodes = 1000
     max_steps = 200
     learning_rate = 3e-5
     gamma = 0.99    # Jak moc se agent zajímá o budoucí odměny (0.99 = velmi, 0.9 = méně)
@@ -78,7 +78,7 @@ def train():
         "maps": [], "self_states": [], "neighbor_states": [], "neighbor_masks": [], # Scout Inputs
         "fixed_states": [], "incoming_msgs": [], "msg_masks": [],                   # Commander Inputs
         "g_states": [], "actions": [], "logprobs": [], "returns": [], "values": [], # Common
-        "agent_types": [], "hiddens": []                                            # Meta
+        "agent_types": [], "hiddens": [], "critic_hiddens": []                      # Meta
     }
 
     best_avg_reward = -1000.0
@@ -90,6 +90,8 @@ def train():
         # Inicializace paměti pro Scouty (Batch=1, Hidden=128)
         # Každý dron má svou vlastní paměť
         scout_hiddens = {q: torch.zeros(1, 1, scout_hidden_dim) for q in env.quad_agents}
+        # Inicializace paměti pro Kritika (Global, Batch=1, Hidden=128)
+        critic_hiddens = {a: torch.zeros(1, 1, 128) for a in env.possible_agents}
 
         # Epizodní buffer
         ep_data = {agent: {"rewards": [], "values": []} for agent in env.possible_agents}
@@ -126,7 +128,7 @@ def train():
                     # Akce sítě
                     with torch.no_grad():
                         dist, message, hidden_out = scout_actor(local_map, self_state, neigh_s, neigh_m, hidden_in)
-                        value = critic(g_state_tensor)
+                        value, c_hidden_out = critic(g_state_tensor, critic_hiddens[q_agent])
                         action = dist.sample()
                         logprob = dist.log_prob(action).sum(1)
 
@@ -142,8 +144,10 @@ def train():
                     current_step_data[q_agent] = {
                         "type": "scout",
                         "map": local_map, "self": self_state, "neigh_s": neigh_s, "neigh_m": neigh_m, "hidden": hidden_in,
-                        "action": action, "logprob": logprob, "value": value, "g_state": g_state_tensor
+                        "action": action, "logprob": logprob, "value": value, "g_state": g_state_tensor, "c_hidden": critic_hiddens[q_agent]
                     }
+                    critic_hiddens[q_agent] = c_hidden_out # Update paměti pro další krok
+
                 else:
                     # Dron je mrtvý -> Posílá prázdnou zprávu a je maskován
                     scout_messages.append(torch.zeros(1, scout_msg_dim))
@@ -159,7 +163,8 @@ def train():
                         "action": torch.zeros(1, 4),
                         "logprob": torch.tensor([0.0]),
                         "value": torch.tensor([[0.0]]),
-                        "g_state": g_state_tensor # globální stav můžeme nechat
+                        "g_state": g_state_tensor, # globální stav můžeme nechat
+                        "c_hidden": torch.zeros(1, 1, 128)
                     }
                     actions[q_agent] = np.zeros(4) # prostředí ignoruje akce mrtvých
 
@@ -181,7 +186,7 @@ def train():
                     # Akce sítě (Dostává zprávy od scoutů!)
                     with torch.no_grad():
                         dist, _, _ = commander_actor(self_state, msgs_tensor, msgs_mask)
-                        value = critic(g_state_tensor)
+                        value, c_hidden_out = critic(g_state_tensor, critic_hiddens[f_agent])
                         action = dist.sample()
                         logprob = dist.log_prob(action).sum(1)
                     
@@ -190,8 +195,9 @@ def train():
                     current_step_data[f_agent] = {
                         "type": "commander",
                         "self": self_state, "msgs": msgs_tensor, "msg_mask": msgs_mask,
-                        "action": action, "logprob": logprob, "value": value, "g_state": g_state_tensor
+                        "action": action, "logprob": logprob, "value": value, "g_state": g_state_tensor, "c_hidden": critic_hiddens[f_agent]
                     }
+                    critic_hiddens[f_agent] = c_hidden_out # Update paměti pro další krok
                 else:
                     current_step_data[f_agent] = {
                         "type": "commander",
@@ -200,7 +206,8 @@ def train():
                         "action": torch.zeros(1, 4),
                         "logprob": torch.tensor([0.0]),
                         "value": torch.tensor([[0.0]]),
-                        "g_state": g_state_tensor
+                        "g_state": g_state_tensor,
+                        "c_hidden": torch.zeros(1, 1, 128)
                     }
                     actions[f_agent] = np.zeros(4)
 
@@ -264,6 +271,7 @@ def train():
                 batch_data["neighbor_states"].append(d["neigh_s"])
                 batch_data["neighbor_masks"].append(d["neigh_m"])
                 batch_data["hiddens"].append(d["hidden"])
+                batch_data["critic_hiddens"].append(d["c_hidden"])
                 # Commander placeholders
                 batch_data["fixed_states"].append(torch.zeros(1, fixed_self_dim)) 
                 batch_data["incoming_msgs"].append(torch.zeros(1, N_QUADS, scout_msg_dim))
@@ -280,6 +288,7 @@ def train():
                 batch_data["neighbor_states"].append(torch.zeros(1, N_QUADS-1, 3))
                 batch_data["neighbor_masks"].append(torch.ones(1, N_QUADS-1, dtype=torch.bool))
                 batch_data["hiddens"].append(torch.zeros(1, 1, scout_hidden_dim))
+                batch_data["critic_hiddens"].append(d["c_hidden"])
 
         # Vypočítáme průměr za posledních 15 epizod
         if len(episode_rewards_history) >= 15:
@@ -319,40 +328,24 @@ def train():
             for epoch in range(update_epochs):
                 new_logprobs = torch.zeros_like(b_logprobs)
                 entropy_sum = torch.tensor(0.0, device=device)
+
+                steps = max_steps
+                episodes = episodes_per_batch
+
+                def to_seq(data_list):
+                    t = torch.cat(data_list)
+                    # view vytvoří [15, 200, *rozměry_vstupních_dat]
+                    return t.view(episodes, steps, *t.shape[1:])
                 
                 # 1. SCOUT UPDATE
                 idx_s = (b_types == 0)
                 if idx_s.any():
-                    # Hidden state pro GRU musí mít vždy tvar 
-                    # (Počet_vrstev, Batch, Hidden_Dim). Naše hiddens v batch_data mají (1, 1, 128).
-                    # Po cat(0) vznikne (Samples, 1, 128), po transpose(0, 1) vznikne (1, Samples, 128).
-                    # b_hiddens = torch.cat([batch_data["hiddens"][i] for i in range(len(b_types)) if b_types[i]==0], dim=0)
-                    # b_hiddens = b_hiddens.transpose(0, 1).contiguous()
-                    
-                    # Forward pass s původními hidden states (Truncated BPTT window=1)
-                    # dist, _, _ = scout_actor(
-                    #     torch.cat([batch_data["maps"][i] for i in range(len(b_types)) if b_types[i]==0]),
-                    #     torch.cat([batch_data["self_states"][i] for i in range(len(b_types)) if b_types[i]==0]),
-                    #     torch.cat([batch_data["neighbor_states"][i] for i in range(len(b_types)) if b_types[i]==0]),
-                    #     torch.cat([batch_data["neighbor_masks"][i] for i in range(len(b_types)) if b_types[i]==0]),
-                    #     b_hiddens
-                    # )
-                    # actions_s = b_actions[idx_s]
-                    # new_logprobs[idx_s] = dist.log_prob(actions_s).sum(1)
-                    # entropy_sum += dist.entropy().sum(1).mean()
-
-
-                    # Tady je trik: Necháme data v pořadí, jak šla v epizodě
+                    # Necháme data v pořadí, jak šla v epizodě
                     # a řekneme GRU, že jde o sekvenci.
                     # B_hiddens vezmeme jen ty ze STARTU epizod (každých 300 kroků)
-                    b_hiddens = torch.stack([batch_data["hiddens"][i] for i in range(0, len(b_types), max_steps)])
+                    b_hiddens = torch.stack([batch_data["hiddens"][i] for i in range(0, len(b_types), steps)])
                     # Tvar b_hiddens musí být (1, Batch_Epizod, 128)
-                    b_hiddens = b_hiddens.squeeze(2).transpose(0, 1).contiguous()
-
-                    # Vstupy musíme 'reshape' na (Batch_Epizod, Max_Steps, Vlastnosti)
-                    def to_seq(data_list):
-                        t = torch.cat(data_list)
-                        return t.view(episodes_per_batch, max_steps, *t.shape[1:])
+                    b_hiddens = b_hiddens.squeeze(2).transpose(0, 1).contiguous().to(device)
 
                     dist, _, _ = scout_actor(
                         to_seq([batch_data["maps"][i] for i in range(len(b_types)) if b_types[i]==0]),
@@ -382,7 +375,16 @@ def train():
                     entropy_sum += dist.entropy().sum(1).mean()
 
                 # Společný Kritik
-                new_values = critic(b_g_states)
+                # 1. Připravíme hidden states ze startu epizod
+                b_critic_hiddens = torch.stack([batch_data["critic_hiddens"][i] for i in range(0, len(batch_data["critic_hiddens"]), steps)])
+                b_critic_hiddens = b_critic_hiddens.squeeze(2).transpose(0, 1).contiguous().to(device)
+
+                # 2. Forward pass přes celou sekvenci globálních stavů
+                # g_states jsou [3000, GS_DIM], to_seq z nich udělá [15, 200, GS_DIM]
+                new_values, _ = critic(to_seq(batch_data["g_states"]), b_critic_hiddens)
+                
+                # 3. Výpočet MSE Loss (Pamatuj: b_returns už máš normalizované)
+                value_loss = nn.MSELoss()(new_values, b_returns)
                 
                 # Loss
                 ratio = torch.exp(new_logprobs - b_logprobs)
@@ -392,7 +394,12 @@ def train():
                 
                 value_loss = nn.MSELoss()(new_values, b_returns)
                 
-                loss = policy_loss + 0.5 * value_loss - 0.01 * entropy_sum
+                # policy_loss je hlavní ztráta pro aktualizaci politiky (Actorů), 
+                # value_loss je ztráta pro aktualizaci Kritika, 
+                # a entropy_sum je bonus, který podporuje průzkum (vyšší entropie znamená, že agent více experimentuje s různými akcemi).
+                # celková ztráta kombinuje všechny tyto aspekty, přičemž klade největší důraz na policy_loss, menší na value_loss a 
+                # přidává malý bonus za entropii, aby se zabránilo příliš brzy konvergenci na suboptimální politiku.
+                loss = policy_loss + 0.1 * value_loss - 0.01 * entropy_sum
                 # Uložíme si průměrné hodnoty pro graf (převod na float z tensoru)
                 loss_history.append(loss.item())
                 v_loss_history.append(value_loss.item())
@@ -404,7 +411,10 @@ def train():
                 params = list(scout_actor.parameters()) + list(critic.parameters())
                 if commander_actor:
                     params += list(commander_actor.parameters())
-                nn.utils.clip_grad_norm_(params, max_norm=0.5)
+                # max_norm znamena, jak moc se mohou gradienty změnit v jednom kroku. 
+                # 0.2 je poměrně konzervativní hodnota, která pomáhá stabilizovat trénink a 
+                # zabraňuje příliš velkým updateům, které by mohly způsobit kolaps učení.
+                nn.utils.clip_grad_norm_(params, max_norm=0.2)
                 optimizer.step()
             
             # Reset bufferů

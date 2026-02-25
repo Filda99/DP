@@ -383,19 +383,42 @@ class CommanderActor(nn.Module):
 class MAPPOCritic(nn.Module):
     """
     CRITIC (Kritik): Hodnotí, jak dobrý je současný stav.
-    Vstup: GLOBÁLNÍ data (Pohled boha na mapu ohně a všechny drony).
+    Vstup: 
+        GLOBÁLNÍ data (Pohled boha na mapu ohně a všechny drony).
+        Hidden state z minulého kroku (paměť).
     Výstup: Jedno číslo (očekávaná budoucí odměna).
     """
-    def __init__(self, global_state_size):
+    def __init__(self, global_state_size, hidden_dim=128):
         super().__init__()
-        
-        self.network = nn.Sequential(
-            nn.Linear(global_state_size, 512),
+        # 1. Encoder (zmenšíme obří globální stav na rozumný vektor)
+        self.encoder = nn.Sequential(
+            nn.Linear(global_state_size, 256),
             nn.ReLU(),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Linear(256, 1) # Vrací přesně jednu hodnotu!
+            nn.Linear(256, hidden_dim),
+            nn.ReLU()
         )
+        # 2. GRU Paměť (umožní kritikovi vidět časový trend)
+        self.gru = nn.GRU(hidden_dim, hidden_dim, batch_first=True)
+        # 3. Value Head (finální odhad odměny)
+        self.value_head = nn.Linear(hidden_dim, 1)
 
-    def forward(self, global_state):
-        return self.network(global_state)
+    def forward(self, global_state, hidden_state):
+        # global_state v tréninku: [Batch, Seq, GS_DIM] | v rolloutu: [Batch, GS_DIM]
+        is_sequential = (global_state.dim() == 3)
+        batch_size = global_state.size(0)
+        seq_len = global_state.size(1) if is_sequential else 1
+
+        # Zploštění pro Lineární vrstvy
+        x = global_state.reshape(-1, global_state.size(-1))
+        x = self.encoder(x) # [Batch*Seq, hidden_dim]
+
+        # Rozplétání pro GRU
+        x = x.view(batch_size, seq_len, -1)
+        
+        # Průchod pamětí
+        gru_out, new_hidden = self.gru(x, hidden_state)
+
+        # Výstupní hodnota (opět zploštíme pro lineární hlavu)
+        value = self.value_head(gru_out.reshape(-1, gru_out.size(-1)))
+
+        return value, new_hidden

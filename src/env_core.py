@@ -416,7 +416,7 @@ class DroneFireEnv(ParallelEnv):
                     # === ZMĚNA STRATEGIE: UČÍME SE LÉTAT ===
                     
                     # A) Survival Bonus (Každý krok, co žije, je dobrý)
-                    step_reward += 0.05
+                    step_reward -= 0.01
 
                     # B) Explorační bonus (Nutí ho to létat a hledat)
                     # grid_x = int(pos[0] / 10.0)
