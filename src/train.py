@@ -17,8 +17,8 @@ def train():
     
     # 1. Hyperparametry
     num_episodes = 8000
-    max_steps = 200
-    learning_rate = 3e-5
+    max_steps = 500
+    learning_rate = 1e-5
     gamma = 0.99    # Jak moc se agent zajímá o budoucí odměny (0.99 = velmi, 0.9 = méně)
     clip_coef = 0.2 # PPO klipovací faktor (jak moc se může nová politika odchýlit od staré), aby se zabránilo příliš velkým updateům
     update_epochs = 8
@@ -29,7 +29,7 @@ def train():
     N_FIXED = 1
     
     # 2. Inicializace prostředí
-    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=200.0)
+    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=1000.0)
     
     # Zjištění dimenzí pro sítě
     # A) SCOUT (Quad)
@@ -90,6 +90,8 @@ def train():
         # Inicializace paměti pro Scouty (Batch=1, Hidden=128)
         # Každý dron má svou vlastní paměť
         scout_hiddens = {q: torch.zeros(1, 1, scout_hidden_dim) for q in env.quad_agents}
+        # Inicializace paměti pro Commandera (Batch=1, Hidden=128)
+        commander_hiddens = {f: torch.zeros(1, 1, 128) for f in env.fixed_agents}
         # Inicializace paměti pro Kritika (Global, Batch=1, Hidden=128)
         critic_hiddens = {a: torch.zeros(1, 1, 128) for a in env.possible_agents}
 
@@ -182,19 +184,22 @@ def train():
             for f_agent in env.fixed_agents:
                 if f_agent in env.agents and commander_actor is not None:
                     self_state = torch.FloatTensor(obs[f_agent]["self_state"]).unsqueeze(0)
+                    hidden_in = commander_hiddens[f_agent]
                     
                     # Akce sítě (Dostává zprávy od scoutů!)
                     with torch.no_grad():
-                        dist, _, _ = commander_actor(self_state, msgs_tensor, msgs_mask)
+                        dist, _, hidden_out = commander_actor(self_state, msgs_tensor, msgs_mask, hidden_in)
                         value, c_hidden_out = critic(g_state_tensor, critic_hiddens[f_agent])
                         action = dist.sample()
                         logprob = dist.log_prob(action).sum(1)
                     
+                    commander_hiddens[f_agent] = hidden_out # Update paměti
                     actions[f_agent] = action.squeeze(0).numpy()
                     
                     current_step_data[f_agent] = {
                         "type": "commander",
                         "self": self_state, "msgs": msgs_tensor, "msg_mask": msgs_mask,
+                        "hidden": hidden_in,
                         "action": action, "logprob": logprob, "value": value, "g_state": g_state_tensor, "c_hidden": critic_hiddens[f_agent]
                     }
                     critic_hiddens[f_agent] = c_hidden_out # Update paměti pro další krok
@@ -203,6 +208,7 @@ def train():
                         "type": "commander",
                         "self": torch.zeros(1, fixed_self_dim if N_FIXED > 0 else 1),
                         "msgs": msgs_tensor, "msg_mask": msgs_mask,
+                        "hidden": torch.zeros(1, 1, 128),
                         "action": torch.zeros(1, 4),
                         "logprob": torch.tensor([0.0]),
                         "value": torch.tensor([[0.0]]),
@@ -287,7 +293,8 @@ def train():
                 batch_data["self_states"].append(torch.zeros(1, scout_self_dim))
                 batch_data["neighbor_states"].append(torch.zeros(1, N_QUADS-1, 3))
                 batch_data["neighbor_masks"].append(torch.ones(1, N_QUADS-1, dtype=torch.bool))
-                batch_data["hiddens"].append(torch.zeros(1, 1, scout_hidden_dim))
+                batch_data["hiddens"].append(d["hidden"])
+                # batch_data["hiddens"].append(torch.zeros(1, 1, scout_hidden_dim))
                 batch_data["critic_hiddens"].append(d["c_hidden"])
 
         # Vypočítáme průměr za posledních 15 epizod
@@ -323,7 +330,7 @@ def train():
             # Advantages
             advantages = b_returns - b_values.detach()
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-            b_returns = (b_returns - b_returns.mean()) / (b_returns.std() + 1e-8)
+            # b_returns = (b_returns - b_returns.mean()) / (b_returns.std() + 1e-8)
             
 	        # Výpočet stride pro více agentů
             num_agents = N_QUADS + N_FIXED
@@ -378,11 +385,17 @@ def train():
                 # 2. COMMANDER UPDATE
                 idx_c = (b_types == 1)
                 if idx_c.any() and commander_actor is not None:
-                    # Použijeme to_seq pro správné zarovnání batchů
+                    # Výběr hiddens pro letadla: stride je max_steps*num_agents. 
+                    # Pokud je dron (Scout) v týmu první, letadlo je na indexu 1, 401, 801...
+                    offset = 1 # Index letadla v týmu (0=Scout, 1=Commander)
+                    b_hiddens_c = torch.stack([batch_data["hiddens"][k * stride + offset] for k in range(episodes)])
+                    b_hiddens_c = b_hiddens_c.squeeze(2).transpose(0, 1).contiguous().to(device)
+
                     dist, _, _ = commander_actor(
                         to_seq([batch_data["fixed_states"][i] for i in range(len(b_types)) if b_types[i]==1]),
                         to_seq([batch_data["incoming_msgs"][i] for i in range(len(b_types)) if b_types[i]==1]),
-                        to_seq([batch_data["msg_masks"][i] for i in range(len(b_types)) if b_types[i]==1])
+                        to_seq([batch_data["msg_masks"][i] for i in range(len(b_types)) if b_types[i]==1]),
+                        b_hiddens_c
                     )
                     actions_c = b_actions[idx_c]
                     new_logprobs[idx_c] = dist.log_prob(actions_c).sum(1)

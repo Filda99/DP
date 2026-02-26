@@ -55,8 +55,8 @@ class DroneFireEnv(ParallelEnv):
         })
 
         # 2. Konfigurace pro COMMANDERA (Fixed)
-        # Pos(3) + Vel(3) + Walls(4) + WaterLvl(1) + pos_water_fill(2-[x,y]) = 13
-        self.fixed_self_dim = 13
+        # Pos(3) + Vel(3) + Walls(4) + WaterLvl(1) + pos_water_fill(2-[x,y]) + init fire(2) = 15
+        self.fixed_self_dim = 15
         
         fixed_obs_space = gym.spaces.Dict({
             "self_state": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.fixed_self_dim,), dtype=np.float32)
@@ -181,6 +181,9 @@ class DroneFireEnv(ParallelEnv):
             rel_base_x = 0.0
             rel_base_y = 0.0
         
+        # 2. NOVÉ: Kompas k ohni (aby letadlo vědělo, kam se vrátit po doplnění)
+        rel_fire_x = (self.fire_x - pos[0]) / self.map_bounds
+        rel_fire_y = (self.fire_y - pos[1]) / self.map_bounds
 
         # === NORMALIZACE ===
         norm_pos = pos / self.map_bounds
@@ -194,7 +197,9 @@ class DroneFireEnv(ParallelEnv):
             dist_boundaries[0], dist_boundaries[1], dist_boundaries[2], dist_boundaries[3],
             water_lvl,
             rel_base_x,
-            rel_base_y
+            rel_base_y,
+            rel_fire_x,
+            rel_fire_y
         ], dtype=np.float32)
         
         return {
@@ -328,14 +333,14 @@ class DroneFireEnv(ParallelEnv):
             dt=0.1
         )
         # Oheň spawne kdekoli ve čtverci 100x100m kolem středu
-        self.fire_x = random.uniform(-50, 50)
-        self.fire_y = random.uniform(-50, 50)
+        self.fire_x = random.uniform(-400, 400)
+        self.fire_y = random.uniform(-400, 400)
         self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
         
-        # 4. Přidáme drony na náhodné startovní pozice (např. 30m od ohně)
+        # 4. Přidáme drony na náhodné startovní pozice
         for agent in self.agents:
-            start_x = random.uniform(-40, 40)
-            start_y = random.uniform(-40, 40)
+            start_x = random.uniform(-500, 500)
+            start_y = random.uniform(-500, 500)
             
             if "fixed" in agent:
                 # Startuje výš
@@ -410,7 +415,7 @@ class DroneFireEnv(ParallelEnv):
             # A) Je dron zničený fyzikálně? (Tvoje simulace ho smazala nebo spadl)
             if agent not in self.sim.drones:
                 terminations[agent] = True
-                step_reward = -100.0  # Trest za pád
+                step_reward = -1000.0  # Trest za pád
                 print(f"💥 {agent} havaroval ve stepu {self.current_step}")
                 
             else:
@@ -421,7 +426,7 @@ class DroneFireEnv(ParallelEnv):
                 # B) Zkontrolujeme hranice mapy (Out of Bounds)
                 if abs(pos[0]) > self.map_bounds or abs(pos[1]) > self.map_bounds:
                     terminations[agent] = True
-                    step_reward = -100.0  # Trest za uletění z mapy
+                    step_reward = -1000.0  # Trest za uletění z mapy
                     print(f"🚫 {agent} uletěl z mapy ve stepu {self.current_step}")
                     self.sim._destroy_drone(agent)
                     
@@ -429,7 +434,7 @@ class DroneFireEnv(ParallelEnv):
                     # === ZMĚNA STRATEGIE: UČÍME SE LÉTAT ===
                     
                     # A) Survival Bonus (Každý krok, co žije, je dobrý)
-                    step_reward -= 0.01
+                    step_reward += 0.5
 
                     # B) Explorační bonus (Nutí ho to létat a hledat)
                     # grid_x = int(pos[0] / 10.0)
@@ -454,17 +459,17 @@ class DroneFireEnv(ParallelEnv):
                     # E) Penazilace za přílišné přiblíženi k hranicím mapy (Boundary Proximity)
                     dist_boundaries = self._get_boundary_measurements(pos)
                     dist_to_edge = min(dist_boundaries[0], dist_boundaries[1], dist_boundaries[2], dist_boundaries[3])
-                    if dist_to_edge < 0.10: # Pokud je blíž než 10% od zdi
-                        step_reward -= 1 * (1.0 - dist_to_edge * 10) # Rostoucí penalizace
+                    if dist_to_edge < 0.2:
+                        step_reward -= 3 * (1.0 - dist_to_edge * 5)
 
                     # E) Specifické úkoly
                     if "fixed" in agent:
                         # Získáme info ze simulace, kolik vody dopadlo na oheň
                         extinguished_amount = self.sim.drone_extinguish_stats.get(agent, 0.0)
                         
-                        # 1. HLAVNÍ ODMĚNA: Hašení (ponechat a posílit)
+                        # 1. HLAVNÍ ODMĚNA: Hašení
                         if extinguished_amount > 0:
-                            step_reward += extinguished_amount * 20.0 # Zvýšeno z 10.0
+                            step_reward += extinguished_amount * 2
                         
                         # 2. POMOCNÁ ODMĚNA: Směr k ohni (když má vodu)
                         if drone.current_water > 0:
@@ -505,7 +510,7 @@ class DroneFireEnv(ParallelEnv):
                         #     # Masivní odměna za visení PŘÍMO nad ohněm
                         #     step_reward += 0.5 + (fire_under_drone * 0.005)
 
-                            # Bonus za oheň (výrazně vyšší)
+                            # Bonus za oheň
                             step_reward += 1.0 + (fire_under_drone * 0.05)
 
                             # PENALIZACE ZA RYCHLOST nad ohněm (nutí ho zastavit)
@@ -523,7 +528,8 @@ class DroneFireEnv(ParallelEnv):
                         #     step_reward += 1.0 + (fire_intensity * 0.01)
                 
             # 4. ZÁPIS VÝSLEDKŮ PRO AGENTA
-            rewards[agent] = np.clip(step_reward, -10, 10)
+            # rewards[agent] = np.clip(step_reward, -10, 10)
+            rewards[agent] = step_reward
             
             # Pokud agent žije a neukončil epizodu, přidáme jeho pozorování a necháme si ho
             if not terminations[agent]:

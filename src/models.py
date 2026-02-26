@@ -292,7 +292,7 @@ class ScoutActor(nn.Module):
 # ==========================================
 
 class CommanderActor(nn.Module):
-    def __init__(self, self_state_dim, msg_input_dim=5, action_dim=4, hidden_dim=128):
+    def __init__(self, self_state_dim=15, msg_input_dim=5, action_dim=4, hidden_dim=128):
         super().__init__()
         
         # 1. SELF STATE ENCODER (Jeho vlastní fyzický stav (rychlost, výška, hladina vody v nádrži, pozice))
@@ -336,46 +336,63 @@ class CommanderActor(nn.Module):
         # Jednoduše spojí (concatenation) vektor letadla a kontextový vektor.
         # Prožene to přes MLP (neuronové vrstvy), které vymyslí strategii: 
         # "Mám vodu + oheň je pode mnou = OTEVŘÍT NÁDRŽ." nebo "Nemám vodu + oheň je pode mnou = LETĚT DOPLNIT VODU."
-        self.fusion = nn.Sequential(
-            nn.Linear(64 + 64, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU()
-        )
+        # self.fusion = nn.Sequential(
+        #     nn.Linear(64 + 64, hidden_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(hidden_dim, hidden_dim),
+        #     nn.ReLU()
+        # )
 
-        # 5. ACTION HEAD
+        # # 5. ACTION HEAD
+        # self.action_mean = nn.Linear(hidden_dim, action_dim)
+        # self.action_logstd = nn.Parameter(torch.zeros(1, action_dim))
+
+        self.gru = nn.GRU(input_size=64 + 64, hidden_size=hidden_dim, batch_first=True)
+
         self.action_mean = nn.Linear(hidden_dim, action_dim)
         self.action_logstd = nn.Parameter(torch.zeros(1, action_dim))
 
-    def forward(self, self_state, incoming_messages, message_mask):
-        # Detekce sekvence [Batch, Seq, Dim]
+    def forward(self, self_state, incoming_messages, message_mask, hidden_state):
+        # --- A) Detekce sekvence ---
         is_sequential = (self_state.dim() == 3)
         batch_size = self_state.size(0)
         seq_len = self_state.size(1) if is_sequential else 1
 
-        # ZPLOŠTĚNÍ pro paralelní zpracování 3000 vzorků
+        # --- B) Zploštění pro Attention (pro trénink i demo) ---
         if is_sequential:
             self_state = self_state.reshape(-1, self_state.size(-1))
             incoming_messages = incoming_messages.reshape(-1, incoming_messages.size(-2), incoming_messages.size(-1))
             message_mask = message_mask.reshape(-1, message_mask.size(-1))
 
-        # Encodery a Attention
+        # --- C) Senzory a Attention ---
         self_feat = self.self_embed(self_state)   
         msg_feat = self.msg_embed(incoming_messages) 
         query = self_feat.unsqueeze(1)
         
+        # Cross-Attention (Letadlo se dívá na zprávy od dronů)
         context_vector = self.attention(query, msg_feat, msg_feat, key_padding_mask=message_mask)
         context_vector = context_vector.squeeze(1) 
 
-        # Rozhodování a Výstup
+        # --- D) Fúze a Paměť (GRU) ---
         combined = torch.cat([self_feat, context_vector], dim=1) 
         combined = self.layer_norm(combined)
-        features = self.fusion(combined)        
 
+        # Vrátíme časovou dimenzi pro GRU
+        if is_sequential:
+            combined = combined.view(batch_size, seq_len, -1)
+        else:
+            combined = combined.unsqueeze(1)
+            
+        gru_out, new_hidden = self.gru(combined, hidden_state)
+        
+        # Pro lineární vrstvy opět zploštíme na [Batch*Seq, Hidden]
+        features = gru_out.reshape(-1, 128)
+
+        # --- E) Výstup (Akce) ---
         action_mean = torch.tanh(self.action_mean(features))
         dist = Normal(action_mean, torch.exp(self.action_logstd))
 
-        return dist, None, None
+        return dist, None, new_hidden
 
     # def forward(self, self_state, incoming_messages, message_mask):
     #     """
