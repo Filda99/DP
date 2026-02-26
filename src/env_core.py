@@ -55,8 +55,8 @@ class DroneFireEnv(ParallelEnv):
         })
 
         # 2. Konfigurace pro COMMANDERA (Fixed)
-        # Pos(3) + Vel(3) + Walls(4) + WaterLvl(1) = 11
-        self.fixed_self_dim = 11 
+        # Pos(3) + Vel(3) + Walls(4) + WaterLvl(1) + pos_water_fill(2-[x,y]) = 13
+        self.fixed_self_dim = 13
         
         fixed_obs_space = gym.spaces.Dict({
             "self_state": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.fixed_self_dim,), dtype=np.float32)
@@ -170,6 +170,17 @@ class DroneFireEnv(ParallelEnv):
         
         # Voda
         water_lvl = drone.current_water / drone.water_capacity if drone.water_capacity > 0 else 0.0
+        
+        # Vytáhneme skutečnou pozici zóny ze simulace
+        if self.sim.environment.refill_zone is not None:
+            refill_pos = self.sim.environment.refill_zone['position']
+            # Výpočet relativního kompasu k základně
+            rel_base_x = (refill_pos[0] - pos[0]) / self.map_bounds
+            rel_base_y = (refill_pos[1] - pos[1]) / self.map_bounds
+        else:
+            rel_base_x = 0.0
+            rel_base_y = 0.0
+        
 
         # === NORMALIZACE ===
         norm_pos = pos / self.map_bounds
@@ -181,7 +192,9 @@ class DroneFireEnv(ParallelEnv):
             norm_pos[0], norm_pos[1], norm_pos[2],
             norm_vel[0], norm_vel[1], norm_vel[2],
             dist_boundaries[0], dist_boundaries[1], dist_boundaries[2], dist_boundaries[3],
-            water_lvl # 11. hodnota
+            water_lvl,
+            rel_base_x,
+            rel_base_y
         ], dtype=np.float32)
         
         return {
@@ -446,17 +459,37 @@ class DroneFireEnv(ParallelEnv):
 
                     # E) Specifické úkoly
                     if "fixed" in agent:
-                        # NOVÁ ODMĚNA ZA HAŠENÍ!
                         # Získáme info ze simulace, kolik vody dopadlo na oheň
                         extinguished_amount = self.sim.drone_extinguish_stats.get(agent, 0.0)
                         
+                        # 1. HLAVNÍ ODMĚNA: Hašení (ponechat a posílit)
                         if extinguished_amount > 0:
-                            # Masivní odměna za zásah
-                            step_reward += extinguished_amount * 10.0 
-                            # print(f"💦 {agent} zasáhl oheň! (+{step_reward:.2f})")
+                            step_reward += extinguished_amount * 20.0 # Zvýšeno z 10.0
                         
-                        # Malý bonus za rychlost (aby nestál)
-                        step_reward += drone.get_speed() * 0.01 
+                        # 2. POMOCNÁ ODMĚNA: Směr k ohni (když má vodu)
+                        if drone.current_water > 0:
+                            # Pokud letí k ohni (využijeme tvé fire_x, fire_y z resetu)
+                            dist_to_fire = np.linalg.norm(np.array([self.fire_x, self.fire_y]) - pos[:2])
+                            # Malý bonus za to, že je blízko ohni
+                            step_reward += (1.0 - (dist_to_fire / self.grid_size_m)) * 0.05
+                        
+                        # 3. POMOCNÁ ODMĚNA: Směr k základně (když je prázdný)
+                        else:
+                            # Skutečná pozice základny
+                            if self.sim.environment.refill_zone is not None:
+                                refill_pos = self.sim.environment.refill_zone['position']
+                                dist_to_base = np.linalg.norm(pos[:2] - refill_pos[:2])
+                                
+                                # Bonus za návrat pro vodu k reálné základně
+                                step_reward += (1.0 - (dist_to_base / self.grid_size_m)) * 0.05
+
+                        # 4. TREST: Plýtvání vodou
+                        # Pokud letadlo "hasí" (akce[3] > 0), ale pod ním není oheň
+                        # reward_zone_small = self._extract_local_fire_map(pos, window_size_m=10.0)
+                        # if actions[agent][3] > 0 and np.sum(reward_zone_small) < 0.1:
+                        #     step_reward -= 0.05
+
+                        
                     else:
                         # Pro výpočet odměny si vytáhneme jen úzký okruh 30x30m kolem dronu.
                         # Do neuronové sítě dál půjde těch 200m (to řeší metoda _get_obs),

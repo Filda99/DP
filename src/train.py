@@ -16,7 +16,7 @@ def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 1. Hyperparametry
-    num_episodes = 1000
+    num_episodes = 8000
     max_steps = 200
     learning_rate = 3e-5
     gamma = 0.99    # Jak moc se agent zajímá o budoucí odměny (0.99 = velmi, 0.9 = méně)
@@ -26,7 +26,7 @@ def train():
     
     # Konfigurace týmu
     N_QUADS = 1
-    N_FIXED = 0
+    N_FIXED = 1
     
     # 2. Inicializace prostředí
     env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=200.0)
@@ -325,17 +325,28 @@ def train():
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
             b_returns = (b_returns - b_returns.mean()) / (b_returns.std() + 1e-8)
             
+	        # Výpočet stride pro více agentů
+            num_agents = N_QUADS + N_FIXED
+	    
+            stride = max_steps * num_agents
+            episodes = episodes_per_batch
+	    
             for epoch in range(update_epochs):
                 new_logprobs = torch.zeros_like(b_logprobs)
                 entropy_sum = torch.tensor(0.0, device=device)
 
                 steps = max_steps
-                episodes = episodes_per_batch
 
                 def to_seq(data_list):
                     t = torch.cat(data_list)
                     # view vytvoří [15, 200, *rozměry_vstupních_dat]
                     return t.view(episodes, steps, *t.shape[1:])
+                
+                # Verze pro Kritika (30 trajektorií: 15 epizod * 2 agenti)
+                # Musí to být samostatná funkce, protože rozměr "Batch" je dvojnásobný
+                def to_seq_critic(data_list):
+                    t = torch.cat(data_list)
+                    return t.view(episodes * num_agents, steps, *t.shape[1:])
                 
                 # 1. SCOUT UPDATE
                 idx_s = (b_types == 0)
@@ -343,7 +354,9 @@ def train():
                     # Necháme data v pořadí, jak šla v epizodě
                     # a řekneme GRU, že jde o sekvenci.
                     # B_hiddens vezmeme jen ty ze STARTU epizod (každých 300 kroků)
-                    b_hiddens = torch.stack([batch_data["hiddens"][i] for i in range(0, len(b_types), steps)])
+                    # Oprava hiddens: bereme jen začátek každé epizody (index k*stride)
+                    b_hiddens = torch.stack([batch_data["hiddens"][k * stride] for k in range(episodes)])
+		    
                     # Tvar b_hiddens musí být (1, Batch_Epizod, 128)
                     b_hiddens = b_hiddens.squeeze(2).transpose(0, 1).contiguous().to(device)
 
@@ -365,10 +378,11 @@ def train():
                 # 2. COMMANDER UPDATE
                 idx_c = (b_types == 1)
                 if idx_c.any() and commander_actor is not None:
+                    # Použijeme to_seq pro správné zarovnání batchů
                     dist, _, _ = commander_actor(
-                        torch.cat([batch_data["fixed_states"][i] for i in range(len(b_types)) if b_types[i]==1]),
-                        torch.cat([batch_data["incoming_msgs"][i] for i in range(len(b_types)) if b_types[i]==1]),
-                        torch.cat([batch_data["msg_masks"][i] for i in range(len(b_types)) if b_types[i]==1])
+                        to_seq([batch_data["fixed_states"][i] for i in range(len(b_types)) if b_types[i]==1]),
+                        to_seq([batch_data["incoming_msgs"][i] for i in range(len(b_types)) if b_types[i]==1]),
+                        to_seq([batch_data["msg_masks"][i] for i in range(len(b_types)) if b_types[i]==1])
                     )
                     actions_c = b_actions[idx_c]
                     new_logprobs[idx_c] = dist.log_prob(actions_c).sum(1)
@@ -376,12 +390,12 @@ def train():
 
                 # Společný Kritik
                 # 1. Připravíme hidden states ze startu epizod
-                b_critic_hiddens = torch.stack([batch_data["critic_hiddens"][i] for i in range(0, len(batch_data["critic_hiddens"]), steps)])
+                b_critic_hiddens = torch.stack([batch_data["critic_hiddens"][k * stride + j] for k in range(episodes) for j in range(num_agents)])
                 b_critic_hiddens = b_critic_hiddens.squeeze(2).transpose(0, 1).contiguous().to(device)
 
                 # 2. Forward pass přes celou sekvenci globálních stavů
                 # g_states jsou [3000, GS_DIM], to_seq z nich udělá [15, 200, GS_DIM]
-                new_values, _ = critic(to_seq(batch_data["g_states"]), b_critic_hiddens)
+                new_values, _ = critic(to_seq_critic(batch_data["g_states"]), b_critic_hiddens)
                 
                 # 3. Výpočet MSE Loss (Pamatuj: b_returns už máš normalizované)
                 value_loss = nn.MSELoss()(new_values, b_returns)

@@ -348,36 +348,66 @@ class CommanderActor(nn.Module):
         self.action_logstd = nn.Parameter(torch.zeros(1, action_dim))
 
     def forward(self, self_state, incoming_messages, message_mask):
-        """
-        self_state: [Batch, State_Dim]
-        incoming_messages: [Batch, Num_Scouts, Msg_Dim]
-        message_mask: [Batch, Num_Scouts] (True = padding/dead drone)
-        """
-        
-        # 1. Encodery
-        self_feat = self.self_embed(self_state)   # [Batch, 64]
-        msg_feat = self.msg_embed(incoming_messages) # [Batch, N, 64]
+        # Detekce sekvence [Batch, Seq, Dim]
+        is_sequential = (self_state.dim() == 3)
+        batch_size = self_state.size(0)
+        seq_len = self_state.size(1) if is_sequential else 1
 
-        # 2. Cross-Attention
-        # Letadlo (Query) se ptá zpráv (Key/Value)
-        query = self_feat.unsqueeze(1) # [Batch, 1, 64]
+        # ZPLOŠTĚNÍ pro paralelní zpracování 3000 vzorků
+        if is_sequential:
+            self_state = self_state.reshape(-1, self_state.size(-1))
+            incoming_messages = incoming_messages.reshape(-1, incoming_messages.size(-2), incoming_messages.size(-1))
+            message_mask = message_mask.reshape(-1, message_mask.size(-1))
+
+        # Encodery a Attention
+        self_feat = self.self_embed(self_state)   
+        msg_feat = self.msg_embed(incoming_messages) 
+        query = self_feat.unsqueeze(1)
         
         context_vector = self.attention(query, msg_feat, msg_feat, key_padding_mask=message_mask)
-        context_vector = context_vector.squeeze(1) # [Batch, 64]
+        context_vector = context_vector.squeeze(1) 
 
-        # 3. Rozhodování
-        combined = torch.cat([self_feat, context_vector], dim=1) # [Batch, 128]
-        combined = self.layer_norm(combined)    # Stabilizace před fúzí
-        features = self.fusion(combined)        # [Batch, Hidden]
+        # Rozhodování a Výstup
+        combined = torch.cat([self_feat, context_vector], dim=1) 
+        combined = self.layer_norm(combined)
+        features = self.fusion(combined)        
 
-        # 4. Akce
-        action_mean = self.action_mean(features)
-        action_mean = torch.tanh(action_mean)
+        action_mean = torch.tanh(self.action_mean(features))
+        dist = Normal(action_mean, torch.exp(self.action_logstd))
+
+        return dist, None, None
+
+    # def forward(self, self_state, incoming_messages, message_mask):
+    #     """
+    #     self_state: [Batch, State_Dim]
+    #     incoming_messages: [Batch, Num_Scouts, Msg_Dim]
+    #     message_mask: [Batch, Num_Scouts] (True = padding/dead drone)
+    #     """
         
-        action_std = torch.exp(self.action_logstd)
-        dist = Normal(action_mean, action_std)
+    #     # 1. Encodery
+    #     self_feat = self.self_embed(self_state)   # [Batch, 64]
+    #     msg_feat = self.msg_embed(incoming_messages) # [Batch, N, 64]
 
-        return dist, None, None # (Vracíme None pro kompatibilitu API s message/hidden)
+    #     # 2. Cross-Attention
+    #     # Letadlo (Query) se ptá zpráv (Key/Value)
+    #     query = self_feat.unsqueeze(1) # [Batch, 1, 64]
+        
+    #     context_vector = self.attention(query, msg_feat, msg_feat, key_padding_mask=message_mask)
+    #     context_vector = context_vector.squeeze(1) # [Batch, 64]
+
+    #     # 3. Rozhodování
+    #     combined = torch.cat([self_feat, context_vector], dim=1) # [Batch, 128]
+    #     combined = self.layer_norm(combined)    # Stabilizace před fúzí
+    #     features = self.fusion(combined)        # [Batch, Hidden]
+
+    #     # 4. Akce
+    #     action_mean = self.action_mean(features)
+    #     action_mean = torch.tanh(action_mean)
+        
+    #     action_std = torch.exp(self.action_logstd)
+    #     dist = Normal(action_mean, action_std)
+
+    #     return dist, None, None # (Vracíme None pro kompatibilitu API s message/hidden)
 
 
 class MAPPOCritic(nn.Module):

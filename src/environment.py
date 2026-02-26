@@ -468,15 +468,15 @@ class Environment:
         else:
             print("❌ Cannot save map: FireGrid not initialized")
 
-    def create_refill_zone(self, center_pos=None, size=5.0):
+    def create_refill_zone(self, center_pos=None, size=10.0):
         """
         Creates a visual refill zone.
         If center_pos is None, generates a random position.
         """
         # Pokud není zadána pozice, vygenerujeme náhodnou (např. v rozsahu +/- 200m)
         if center_pos is None:
-             x = random.uniform(-200, 200)
-             y = random.uniform(-200, 200)
+             x = random.uniform(-100, 100)
+             y = random.uniform(-100, 100)
              z = random.uniform(30, 80) # Výška vhodná pro letadla
              center_pos = [x, y, z]
 
