@@ -339,8 +339,10 @@ class DroneFireEnv(ParallelEnv):
         
         # 4. Přidáme drony na náhodné startovní pozice
         for agent in self.agents:
-            start_x = random.uniform(-500, 500)
-            start_y = random.uniform(-500, 500)
+            # Startujte agenty jen v centrálních 60 % mapy
+            safe_zone = self.map_bounds * 0.6
+            start_x = random.uniform(-safe_zone, safe_zone)
+            start_y = random.uniform(-safe_zone, safe_zone)
             
             if "fixed" in agent:
                 # Startuje výš
@@ -415,7 +417,9 @@ class DroneFireEnv(ParallelEnv):
             # A) Je dron zničený fyzikálně? (Tvoje simulace ho smazala nebo spadl)
             if agent not in self.sim.drones:
                 terminations[agent] = True
-                step_reward = -1000.0  # Trest za pád
+                # Čím dříve umře, tím větší trest (motivuje k dlouhému letu)
+                remaining_steps = self.max_steps - self.current_step
+                step_reward = -200.0 - (remaining_steps * 2.0)
                 print(f"💥 {agent} havaroval ve stepu {self.current_step}")
                 
             else:
@@ -426,7 +430,9 @@ class DroneFireEnv(ParallelEnv):
                 # B) Zkontrolujeme hranice mapy (Out of Bounds)
                 if abs(pos[0]) > self.map_bounds or abs(pos[1]) > self.map_bounds:
                     terminations[agent] = True
-                    step_reward = -1000.0  # Trest za uletění z mapy
+                    # Čím dříve umře, tím větší trest (motivuje k dlouhému letu)
+                    remaining_steps = self.max_steps - self.current_step
+                    step_reward = -200.0 - (remaining_steps * 2.0)
                     print(f"🚫 {agent} uletěl z mapy ve stepu {self.current_step}")
                     self.sim._destroy_drone(agent)
                     
@@ -457,10 +463,11 @@ class DroneFireEnv(ParallelEnv):
                         step_reward -= 0.1
 
                     # E) Penazilace za přílišné přiblíženi k hranicím mapy (Boundary Proximity)
-                    dist_boundaries = self._get_boundary_measurements(pos)
-                    dist_to_edge = min(dist_boundaries[0], dist_boundaries[1], dist_boundaries[2], dist_boundaries[3])
-                    if dist_to_edge < 0.2:
-                        step_reward -= 3 * (1.0 - dist_to_edge * 5)
+                    dist_boundaries_norm = self._get_boundary_measurements(pos)
+                    dist_to_edge_norm = min(dist_boundaries_norm[0], dist_boundaries_norm[1], dist_boundaries_norm[2], dist_boundaries_norm[3])
+                    if dist_to_edge_norm < 0.2:
+                        # Trest roste kvadraticky: čím blíž zdi, tím brutálnější propad rewardu
+                        step_reward -= 20.0 * (1.0 - dist_to_edge_norm / 0.25)**2
 
                     # E) Specifické úkoly
                     if "fixed" in agent:

@@ -29,7 +29,7 @@ def train():
     N_FIXED = 1
     
     # 2. Inicializace prostředí
-    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=1000.0)
+    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=2000.0)
     
     # Zjištění dimenzí pro sítě
     # A) SCOUT (Quad)
