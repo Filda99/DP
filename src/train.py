@@ -50,14 +50,14 @@ def train():
 
     # 3. Inicializace Sítí
     # Scout má paměť (GRU), Commander zatím ne
-    scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim)
+    scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
     
     if N_FIXED > 0:
-        commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim)
+        commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
     else:
         commander_actor = None # Nevytvářej síť, když není letadlo
     
-    critic = MAPPOCritic(global_state_dim)
+    critic = MAPPOCritic(global_state_dim).to(device)
     
     # Společný optimalizátor pro celý "mozkový trust"
     params = list(scout_actor.parameters()) + list(critic.parameters())
@@ -121,23 +121,23 @@ def train():
             for q_agent in env.quad_agents:
                 if q_agent in env.agents: # Dron žije
                     # Příprava dat
-                    local_map = torch.FloatTensor(obs[q_agent]["local_map"]).unsqueeze(0)
-                    self_state = torch.FloatTensor(obs[q_agent]["self_state"]).unsqueeze(0)
-                    neigh_s = torch.FloatTensor(obs[q_agent]["neighbor_states"]).unsqueeze(0)
-                    neigh_m = torch.BoolTensor(obs[q_agent]["neighbor_mask"]).unsqueeze(0)
-                    hidden_in = scout_hiddens[q_agent]
+                    local_map = torch.FloatTensor(obs[q_agent]["local_map"]).to(device).unsqueeze(0)
+                    self_state = torch.FloatTensor(obs[q_agent]["self_state"]).to(device).unsqueeze(0)
+                    neigh_s = torch.FloatTensor(obs[q_agent]["neighbor_states"]).to(device).unsqueeze(0)
+                    neigh_m = torch.BoolTensor(obs[q_agent]["neighbor_mask"]).to(device).unsqueeze(0)
+                    hidden_in = scout_hiddens[q_agent].to(device)
                     
                     # Akce sítě
                     with torch.no_grad():
                         dist, message, hidden_out = scout_actor(local_map, self_state, neigh_s, neigh_m, hidden_in)
-                        value, c_hidden_out = critic(g_state_tensor, critic_hiddens[q_agent])
+                        value, c_hidden_out = critic(g_state_tensor.to(device), critic_hiddens[q_agent].to(device))
                         action = dist.sample()
                         logprob = dist.log_prob(action).sum(1)
 
                     # Uložení výstupů
-                    scout_hiddens[q_agent] = hidden_out # Update paměti
+                    scout_hiddens[q_agent] = hidden_out.cpu() # Update paměti
                     actions[q_agent] = action.squeeze(0).numpy()
-                    
+
                     # Zpráva do éteru (pro Commandera)
                     scout_messages.append(message)
                     scout_alive_mask.append(False) # Žije
@@ -146,9 +146,9 @@ def train():
                     current_step_data[q_agent] = {
                         "type": "scout",
                         "map": local_map, "self": self_state, "neigh_s": neigh_s, "neigh_m": neigh_m, "hidden": hidden_in,
-                        "action": action, "logprob": logprob, "value": value, "g_state": g_state_tensor, "c_hidden": critic_hiddens[q_agent]
+                        "action": action.cpu(), "logprob": logprob.cpu(), "value": value.cpu(), "g_state": g_state_tensor, "c_hidden": critic_hiddens[q_agent]
                     }
-                    critic_hiddens[q_agent] = c_hidden_out # Update paměti pro další krok
+                    critic_hiddens[q_agent] = c_hidden_out.cpu() # Update paměti pro další krok
 
                 else:
                     # Dron je mrtvý -> Posílá prázdnou zprávu a je maskován
@@ -183,26 +183,26 @@ def train():
             # === FÁZE 2: COMMANDER (Rozhodování) ===
             for f_agent in env.fixed_agents:
                 if f_agent in env.agents and commander_actor is not None:
-                    self_state = torch.FloatTensor(obs[f_agent]["self_state"]).unsqueeze(0)
-                    hidden_in = commander_hiddens[f_agent]
+                    self_state = torch.FloatTensor(obs[f_agent]["self_state"]).to(device).unsqueeze(0)
+                    hidden_in = commander_hiddens[f_agent].to(device)
                     
                     # Akce sítě (Dostává zprávy od scoutů!)
                     with torch.no_grad():
-                        dist, _, hidden_out = commander_actor(self_state, msgs_tensor, msgs_mask, hidden_in)
-                        value, c_hidden_out = critic(g_state_tensor, critic_hiddens[f_agent])
+                        dist, _, hidden_out = commander_actor(self_state, msgs_tensor, msgs_mask.to(device), hidden_in)
+                        value, c_hidden_out = critic(g_state_tensor.to(device), critic_hiddens[f_agent].to(device))
                         action = dist.sample()
                         logprob = dist.log_prob(action).sum(1)
                     
-                    commander_hiddens[f_agent] = hidden_out # Update paměti
+                    commander_hiddens[f_agent] = hidden_out.cpu() # Update paměti
                     actions[f_agent] = action.squeeze(0).numpy()
                     
                     current_step_data[f_agent] = {
                         "type": "commander",
                         "self": self_state, "msgs": msgs_tensor, "msg_mask": msgs_mask,
                         "hidden": hidden_in,
-                        "action": action, "logprob": logprob, "value": value, "g_state": g_state_tensor, "c_hidden": critic_hiddens[f_agent]
+                        "action": action.cpu(), "logprob": logprob.cpu(), "value": value.cpu(), "g_state": g_state_tensor, "c_hidden": critic_hiddens[f_agent]
                     }
-                    critic_hiddens[f_agent] = c_hidden_out # Update paměti pro další krok
+                    critic_hiddens[f_agent] = c_hidden_out.cpu() # Update paměti pro další krok
                 else:
                     current_step_data[f_agent] = {
                         "type": "commander",
@@ -320,12 +320,12 @@ def train():
             print(f"🛠️ UPDATE SÍTÍ ({len(batch_data['returns'])} vzorků)...")
             
             # Stackování dat
-            b_actions = torch.cat(batch_data["actions"])
-            b_logprobs = torch.cat(batch_data["logprobs"])
-            b_returns = torch.tensor(batch_data["returns"], dtype=torch.float32).unsqueeze(1)
-            b_values = torch.cat(batch_data["values"])
-            b_g_states = torch.cat(batch_data["g_states"])
-            b_types = torch.tensor(batch_data["agent_types"])
+            b_actions = torch.cat(batch_data["actions"]).to(device)
+            b_logprobs = torch.cat(batch_data["logprobs"]).to(device)
+            b_returns = torch.tensor(batch_data["returns"], dtype=torch.float32).unsqueeze(1).to(device)
+            b_values = torch.cat(batch_data["values"]).to(device)
+            b_g_states = torch.cat(batch_data["g_states"]).to(device)
+            b_types = torch.tensor(batch_data["agent_types"]).to(device)
             
             # Advantages
             advantages = b_returns - b_values.detach()
@@ -345,14 +345,14 @@ def train():
                 steps = max_steps
 
                 def to_seq(data_list):
-                    t = torch.cat(data_list)
+                    t = torch.cat(data_list).to(device)
                     # view vytvoří [15, 200, *rozměry_vstupních_dat]
                     return t.view(episodes, steps, *t.shape[1:])
                 
                 # Verze pro Kritika (30 trajektorií: 15 epizod * 2 agenti)
                 # Musí to být samostatná funkce, protože rozměr "Batch" je dvojnásobný
                 def to_seq_critic(data_list):
-                    t = torch.cat(data_list)
+                    t = torch.cat(data_list).to(device)
                     return t.view(episodes * num_agents, steps, *t.shape[1:])
                 
                 # 1. SCOUT UPDATE
