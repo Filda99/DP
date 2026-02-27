@@ -136,7 +136,8 @@ def train():
 
                     # Uložení výstupů
                     scout_hiddens[q_agent] = hidden_out.cpu() # Update paměti
-                    actions[q_agent] = action.squeeze(0).numpy()
+                    critic_hiddens[q_agent] = c_hidden_out.cpu()  # Update paměti pro další krok
+                    actions[q_agent] = action.squeeze(0).cpu().numpy()
 
                     # Zpráva do éteru (pro Commandera)
                     scout_messages.append(message)
@@ -145,10 +146,9 @@ def train():
                     # Uložení do paměti pro trénink
                     current_step_data[q_agent] = {
                         "type": "scout",
-                        "map": local_map, "self": self_state, "neigh_s": neigh_s, "neigh_m": neigh_m, "hidden": hidden_in,
-                        "action": action.cpu(), "logprob": logprob.cpu(), "value": value.cpu(), "g_state": g_state_tensor, "c_hidden": critic_hiddens[q_agent]
+                        "map": local_map.cpu(), "self": self_state.cpu(), "neigh_s": neigh_s.cpu(), "neigh_m": neigh_m.cpu(), "hidden": hidden_in.cpu(),
+                        "action": action.cpu(), "logprob": logprob.cpu(), "value": value.cpu(), "g_state": g_state_tensor.cpu(), "c_hidden": critic_hiddens[q_agent].cpu()
                     }
-                    critic_hiddens[q_agent] = c_hidden_out.cpu() # Update paměti pro další krok
 
                 else:
                     # Dron je mrtvý -> Posílá prázdnou zprávu a je maskován
@@ -157,16 +157,16 @@ def train():
 
                     current_step_data[q_agent] = {
                         "type": "scout",
-                        "map": torch.zeros(1, 1, 32, 32), # nuly
-                        "self": torch.zeros(1, scout_self_dim), # nuly
-                        "neigh_s": torch.zeros(1, env.max_neighbors, 3),
-                        "neigh_m": torch.ones(1, env.max_neighbors, dtype=torch.bool),
-                        "hidden": torch.zeros(1, 1, scout_hidden_dim),
-                        "action": torch.zeros(1, 4),
-                        "logprob": torch.tensor([0.0]),
-                        "value": torch.tensor([[0.0]]),
-                        "g_state": g_state_tensor, # globální stav můžeme nechat
-                        "c_hidden": torch.zeros(1, 1, 128)
+                        "map": torch.zeros(1, 1, 32, 32).cpu(),
+                        "self": torch.zeros(1, scout_self_dim).cpu(),
+                        "neigh_s": torch.zeros(1, env.max_neighbors, 3).cpu(),
+                        "neigh_m": torch.ones(1, env.max_neighbors, dtype=torch.bool).cpu(),
+                        "hidden": torch.zeros(1, 1, scout_hidden_dim).cpu(),
+                        "action": torch.zeros(1, 4).cpu(),
+                        "logprob": torch.tensor([0.0]).cpu(),
+                        "value": torch.tensor([[0.0]]).cpu(),
+                        "g_state": g_state_tensor.cpu(), # globální stav můžeme nechat
+                        "c_hidden": torch.zeros(1, 1, 128).cpu()
                     }
                     actions[q_agent] = np.zeros(4) # prostředí ignoruje akce mrtvých
 
@@ -194,26 +194,26 @@ def train():
                         logprob = dist.log_prob(action).sum(1)
                     
                     commander_hiddens[f_agent] = hidden_out.cpu() # Update paměti
-                    actions[f_agent] = action.squeeze(0).numpy()
+                    critic_hiddens[f_agent] = c_hidden_out.cpu() # Update paměti pro další krok
+                    actions[f_agent] = action.squeeze(0).cpu().numpy()
                     
                     current_step_data[f_agent] = {
                         "type": "commander",
-                        "self": self_state, "msgs": msgs_tensor, "msg_mask": msgs_mask,
-                        "hidden": hidden_in,
-                        "action": action.cpu(), "logprob": logprob.cpu(), "value": value.cpu(), "g_state": g_state_tensor, "c_hidden": critic_hiddens[f_agent]
+                        "self": self_state.cpu(), "msgs": msgs_tensor.cpu(), "msg_mask": msgs_mask.cpu(),
+                        "hidden": hidden_in.cpu(),
+                        "action": action.cpu(), "logprob": logprob.cpu(), "value": value.cpu(), "g_state": g_state_tensor.cpu(), "c_hidden": critic_hiddens[f_agent].cpu()
                     }
-                    critic_hiddens[f_agent] = c_hidden_out.cpu() # Update paměti pro další krok
                 else:
                     current_step_data[f_agent] = {
                         "type": "commander",
-                        "self": torch.zeros(1, fixed_self_dim if N_FIXED > 0 else 1),
-                        "msgs": msgs_tensor, "msg_mask": msgs_mask,
-                        "hidden": torch.zeros(1, 1, 128),
-                        "action": torch.zeros(1, 4),
-                        "logprob": torch.tensor([0.0]),
-                        "value": torch.tensor([[0.0]]),
-                        "g_state": g_state_tensor,
-                        "c_hidden": torch.zeros(1, 1, 128)
+                        "self": torch.zeros(1, fixed_self_dim if N_FIXED > 0 else 1).cpu(),
+                        "msgs": msgs_tensor.cpu(), "msg_mask": msgs_mask.cpu(),
+                        "hidden": torch.zeros(1, 1, 128).cpu(),
+                        "action": torch.zeros(1, 4).cpu(),
+                        "logprob": torch.tensor([0.0]).cpu(),
+                        "value": torch.tensor([[0.0]]).cpu(),
+                        "g_state": g_state_tensor.cpu(),
+                        "c_hidden": torch.zeros(1, 1, 128).cpu()
                     }
                     actions[f_agent] = np.zeros(4)
 
