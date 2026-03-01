@@ -226,9 +226,11 @@ class DroneFireEnv(ParallelEnv):
                     "neighbor_mask": np.ones((self.max_neighbors,), dtype=bool) # True = Ignorovat vše
                 }
 
-    def _extract_local_fire_map(self, pos, window_size_m=50.0, resolution_px=32):
+    def _extract_local_fire_map(self, pos, resolution_px=32):
         """
-        Vyřízne 30x30m čtverec z velkého FireGridu kolem dronu a zmenší ho na 32x32 pixelů.
+        Fixed field of view but based on drone's altitude (higher = wider view). Returns normalized intensity map.
+        But the higher the drone is, the more it sees but with less detail (like a zoom out). 
+        This way, the agent can learn to fly higher for better situational awareness or lower for precision.
         """
         if self.sim.environment.fire_grid is None:
             return np.zeros((1, resolution_px, resolution_px), dtype=np.float32)
@@ -236,8 +238,13 @@ class DroneFireEnv(ParallelEnv):
         mapper = self.sim.environment.grid_mapper
         fire_grid = self.sim.environment.fire_grid.I  # Intenzita ohně
         
+        # pos[2] je výška dronu (z)
+        # Čím je výš, tím větší "okno" vidí. 
+        # Např. při z=10m uvidí 15m, při z=80m uvidí 120m.
+        adaptive_window = max(10.0, pos[2] * 1.5)
+        
         # Hranice výřezu v metrech
-        half_w = window_size_m / 2.0
+        half_w = adaptive_window / 2.0
         min_world = (pos[0] - half_w, pos[1] - half_w)
         max_world = (pos[0] + half_w, pos[1] + half_w)
         
@@ -258,8 +265,6 @@ class DroneFireEnv(ParallelEnv):
             processed_map = np.zeros((resolution_px, resolution_px), dtype=np.float32)
         else:
             import cv2
-            # processed_map = cv2.resize(crop, (resolution_px, resolution_px), interpolation=cv2.INTER_LINEAR)
-            
             # Přidáme ochranu: pokud je matice intenzity prázdná, resize selže
             try:
                 processed_map = cv2.resize(crop, (resolution_px, resolution_px), interpolation=cv2.INTER_LINEAR)
