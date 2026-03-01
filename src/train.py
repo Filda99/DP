@@ -16,32 +16,36 @@ def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 1. Hyperparametry
-    num_episodes = 8000
-    max_steps = 500
+    num_episodes = 1000
+    max_steps = 1000
     learning_rate = 1e-5
     gamma = 0.99    # Jak moc se agent zajímá o budoucí odměny (0.99 = velmi, 0.9 = méně)
     clip_coef = 0.2 # PPO klipovací faktor (jak moc se může nová politika odchýlit od staré), aby se zabránilo příliš velkým updateům
     update_epochs = 8
     episodes_per_batch = 15
+
+    lr_commander = learning_rate        # Letadlo se učí naplno (např. 1e-5)
+    lr_critic = learning_rate           # Kritik musí stíhat sledovat změny
+    lr_scout_fine_tune = learning_rate / 10  # Dron se jen jemně dolaďuje (1e-6)
     
     # Konfigurace týmu
     N_QUADS = 1
     N_FIXED = 1
     
     # 2. Inicializace prostředí
-    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=2000.0)
+    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=1000.0, max_steps=max_steps)
     
     # Zjištění dimenzí pro sítě
     # A) SCOUT (Quad)
     obs_q = env.observation_space("quad_0")
-    scout_self_dim = obs_q["self_state"].shape[0]     # 10
+    scout_self_dim = obs_q["self_state"].shape[0]
     scout_msg_dim = 5                                 # Velikost zprávy (vymyšleno námi)
     scout_hidden_dim = 128                            # Velikost paměti GRU
     
     # B) COMMANDER (Fixed)
     if N_FIXED > 0:
         obs_f = env.observation_space("fixed_0")
-        fixed_self_dim = obs_f["self_state"].shape[0] # 11
+        fixed_self_dim = obs_f["self_state"].shape[0]
     else:
         fixed_self_dim = 0
     
@@ -51,6 +55,15 @@ def train():
     # 3. Inicializace Sítí
     # Scout má paměť (GRU), Commander zatím ne
     scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
+
+    # Cesta k funkčnímu modelu
+    path_to_old_model = "retrainModels/scout_best.pt"
+    if os.path.exists(path_to_old_model):
+        print(f"📥 Načítám naučený model drona z {path_to_old_model}")
+        # strict=False je jistota, pokud by se drobné detaily v architektuře lišily
+        scout_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
+    else:
+        print(f"⚠️ Nenalezen žádný naučený model drona na {path_to_old_model}, trénink začne od nuly.")
     
     if N_FIXED > 0:
         commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
@@ -60,16 +73,23 @@ def train():
     critic = MAPPOCritic(global_state_dim).to(device)
     
     # Společný optimalizátor pro celý "mozkový trust"
-    params = list(scout_actor.parameters()) + list(critic.parameters())
+    # Sestavíme skupiny parametrů
+    optim_groups = [
+        {"params": scout_actor.parameters(), "lr": lr_scout_fine_tune},
+        {"params": critic.parameters(), "lr": lr_critic}
+    ]
+
     if commander_actor:
-        params += list(commander_actor.parameters())
-    optimizer = optim.Adam(params, lr=learning_rate)
+        optim_groups.append({"params": commander_actor.parameters(), "lr": lr_commander})
+    optimizer = optim.Adam(optim_groups)
     
     # Historie pro grafy
     episode_rewards_history = []
     loss_history = []  # Celková ztráta
     entropy_history = []
     v_loss_history = [] # Ztráta kritika (Value Loss)
+    lifespan_history = [] # Pro sledování, jak dlouho každý agent přežil
+
 
     os.makedirs("saved_models", exist_ok=True)
     
@@ -94,6 +114,9 @@ def train():
         commander_hiddens = {f: torch.zeros(1, 1, 128) for f in env.fixed_agents}
         # Inicializace paměti pro Kritika (Global, Batch=1, Hidden=128)
         critic_hiddens = {a: torch.zeros(1, 1, 128) for a in env.possible_agents}
+
+        # Pro sledování délky života agentů
+        agent_lifespans = {agent: max_steps for agent in env.possible_agents}
 
         # Epizodní buffer
         ep_data = {agent: {"rewards": [], "values": []} for agent in env.possible_agents}
@@ -236,6 +259,10 @@ def train():
             
             obs = next_obs
 
+            for agent, terminated in terminations.items():
+                if terminated and agent_lifespans[agent] == max_steps:
+                    agent_lifespans[agent] = step
+
         episode_rewards_history.append(episode_reward)
 
         # == ZPRACOVÁNÍ EPIZODY (Discounted Returns) ==
@@ -305,6 +332,10 @@ def train():
             
         print(f"Epizoda {episode:03d} | Reward: {episode_reward:.2f} | Průměr(15): {avg_reward:.2f}")
 
+        # Průměrná délka života v této epizodě
+        avg_lifespan = np.mean(list(agent_lifespans.values()))
+        lifespan_history.append(avg_lifespan)
+
         # === UKLÁDÁNÍ ZLATÉHO STANDARDU ===
         # Model se uloží POUZE tehdy, pokud je jeho PRŮMĚRNÁ úspěšnost za 15 her lepší než dřív.
         if episode >= 15 and avg_reward > best_avg_reward:
@@ -330,7 +361,7 @@ def train():
             # Advantages
             advantages = b_returns - b_values.detach()
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-            # b_returns = (b_returns - b_returns.mean()) / (b_returns.std() + 1e-8)
+            b_returns = (b_returns - b_returns.mean()) / (b_returns.std() + 1e-8)
             
 	        # Výpočet stride pro více agentů
             num_agents = N_QUADS + N_FIXED
@@ -426,7 +457,7 @@ def train():
                 # a entropy_sum je bonus, který podporuje průzkum (vyšší entropie znamená, že agent více experimentuje s různými akcemi).
                 # celková ztráta kombinuje všechny tyto aspekty, přičemž klade největší důraz na policy_loss, menší na value_loss a 
                 # přidává malý bonus za entropii, aby se zabránilo příliš brzy konvergenci na suboptimální politiku.
-                loss = policy_loss + 0.1 * value_loss - 0.01 * entropy_sum
+                loss = policy_loss + 0.01 * value_loss - 0.01 * entropy_sum
                 # Uložíme si průměrné hodnoty pro graf (převod na float z tensoru)
                 loss_history.append(loss.item())
                 v_loss_history.append(value_loss.item())
@@ -447,55 +478,48 @@ def train():
             # Reset bufferů
             for k in batch_data: batch_data[k] = []
 
-        if episode % 50 == 0:
+        if episode % 10 == 0:
             torch.save(scout_actor.state_dict(), f"saved_models/scout_ep{episode}.pt")
             if commander_actor:
                 torch.save(commander_actor.state_dict(), f"saved_models/commander_ep{episode}.pt")
+
+            plt.figure(figsize=(20, 5))
             
-            # Graf
-            plt.figure(figsize=(10, 5))
-            smoothed = [np.mean(episode_rewards_history[max(0, i-10):i+1]) for i in range(len(episode_rewards_history))]
-            plt.plot(episode_rewards_history, alpha=0.3)
-            plt.plot(smoothed, label="Trend")
-            plt.title("Heterogenní Tým (Communication Enabled)")
-            plt.savefig("training_comm.png")
+            # 1. Graf odměn
+            plt.subplot(1, 4, 1)
+            plt.plot(episode_rewards_history, label="Reward", alpha=0.3, color='green')
+            if len(episode_rewards_history) > 20:
+                plt.plot(np.convolve(episode_rewards_history, np.ones(20)/20, mode='valid'), label="MA 20", color='darkgreen')
+            plt.title("Vývoj odměn")
+            plt.grid(True, alpha=0.3)
+            plt.legend()
+
+            # 2. Graf Loss (Kritik a celková)
+            plt.subplot(1, 4, 2)
+            plt.plot(loss_history, label="Total Loss", color='red', alpha=0.5)
+            plt.plot(v_loss_history, label="Value Loss (Critic)", color='blue', alpha=0.5)
+            plt.title("Vývoj Loss (Log)")
+            plt.yscale('log') 
+            plt.grid(True, alpha=0.3)
+            plt.legend()
+
+            # 3. Graf Entropie (Jak moc dron experimentuje)
+            plt.subplot(1, 4, 3)
+            # entropy_history si musíš přidat do train smyčky podobně jako loss_history
+            if 'entropy_history' in locals() or 'entropy_history' in globals():
+                plt.plot(entropy_history, color='purple')
+                plt.title("Vývoj Entropie (Průzkum)")
+            else:
+                plt.text(0.5, 0.5, 'Pro graf entropie\npřidej logování do update smyčky', ha='center')
+            plt.grid(True, alpha=0.3)
+
+            plt.subplot(1, 4, 4)
+            plt.plot(lifespan_history, color='orange')
+            plt.title("Průměrná délka dožití")
+
+            plt.tight_layout()
+            plt.savefig("final_training_plot.png")
             plt.close()
-
-    # === FINÁLNÍ GRAFY (Opraveno pro Agg backend) ===
-    plt.figure(figsize=(15, 5)) # Trochu širší pro 3 grafy
-    
-    # 1. Graf odměn
-    plt.subplot(1, 3, 1)
-    plt.plot(episode_rewards_history, label="Reward", alpha=0.3, color='green')
-    if len(episode_rewards_history) > 20:
-        plt.plot(np.convolve(episode_rewards_history, np.ones(20)/20, mode='valid'), label="MA 20", color='darkgreen')
-    plt.title("Vývoj odměn")
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-
-    # 2. Graf Loss (Kritik a celková)
-    plt.subplot(1, 3, 2)
-    plt.plot(loss_history, label="Total Loss", color='red', alpha=0.5)
-    plt.plot(v_loss_history, label="Value Loss (Critic)", color='blue', alpha=0.5)
-    plt.title("Vývoj Loss (Log)")
-    plt.yscale('log') 
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-
-    # 3. Graf Entropie (Jak moc dron experimentuje)
-    plt.subplot(1, 3, 3)
-    # entropy_history si musíš přidat do train smyčky podobně jako loss_history
-    if 'entropy_history' in locals() or 'entropy_history' in globals():
-        plt.plot(entropy_history, color='purple')
-        plt.title("Vývoj Entropie (Průzkum)")
-    else:
-        plt.text(0.5, 0.5, 'Pro graf entropie\npřidej logování do update smyčky', ha='center')
-    plt.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig("final_training_plot.png")
-    plt.close() # DŮLEŽITÉ: Uvolní paměť, místo plt.show()
-    print("📈 Finální graf tréninku uložen jako 'final_training_plot.png'")
 
 if __name__ == "__main__":
     train()

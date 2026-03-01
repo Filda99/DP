@@ -11,10 +11,10 @@ import random
 class DroneFireEnv(ParallelEnv):
     metadata = {"render_modes": ["human"], "name": "drone_fire_v2"}
 
-    def __init__(self, num_quads=1, num_fixed=1, grid_size_m=200.0, local_map_size=32):
+    def __init__(self, num_quads=1, num_fixed=1, grid_size_m=200.0, local_map_size=32, max_steps=500):
         super().__init__()
         
-        self.max_steps = 500
+        self.max_steps = max_steps
         self.num_quads = num_quads
         self.num_fixed = num_fixed
         self.grid_size_m = grid_size_m
@@ -417,9 +417,7 @@ class DroneFireEnv(ParallelEnv):
             # A) Je dron zničený fyzikálně? (Tvoje simulace ho smazala nebo spadl)
             if agent not in self.sim.drones:
                 terminations[agent] = True
-                # Čím dříve umře, tím větší trest (motivuje k dlouhému letu)
-                remaining_steps = self.max_steps - self.current_step
-                step_reward = -200.0 - (remaining_steps * 2.0)
+                step_reward = -1000.0
                 print(f"💥 {agent} havaroval ve stepu {self.current_step}")
                 
             else:
@@ -430,9 +428,7 @@ class DroneFireEnv(ParallelEnv):
                 # B) Zkontrolujeme hranice mapy (Out of Bounds)
                 if abs(pos[0]) > self.map_bounds or abs(pos[1]) > self.map_bounds:
                     terminations[agent] = True
-                    # Čím dříve umře, tím větší trest (motivuje k dlouhému letu)
-                    remaining_steps = self.max_steps - self.current_step
-                    step_reward = -200.0 - (remaining_steps * 2.0)
+                    step_reward = -1000.0
                     print(f"🚫 {agent} uletěl z mapy ve stepu {self.current_step}")
                     self.sim._destroy_drone(agent)
                     
@@ -465,9 +461,9 @@ class DroneFireEnv(ParallelEnv):
                     # E) Penazilace za přílišné přiblíženi k hranicím mapy (Boundary Proximity)
                     dist_boundaries_norm = self._get_boundary_measurements(pos)
                     dist_to_edge_norm = min(dist_boundaries_norm[0], dist_boundaries_norm[1], dist_boundaries_norm[2], dist_boundaries_norm[3])
-                    if dist_to_edge_norm < 0.2:
+                    if dist_to_edge_norm < 0.1:
                         # Trest roste kvadraticky: čím blíž zdi, tím brutálnější propad rewardu
-                        step_reward -= 20.0 * (1.0 - dist_to_edge_norm / 0.25)**2
+                        step_reward -= 20.0 * (1.0 - dist_to_edge_norm / 0.1)**2
 
                     # E) Specifické úkoly
                     if "fixed" in agent:
@@ -537,6 +533,8 @@ class DroneFireEnv(ParallelEnv):
             # 4. ZÁPIS VÝSLEDKŮ PRO AGENTA
             # rewards[agent] = np.clip(step_reward, -10, 10)
             rewards[agent] = step_reward
+            if time_is_up:
+                rewards[agent] += 500.0 # Velká odměna za "úspěšné přežití mise"
             
             # Pokud agent žije a neukončil epizodu, přidáme jeho pozorování a necháme si ho
             if not terminations[agent]:
