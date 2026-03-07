@@ -178,18 +178,66 @@ def collect_single_episode(scout_w, cmdr_w, critic_w, config):
     # Sbalení dat tak, jak je očekává hlavní vlákno
     for item in rollout_memory:
         item["data"]["return"] = ep_data[item["agent"]]["returns"][item["step_idx"]]
-
+ 
     local_env.sim.stop_simulation()
     avg_lifespan = np.mean(list(agent_lifespans.values()))
-    
-    # Vrátíme kompletní pole dat pro batch, celkovou odměnu a průměrný věk
-    final_data = [item["data"] for item in rollout_memory]
+    # --- NOVÁ AGREGACE PRO BLESKOVÝ PŘENOS (Ušetří 10 vteřin zpoždění!) ---
+    aggregated = {k: [] for k in ["maps", "self_states", "neighbor_states", "neighbor_masks", 
+                                  "fixed_states", "incoming_msgs", "msg_masks", "g_states", 
+                                  "actions", "logprobs", "returns", "values", "agent_types", 
+                                  "hiddens", "critic_hiddens"]}
+ 
+    # Předpřipravené "dummy" tensory (vytvoříme jen jednou, ne 1000x v cyklu!)
+    d_map = torch.zeros(1, 1, 32, 32)
+    d_scout_self = torch.zeros(1, config['scout_self_dim'])
+    d_neigh_s = torch.zeros(1, max(1, config['N_QUADS']-1), 3)
+    d_neigh_m = torch.ones(1, max(1, config['N_QUADS']-1), dtype=torch.bool)
+    d_cmd_self = torch.zeros(1, config['fixed_self_dim'] if config['fixed_self_dim'] > 0 else 1)
+    d_msgs = torch.zeros(1, max(1, config['N_QUADS']), config['scout_msg_dim'])
+    d_msg_m = torch.ones(1, max(1, config['N_QUADS']), dtype=torch.bool)
+ 
+    for item in rollout_memory:
+        d = item["data"]
+        aggregated["actions"].append(d["action"])
+        aggregated["logprobs"].append(d["logprob"])
+        aggregated["values"].append(d["value"])
+        aggregated["g_states"].append(d["g_state"])
+        aggregated["returns"].append(d["return"])
+        aggregated["hiddens"].append(d["hidden"])
+        aggregated["critic_hiddens"].append(d["c_hidden"])
+        if d["type"] == "scout":
+            aggregated["agent_types"].append(0)
+            aggregated["maps"].append(d["map"])
+            aggregated["self_states"].append(d["self"])
+            aggregated["neighbor_states"].append(d["neigh_s"])
+            aggregated["neighbor_masks"].append(d["neigh_m"])
+            aggregated["fixed_states"].append(d_cmd_self)
+            aggregated["incoming_msgs"].append(d_msgs)
+            aggregated["msg_masks"].append(d_msg_m)
+        else:
+            aggregated["agent_types"].append(1)
+            aggregated["fixed_states"].append(d["self"])
+            aggregated["incoming_msgs"].append(d["msgs"])
+            aggregated["msg_masks"].append(d["msg_mask"])
+            aggregated["maps"].append(d_map)
+            aggregated["self_states"].append(d_scout_self)
+            aggregated["neighbor_states"].append(d_neigh_s)
+            aggregated["neighbor_masks"].append(d_neigh_m)
+ 
+    # Dělník teď všechno spojí do OBŘÍCH bloků na CPU
+    for k in aggregated:
+        if k == "agent_types":
+            aggregated[k] = torch.tensor(aggregated[k], dtype=torch.long)
+        elif k == "returns":
+            aggregated[k] = torch.tensor(aggregated[k], dtype=torch.float32)
+        else:
+            aggregated[k] = torch.cat(aggregated[k])
+ 
+    # Posíláme do hlavní trubky jen 15 hotových cihel místo 8000 drobků!
+    return aggregated, episode_reward, avg_lifespan
 
     # profiler.disable()
     # profiler.dump_stats(f"profil_delnika_{os.getpid()}.prof")
-
-    return final_data, episode_reward, avg_lifespan
-
 
 # ============================================================================
 # HLAVNÍ FUNKCE TRAIN
@@ -254,7 +302,7 @@ def train():
     
     if N_FIXED > 0:
         commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
-        path_to_old_model = "retrainModels/commander_best.pt"
+        path_to_old_model = "retrainModels/commander_ep800.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Načítám naučený model letadla z {path_to_old_model}")
             commander_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -309,44 +357,15 @@ def train():
             # Posbíráme data z workerů (počkáme, až všechny dojedou)
             batch_rewards = []
             for future in futures:
-                ep_rollout, ep_reward, ep_lifespan = future.result()
-                
+                worker_agg, ep_reward, ep_lifespan = future.result()
                 episodes_played += 1
                 episode_rewards_history.append(ep_reward)
                 batch_rewards.append(ep_reward)
                 lifespan_history.append(ep_lifespan)
-                
-                # Přesun dat z Rollout Memory do Global Batch (Tvůj původní if/else strom)
-                for d in ep_rollout:
-                    batch_data["actions"].append(d["action"])
-                    batch_data["logprobs"].append(d["logprob"])
-                    batch_data["values"].append(d["value"])
-                    batch_data["g_states"].append(d["g_state"])
-                    batch_data["returns"].append(d["return"])
-                    
-                    if d["type"] == "scout":
-                        batch_data["agent_types"].append(0) 
-                        batch_data["maps"].append(d["map"])
-                        batch_data["self_states"].append(d["self"])
-                        batch_data["neighbor_states"].append(d["neigh_s"])
-                        batch_data["neighbor_masks"].append(d["neigh_m"])
-                        batch_data["hiddens"].append(d["hidden"])
-                        batch_data["critic_hiddens"].append(d["c_hidden"])
-                        batch_data["fixed_states"].append(torch.zeros(1, fixed_self_dim)) 
-                        batch_data["incoming_msgs"].append(torch.zeros(1, max(1, N_QUADS), scout_msg_dim))
-                        batch_data["msg_masks"].append(torch.ones(1, max(1, N_QUADS), dtype=torch.bool))
-
-                    else:
-                        batch_data["agent_types"].append(1) 
-                        batch_data["fixed_states"].append(d["self"])
-                        batch_data["incoming_msgs"].append(d["msgs"])
-                        batch_data["msg_masks"].append(d["msg_mask"])
-                        batch_data["maps"].append(torch.zeros(1, 1, 32, 32))
-                        batch_data["self_states"].append(torch.zeros(1, scout_self_dim))
-                        batch_data["neighbor_states"].append(torch.zeros(1, max(1, N_QUADS-1), 3)) 
-                        batch_data["neighbor_masks"].append(torch.ones(1, max(1, N_QUADS-1), dtype=torch.bool))
-                        batch_data["hiddens"].append(d["hidden"])
-                        batch_data["critic_hiddens"].append(d["c_hidden"])
+                # ZDE SE STALO KOUZLO: Vlákno už nepřekládá 8000 řádků!
+                # Jen převezme 15 hotových bloků.
+                for k in batch_data:
+                    batch_data[k].append(worker_agg[k])
 
             # Logování za dávku (místo za epizodu)
             avg_batch = np.mean(batch_rewards)
@@ -362,17 +381,24 @@ def train():
                     torch.save(commander_actor.state_dict(), f"saved_models/commander_best.pt")
                 print(f"⭐ Uložen nový NEJLEPŠÍ model (Průměr: {best_avg_reward:.2f})!")
 
-            # == TVŮJ PŮVODNÍ PPO UPDATE BEZE ZMĚN ==
+            # === PPO UPDATE (GPU maká) ===
             if len(batch_data["returns"]) > 0:
-                print(f"🛠️ UPDATE SÍTÍ ({len(batch_data['returns'])} vzorků)...")
-                
+                # --- KOUZLO ROZBALENÍ ---
+                # Dělníci nám poslali 20 obřích beden. PPO kód ale čeká 20 000 malých krabiček.
+                # Rozsekáme ty bedny zpět na jednotlivé kroky (ve zlomku milisekundy).
+                for k in batch_data:
+                    big_tensor = torch.cat(batch_data[k])
+                    batch_data[k] = list(torch.split(big_tensor, 1))
+ 
+                # Stackování dat (Upraveno na torch.cat, jelikož už to jsou tensory)
                 b_actions = torch.cat(batch_data["actions"]).to(device)
                 b_logprobs = torch.cat(batch_data["logprobs"]).to(device)
-                b_returns = torch.tensor(batch_data["returns"], dtype=torch.float32).unsqueeze(1).to(device)
+                b_returns = torch.cat(batch_data["returns"]).unsqueeze(1).to(device)
                 b_values = torch.cat(batch_data["values"]).to(device)
                 b_g_states = torch.cat(batch_data["g_states"]).to(device)
-                b_types = torch.tensor(batch_data["agent_types"]).to(device)
-                
+                b_types = torch.cat(batch_data["agent_types"]).to(device)
+                print(f"🛠️ UPDATE SÍTÍ ({len(b_returns)} vzorků)...")
+                # Advantages
                 advantages = b_returns - b_values.detach()
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
                 
@@ -445,7 +471,7 @@ def train():
                     policy_loss = torch.max(pg_loss1, pg_loss2).mean()
                     
                     # TVÁ ZMĚNĚNÁ ENTROPIE (0.01) JE ZDE:
-                    loss = policy_loss + 0.01 * value_loss - 0.01 * entropy_sum
+                    loss = policy_loss + 0.01 * value_loss - 0.0005 * entropy_sum
                     
                     loss_history.append(loss.item())
                     v_loss_history.append(value_loss.item())
