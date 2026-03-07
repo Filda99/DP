@@ -98,7 +98,7 @@ class Simulation:
         self.environment.create_ground()
         self.environment.create_refill_zone()
         # print(f"✅ Simulation started")
-        self._log_event('simulation_start ', {'timestep': self.timestep})
+        # self._log_event('simulation_start ', {'timestep': self.timestep})
         
     def stop_simulation(self):
         """Stop PyBullet simulation."""
@@ -207,7 +207,7 @@ class Simulation:
         if hasattr(self.environment, 'fire_grid') and self.environment.fire_grid is not None:
             H, W = self.environment.fire_grid.H, self.environment.fire_grid.W
             height_levels = 20
-            self.temperature_grid = np.full((height_levels, H, W), self.base_temperature, dtype=float)
+            self.temperature_grid = np.full((height_levels, H, W), self.base_temperature, dtype=np.float32)
             # print(f"✅ Temperature grid initialized: {height_levels}×{H}×{W}")
         # print(f"✅ Fire simulation enabled in environment")
     
@@ -498,26 +498,26 @@ class Simulation:
                 forces = drone.apply_control(control_input, self.timestep)
                 
                 # 3. Log data (Every step - FIXED to match time array length)
-                self.simulation_log['drones'][drone_name]['positions'].append(drone.get_position().copy())
-                self.simulation_log['drones'][drone_name]['forces'].append(forces.copy())
-                self.simulation_log['drones'][drone_name]['velocities'].append(drone.get_velocity().copy())
+                # self.simulation_log['drones'][drone_name]['positions'].append(drone.get_position().copy())
+                # self.simulation_log['drones'][drone_name]['forces'].append(forces.copy())
+                # self.simulation_log['drones'][drone_name]['velocities'].append(drone.get_velocity().copy())
                 
-                # Handle control_input logging for torch tensors
-                if hasattr(control_input, 'detach'):  # PyTorch tensor
-                    self.simulation_log['drones'][drone_name]['control_inputs'].append(control_input.detach().cpu().numpy().copy())
-                else:
-                    self.simulation_log['drones'][drone_name]['control_inputs'].append(control_input.copy())
+                # # Handle control_input logging for torch tensors
+                # if hasattr(control_input, 'detach'):  # PyTorch tensor
+                #     self.simulation_log['drones'][drone_name]['control_inputs'].append(control_input.detach().cpu().numpy().copy())
+                # else:
+                #     self.simulation_log['drones'][drone_name]['control_inputs'].append(control_input.copy())
                 
-                # Check if drone has water attribute (FixedWing does, Quadcopter does not)
-                if drone.can_drop_water():
-                    self.simulation_log['drones'][drone_name]['water_levels'].append(drone.current_water)
+                # # Check if drone has water attribute (FixedWing does, Quadcopter does not)
+                # if drone.can_drop_water():
+                #     self.simulation_log['drones'][drone_name]['water_levels'].append(drone.current_water)
                 # else:
                 #     self.simulation_log['drones'][drone_name]['water_levels'].append(0.0)
 
         # Step physics
         p.stepSimulation()
         self.simulation_time += self.timestep
-        self.simulation_log['times'].append(self.simulation_time)
+        # self.simulation_log['times'].append(self.simulation_time)
         
         # Update trajectories (downsampled)
         self._step_counter += 1
@@ -547,13 +547,13 @@ class Simulation:
             collision, obstacle = self.environment.is_position_in_obstacle(position)
             if collision:
                 # print(f"💥 COLLISION: {drone_name} hit {obstacle['type']}")
-                self._log_event('collision', {'drone': drone_name, 'obstacle': obstacle['type']})
+                # self._log_event('collision', {'drone': drone_name, 'obstacle': obstacle['type']})
                 drones_to_destroy.append(drone_name)
                 continue
             
             if position[2] < 0.5:
                 # print(f"💥 GROUND CRASH: {drone_name}")
-                self._log_event('ground_crash', {'drone': drone_name})
+                # self._log_event('ground_crash', {'drone': drone_name})
                 drones_to_destroy.append(drone_name)
                 continue
                 
@@ -566,7 +566,7 @@ class Simulation:
         try: p.removeBody(drone.drone_id)
         except: pass
         self.destroyed_drones.append(drone_name)
-        self._log_event('drone_destroyed', {'drone': drone_name})
+        # self._log_event('drone_destroyed', {'drone': drone_name})
         del self.drones[drone_name]
         # print(f"🔥 DESTROYED: {drone_name}")
         

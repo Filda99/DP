@@ -17,6 +17,10 @@ from concurrent.futures import ProcessPoolExecutor
 # ============================================================================
 def collect_single_episode(scout_w, cmdr_w, critic_w, config):
     """Tohle poběží na jednom vyhrazeném CPU jádře."""
+    # import cProfile
+    # import os
+    # profiler = cProfile.Profile()
+    # profiler.enable()
     
     # 1. Každý proces si vytvoří VLASTNÍ prostředí na CPU!
     local_env = DroneFireEnv(num_quads=config['N_QUADS'], num_fixed=config['N_FIXED'], 
@@ -180,6 +184,10 @@ def collect_single_episode(scout_w, cmdr_w, critic_w, config):
     
     # Vrátíme kompletní pole dat pro batch, celkovou odměnu a průměrný věk
     final_data = [item["data"] for item in rollout_memory]
+
+    # profiler.disable()
+    # profiler.dump_stats(f"profil_delnika_{os.getpid()}.prof")
+
     return final_data, episode_reward, avg_lifespan
 
 
@@ -197,7 +205,7 @@ def train():
     gamma = 0.99    # Jak moc se agent zajímá o budoucí odměny (0.99 = velmi, 0.9 = méně)
     clip_coef = 0.2 # PPO klipovací faktor (jak moc se může nová politika odchýlit od staré), aby se zabránilo příliš velkým updateům
     update_epochs = 8
-    episodes_per_batch = 8
+    episodes_per_batch = 20
 
     lr_commander = learning_rate
     lr_critic = learning_rate           # Kritik musí stíhat sledovat změny
@@ -223,7 +231,7 @@ def train():
         fixed_self_dim = 0
     
     global_state_dim = temp_env.state_space.shape[0]
-    temp_env.sim.stop_simulation()
+    # temp_env.sim.stop_simulation()
 
     # Config dict pro workery
     worker_config = {
@@ -246,7 +254,7 @@ def train():
     
     if N_FIXED > 0:
         commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
-        path_to_old_model = "retrainModels/commander_ep110.pt"
+        path_to_old_model = "retrainModels/commander_best.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Načítám naučený model letadla z {path_to_old_model}")
             commander_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)

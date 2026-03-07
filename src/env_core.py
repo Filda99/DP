@@ -339,16 +339,16 @@ class DroneFireEnv(ParallelEnv):
         self.sim.start_simulation()
         
         # 3. Zapneme oheň (Zatím na fixní pozici [0,0] pro snazší učení)
-        self.sim.enable_fire_simulation(
-            grid_width_m=self.grid_size_m,
-            grid_height_m=self.grid_size_m,
-            cell_size_m=1.0,
-            dt=0.1
-        )
+        # self.sim.enable_fire_simulation(
+        #     grid_width_m=self.grid_size_m,
+        #     grid_height_m=self.grid_size_m,
+        #     cell_size_m=10.0,
+        #     dt=0.1
+        # )
         # Oheň spawne kdekoli ve čtverci 100x100m kolem středu
         self.fire_x = random.uniform(-400, 400)
         self.fire_y = random.uniform(-400, 400)
-        self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
+        # self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
         
         # 4. Přidáme drony na náhodné startovní pozice
         for agent in self.agents:
