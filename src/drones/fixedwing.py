@@ -9,7 +9,7 @@ import math
 from .base_drone import BaseDrone
 
 class FixedWing(BaseDrone):
-    def __init__(self, position=[0, 0, 5], mass=1.0, water_capacity=50.0, environment=None):
+    def __init__(self, position=[0, 0, 5], mass=1.0, water_capacity=50.0, environment=None, initial_chi=0.0):
         # Initialize PyBullet Body
         self.drone_id = self._create_pybullet_body(position, mass)
         super().__init__(self.drone_id, position, mass, environment)
@@ -33,7 +33,7 @@ class FixedWing(BaseDrone):
         # phi: Roll angle
         self.state_pos = np.array(position, dtype=float)  # x, y, h
         self.state_va = 15.0  # Initial airspeed (m/s)
-        self.state_chi = 0.0  # Initial course (radians)
+        self.state_chi = initial_chi  # Initial course (radians)
         self.state_gamma = 0.0
         self.state_phi = 0.0
         self.state_phi_dot = 0.0
@@ -112,13 +112,13 @@ class FixedWing(BaseDrone):
 
         # STALL LOGIC:
         # If we are too slow, we lose lift and gravity takes over.
-        is_stalled = va < 8.0  # m/s
+        is_stalled = va < 7.0  # m/s
         if is_stalled:
             # If stalled, we ignore the commanded gamma_c.
             # The nose drops (-30 degrees) and we accelerate downwards.
-            gamma_c = np.radians(-30) 
+            gamma_c = np.radians(-15) 
             # Damping the roll control when stalled (harder to turn)
-            self.target_phi *= 0.2
+            self.target_phi *= 0.5
 
         # --- 3. Update State Derivatives (MathWorks Equations Modified) ---
         

@@ -150,8 +150,8 @@ class Simulation:
         # print(f"✅ Added quadcopter '{name}' at {position}")
         return quad
     
-    def add_fixedwing(self, name, position=[0, 0, 5], mass=1.0, water_capacity=0.0):
-        fw = FixedWing(position=position, mass=mass, water_capacity=water_capacity, environment=self.environment)
+    def add_fixedwing(self, name, position=[0, 0, 5], mass=1.0, water_capacity=0.0, yaw=0.0):
+        fw = FixedWing(position=position, mass=mass, water_capacity=water_capacity, environment=self.environment, initial_chi=yaw)
         self.drones[name] = fw
         self.simulation_log['drones'][name] = {
             'type': 'fixedwing',

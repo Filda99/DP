@@ -24,15 +24,8 @@ class MultiHeadAttention(nn.Module):
         key, value: [Batch, Seq_Len, Embed_Dim] (Sousedé nebo Zprávy)
         key_padding_mask: [Batch, Seq_Len] - True tam, kde jsou 'mrtví' agenti (padding)
         """
-        # # MultiheadAttention v PyTorchu vyžaduje masku: True = IGNOROVAT
-        # attn_output, _ = self.multihead_attn(query, key, value, key_padding_mask=key_padding_mask)
-        
-        # # Pokud jsou všichni sousedé/zprávy zamaskovaní (True), Attention vrátí NaN.
-        # # Musíme tyto NaN nahradit nulami, jinak se celá síť rozsype.
-        # if torch.isnan(attn_output).any():
-        #     attn_output = torch.nan_to_num(attn_output, nan=0.0)
-            
-        # return attn_output
+        if key.size(1) == 0:
+            return torch.zeros_like(query)
 
         if key_padding_mask is not None:
             # Zjistíme, které řádky v batchi mají všechny prvky zamaskované (True)
@@ -129,107 +122,6 @@ class ScoutActor(nn.Module):
             nn.Linear(hidden_dim, msg_dim),
             nn.Tanh() # Zprávy budou v rozsahu -1 až 1
         )
-
-    # def forward(self, local_map, self_state, neighbor_states, neighbor_mask, hidden_state):
-    #     """
-    #     local_map: [Batch, 1, 32, 32]
-    #     self_state: [Batch, self_state_dim]
-    #     neighbor_states: [Batch, Max_Neighbors, 3]
-    #     neighbor_mask: [Batch, Max_Neighbors] (True = padding/dead)
-    #     hidden_state: [1, Batch, Hidden_Dim] (Stav paměti z minula)
-    #     """
-    #     batch_size = local_map.size(0)
-    #     seq_len = local_map.size(1) if local_map.dim() > 3 else 1
-        
-    #     # 1. Extrakce příznaků
-    #     # Proženeme data sítěmi
-    #     # vis_feat = self.cnn(local_map)     # [Batch, 128]
-    #     # self_feat = self.self_embed(self_state) # [Batch, 64]
-
-    #     # Pokud máme sekvenci [Batch, Seq, 1024], musíme ji změnit na [Batch*Seq, 1, 32, 32]
-    #     if local_map.dim() == 3: # Trénink (sekvence)
-    #         # local_map má [15, 200, 1024]
-    #         local_map_for_cnn = local_map.reshape(-1, 1, 32, 32)
-    #     else: # Demo (jeden krok)
-    #         # local_map má [1, 1, 32, 32]
-    #         local_map_for_cnn = local_map
-
-    #     # Teď CNN dostane správný tvar
-    #     vis_feat = self.cnn(local_map_for_cnn) # [Batch*Seq, 128]
-
-    #     # Pokud jsme v tréninku, vrátíme vis_feat do tvaru sekvence [Batch, Seq, 128]
-    #     if local_map.dim() == 3:
-    #         vis_feat = vis_feat.reshape(batch_size, seq_len, -1)
-    #     # ----------------------
-
-    #     # To samé musíme udělat pro self_state, pokud je to sekvence
-    #     if self_state.dim() == 3:
-    #         self_feat = self.self_embed(self_state) # [Batch, Seq, 64]
-    #     else:
-    #         self_feat = self.self_embed(self_state) # [Batch, 64]
-        
-    #     # 2. Zpracování sousedů (Attention)
-    #     # Nejdřív embeddujeme každého souseda zvlášť
-    #     neigh_embed = self.neighbor_embed(neighbor_states) # [Batch, N, 64]
-    #     # Pak aplikujeme Self-Attention (každý s každým, ale nás zajímá agregace)
-    #     # Použijeme self_feat jako Query, abychom zjistili "kdo je důležitý PRO MĚ"
-    #     # Query: [Batch, 1, 64]
-    #     query = self_feat.unsqueeze(1)
-    #     neigh_context = self.neighbor_attention(query, neigh_embed, neigh_embed, key_padding_mask=neighbor_mask)
-    #     neigh_context = neigh_context.squeeze(1) # [Batch, 64]
-
-    #     # # 3. Fúze a Paměť
-    #     # combined = torch.cat([vis_feat, self_feat, neigh_context], dim=1) # [Batch, 256]
-
-    #     # # 3.1 Layer Normalization
-    #     # combined = self.layer_norm(combined)
-        
-    #     # # 3.2 GRU vyžaduje sekvenční dimenzi, přidáme ji [Batch, 1, Features]
-    #     # gru_out, new_hidden = self.gru(combined.unsqueeze(1), hidden_state)
-    #     # gru_out = gru_out.squeeze(1) # [Batch, Hidden]
-
-    #     # # 4. Výstupy
-    #     # # A) Akce
-    #     # action_mean = self.action_mean(gru_out)
-    #     # action_mean = torch.tanh(action_mean) # PPO akce -1..1
-        
-    #     # action_std = torch.exp(self.action_logstd)
-    #     # dist = Normal(action_mean, action_std)
-
-    #     # # B) Zpráva
-    #     # message = self.msg_head(gru_out)
-
-    #     # return dist, message, new_hidden
-
-    #     # 3. Fúze a Paměť
-    #     combined = torch.cat([vis_feat, self_feat, neigh_context], dim=1) # [Batch, 256]
-    #     combined = self.layer_norm(combined)
-        
-    #     # --- ZMĚNA PRO SEKVENČNÍ TRÉNINK ---
-    #     # Pokud combined má 2 dimenze [Batch, Feat], jsme v DEMU/SIMULACI -> přidáme časovou dimenzi 1.
-    #     # Pokud už má 3 dimenze [Batch, Seq, Feat], jsme v TRÉNINKU -> necháme ho, jak je.
-    #     if combined.dim() == 2:
-    #         combined = combined.unsqueeze(1) # [Batch, 1, Feat]
-            
-    #     gru_out, new_hidden = self.gru(combined, hidden_state)
-        
-    #     # GRU vrátí [Batch, Seq, 128]. Pro lineární vrstvy to musíme "zploštit" zpět do 2D.
-    #     # Výsledek bude mít tvar [Batch * Seq, 128].
-    #     features = gru_out.reshape(-1, 128)
-    #     # -----------------------------------
-
-    #     # 4. Výstupy (používáme 'features' místo 'gru_out')
-    #     # A) Akce
-    #     action_mean = self.action_mean(features)
-    #     action_mean = torch.tanh(action_mean) # PPO akce -1..1
-        
-    #     action_std = torch.exp(self.action_logstd)
-    #     dist = Normal(action_mean, action_std)
-
-    #     # B) Zpráva
-    #     message = self.msg_head(features)
-
-    #     return dist, message, new_hidden
 
 
     def forward(self, local_map, self_state, neighbor_states, neighbor_mask, hidden_state):
@@ -331,26 +223,13 @@ class CommanderActor(nn.Module):
         # 64 (Self) + 64 (Attention Context) = 128
         self.layer_norm = nn.LayerNorm(64 + 64)
 
-        # 4.2 DECISION MLP
-        # Spojí stav letadla + kontext ze zpráv
-        # Jednoduše spojí (concatenation) vektor letadla a kontextový vektor.
-        # Prožene to přes MLP (neuronové vrstvy), které vymyslí strategii: 
-        # "Mám vodu + oheň je pode mnou = OTEVŘÍT NÁDRŽ." nebo "Nemám vodu + oheň je pode mnou = LETĚT DOPLNIT VODU."
-        # self.fusion = nn.Sequential(
-        #     nn.Linear(64 + 64, hidden_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(hidden_dim, hidden_dim),
-        #     nn.ReLU()
-        # )
-
-        # # 5. ACTION HEAD
-        # self.action_mean = nn.Linear(hidden_dim, action_dim)
-        # self.action_logstd = nn.Parameter(torch.zeros(1, action_dim))
-
         self.gru = nn.GRU(input_size=64 + 64, hidden_size=hidden_dim, batch_first=True)
 
         self.action_mean = nn.Linear(hidden_dim, action_dim)
         self.action_logstd = nn.Parameter(torch.zeros(1, action_dim))
+
+        # Scaling faktor pro komunikaci (může se učit, jak moc se má spoléhat na zprávy)
+        self.comm_alpha = 0.3
 
     def forward(self, self_state, incoming_messages, message_mask, hidden_state):
         # --- A) Detekce sekvence ---
@@ -360,9 +239,10 @@ class CommanderActor(nn.Module):
 
         # --- B) Zploštění pro Attention (pro trénink i demo) ---
         if is_sequential:
-            self_state = self_state.reshape(-1, self_state.size(-1))
-            incoming_messages = incoming_messages.reshape(-1, incoming_messages.size(-2), incoming_messages.size(-1))
-            message_mask = message_mask.reshape(-1, message_mask.size(-1))
+            target_batch = batch_size * seq_len
+            self_state = self_state.reshape(target_batch, self_state.size(-1))
+            incoming_messages = incoming_messages.reshape(target_batch, incoming_messages.size(-2), incoming_messages.size(-1))
+            message_mask = message_mask.reshape(target_batch, message_mask.size(-1))
 
         # --- C) Senzory a Attention ---
         self_feat = self.self_embed(self_state)   
@@ -374,7 +254,8 @@ class CommanderActor(nn.Module):
         context_vector = context_vector.squeeze(1) 
 
         # --- D) Fúze a Paměť (GRU) ---
-        combined = torch.cat([self_feat, context_vector], dim=1) 
+        # combined = torch.cat([self_feat, context_vector], dim=1) 
+        combined = torch.cat([self_feat, self.comm_alpha * context_vector], dim=1)
         combined = self.layer_norm(combined)
 
         # Vrátíme časovou dimenzi pro GRU
@@ -393,39 +274,6 @@ class CommanderActor(nn.Module):
         dist = Normal(action_mean, torch.exp(self.action_logstd))
 
         return dist, None, new_hidden
-
-    # def forward(self, self_state, incoming_messages, message_mask):
-    #     """
-    #     self_state: [Batch, State_Dim]
-    #     incoming_messages: [Batch, Num_Scouts, Msg_Dim]
-    #     message_mask: [Batch, Num_Scouts] (True = padding/dead drone)
-    #     """
-        
-    #     # 1. Encodery
-    #     self_feat = self.self_embed(self_state)   # [Batch, 64]
-    #     msg_feat = self.msg_embed(incoming_messages) # [Batch, N, 64]
-
-    #     # 2. Cross-Attention
-    #     # Letadlo (Query) se ptá zpráv (Key/Value)
-    #     query = self_feat.unsqueeze(1) # [Batch, 1, 64]
-        
-    #     context_vector = self.attention(query, msg_feat, msg_feat, key_padding_mask=message_mask)
-    #     context_vector = context_vector.squeeze(1) # [Batch, 64]
-
-    #     # 3. Rozhodování
-    #     combined = torch.cat([self_feat, context_vector], dim=1) # [Batch, 128]
-    #     combined = self.layer_norm(combined)    # Stabilizace před fúzí
-    #     features = self.fusion(combined)        # [Batch, Hidden]
-
-    #     # 4. Akce
-    #     action_mean = self.action_mean(features)
-    #     action_mean = torch.tanh(action_mean)
-        
-    #     action_std = torch.exp(self.action_logstd)
-    #     dist = Normal(action_mean, action_std)
-
-    #     return dist, None, None # (Vracíme None pro kompatibilitu API s message/hidden)
-
 
 class MAPPOCritic(nn.Module):
     """

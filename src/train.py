@@ -16,35 +16,40 @@ def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 1. Hyperparametry
-    num_episodes = 1000
+    num_episodes = 8000
     max_steps = 1000
-    learning_rate = 1e-5
+    learning_rate = 3e-4
     gamma = 0.99    # Jak moc se agent zajímá o budoucí odměny (0.99 = velmi, 0.9 = méně)
     clip_coef = 0.2 # PPO klipovací faktor (jak moc se může nová politika odchýlit od staré), aby se zabránilo příliš velkým updateům
     update_epochs = 8
-    episodes_per_batch = 15
+    episodes_per_batch = 8
 
-    lr_commander = learning_rate        # Letadlo se učí naplno (např. 1e-5)
+    lr_commander = learning_rate
     lr_critic = learning_rate           # Kritik musí stíhat sledovat změny
     lr_scout_fine_tune = learning_rate / 10  # Dron se jen jemně dolaďuje (1e-6)
     
     # Konfigurace týmu
-    N_QUADS = 1
+    N_QUADS = 0
     N_FIXED = 1
     
     # 2. Inicializace prostředí
-    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=1000.0, max_steps=max_steps)
+    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=4000.0, max_steps=max_steps)
     
     # Zjištění dimenzí pro sítě
     # A) SCOUT (Quad)
-    obs_q = env.observation_space("quad_0")
-    scout_self_dim = obs_q["self_state"].shape[0]
+    if N_QUADS > 0:
+        obs_q = env.observation_space("quad_0")
+        scout_self_dim = obs_q["self_state"].shape[0]
+    else:
+        scout_self_dim = 12 # Výchozí hodnota, aby síť šla vytvořit
+
     scout_msg_dim = 5                                 # Velikost zprávy (vymyšleno námi)
     scout_hidden_dim = 128                            # Velikost paměti GRU
     
     # B) COMMANDER (Fixed)
     if N_FIXED > 0:
-        obs_f = env.observation_space("fixed_0")
+        agent_key = env.fixed_agents[0] 
+        obs_f = env.observation_space(agent_key)
         fixed_self_dim = obs_f["self_state"].shape[0]
     else:
         fixed_self_dim = 0
@@ -53,31 +58,40 @@ def train():
     global_state_dim = env.state_space.shape[0]
 
     # 3. Inicializace Sítí
-    # Scout má paměť (GRU), Commander zatím ne
-    scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
-
-    # Cesta k funkčnímu modelu
-    path_to_old_model = "retrainModels/scout_best.pt"
-    if os.path.exists(path_to_old_model):
-        print(f"📥 Načítám naučený model drona z {path_to_old_model}")
-        # strict=False je jistota, pokud by se drobné detaily v architektuře lišily
-        scout_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
+    if N_QUADS > 0:
+        scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
+        # Cesta k funkčnímu modelu
+        path_to_old_model = "retrainModels/scout_ep3980.pt"
+        if os.path.exists(path_to_old_model):
+            print(f"📥 Načítám naučený model drona z {path_to_old_model}")
+            scout_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
+        else:
+            print(f"⚠️ Nenalezen žádný naučený model drona na {path_to_old_model}, trénink začne od nuly.")
     else:
-        print(f"⚠️ Nenalezen žádný naučený model drona na {path_to_old_model}, trénink začne od nuly.")
+        scout_actor = None
     
     if N_FIXED > 0:
         commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
+        # Cesta k funkčnímu modelu
+        path_to_old_model = "retrainModels/commander_ep110.pt"
+        if os.path.exists(path_to_old_model):
+            print(f"📥 Načítám naučený model drona z {path_to_old_model}")
+            commander_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
+        else:
+            print(f"⚠️ Nenalezen žádný naučený model drona na {path_to_old_model}, trénink začne od nuly.")
     else:
-        commander_actor = None # Nevytvářej síť, když není letadlo
+        commander_actor = None
     
     critic = MAPPOCritic(global_state_dim).to(device)
     
     # Společný optimalizátor pro celý "mozkový trust"
     # Sestavíme skupiny parametrů
     optim_groups = [
-        {"params": scout_actor.parameters(), "lr": lr_scout_fine_tune},
         {"params": critic.parameters(), "lr": lr_critic}
     ]
+
+    if scout_actor:
+        optim_groups.append({"params": scout_actor.parameters(), "lr": lr_scout_fine_tune})
 
     if commander_actor:
         optim_groups.append({"params": commander_actor.parameters(), "lr": lr_commander})
@@ -318,8 +332,8 @@ def train():
                 # Scout placeholders
                 batch_data["maps"].append(torch.zeros(1, 1, 32, 32))
                 batch_data["self_states"].append(torch.zeros(1, scout_self_dim))
-                batch_data["neighbor_states"].append(torch.zeros(1, N_QUADS-1, 3))
-                batch_data["neighbor_masks"].append(torch.ones(1, N_QUADS-1, dtype=torch.bool))
+                batch_data["neighbor_states"].append(torch.zeros(1, max(0, N_QUADS-1), 3)) 
+                batch_data["neighbor_masks"].append(torch.ones(1, max(0, N_QUADS-1), dtype=torch.bool))
                 batch_data["hiddens"].append(d["hidden"])
                 # batch_data["hiddens"].append(torch.zeros(1, 1, scout_hidden_dim))
                 batch_data["critic_hiddens"].append(d["c_hidden"])
@@ -340,7 +354,10 @@ def train():
         # Model se uloží POUZE tehdy, pokud je jeho PRŮMĚRNÁ úspěšnost za 15 her lepší než dřív.
         if episode >= 15 and avg_reward > best_avg_reward:
             best_avg_reward = avg_reward
-            torch.save(scout_actor.state_dict(), "saved_models/scout_best.pt")
+            if scout_actor:
+                torch.save(scout_actor.state_dict(), f"saved_models/scout_best.pt")
+            if commander_actor:
+                torch.save(commander_actor.state_dict(), f"saved_models/commander_best.pt")
             print(f"⭐ Uložen nový NEJLEPŠÍ model (Průměr: {best_avg_reward:.2f})!")
 
         # == PPO UPDATE ==
@@ -361,7 +378,7 @@ def train():
             # Advantages
             advantages = b_returns - b_values.detach()
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-            b_returns = (b_returns - b_returns.mean()) / (b_returns.std() + 1e-8)
+            # b_returns = (b_returns - b_returns.mean()) / (b_returns.std() + 1e-8)
             
 	        # Výpočet stride pro více agentů
             num_agents = N_QUADS + N_FIXED
@@ -376,15 +393,27 @@ def train():
                 steps = max_steps
 
                 def to_seq(data_list):
+                    # t = torch.cat(data_list).to(device)
+                    # # view vytvoří [15, 200, *rozměry_vstupních_dat]
+                    # return t.view(episodes, steps, *t.shape[1:])
+                
                     t = torch.cat(data_list).to(device)
-                    # view vytvoří [15, 200, *rozměry_vstupních_dat]
-                    return t.view(episodes, steps, *t.shape[1:])
+                    # Spočítáme, kolik agentů daného typu v balíku skutečně je
+                    num_trajectories = t.shape[0] // steps 
+                    return t.view(num_trajectories, steps, *t.shape[1:])
                 
                 # Verze pro Kritika (30 trajektorií: 15 epizod * 2 agenti)
                 # Musí to být samostatná funkce, protože rozměr "Batch" je dvojnásobný
                 def to_seq_critic(data_list):
+                    # t = torch.cat(data_list).to(device)
+                    # return t.view(episodes * num_agents, steps, *t.shape[1:])
                     t = torch.cat(data_list).to(device)
-                    return t.view(episodes * num_agents, steps, *t.shape[1:])
+                    # Nejdřív změníme tvar na [Epizody, Kroky, Agenti, Dimenze]
+                    t = t.view(episodes, steps, num_agents, -1)
+                    # Pak prohodíme Kroky a Agenty -> [Epizody, Agenti, Kroky, Dimenze]
+                    t = t.transpose(1, 2).contiguous()
+                    # A nakonec spojíme Epizody a Agenty do jedné dimenze pro Batch
+                    return t.view(episodes * num_agents, steps, -1)
                 
                 # 1. SCOUT UPDATE
                 idx_s = (b_types == 0)
@@ -398,6 +427,8 @@ def train():
                     # Tvar b_hiddens musí být (1, Batch_Epizod, 128)
                     b_hiddens = b_hiddens.squeeze(2).transpose(0, 1).contiguous().to(device)
 
+                    if scout_actor is None:
+                        raise ValueError("Nemůžu aktualizovat Scouta, protože není vytvořen (N_QUADS=0).")
                     dist, _, _ = scout_actor(
                         to_seq([batch_data["maps"][i] for i in range(len(b_types)) if b_types[i]==0]),
                         to_seq([batch_data["self_states"][i] for i in range(len(b_types)) if b_types[i]==0]),
@@ -418,7 +449,7 @@ def train():
                 if idx_c.any() and commander_actor is not None:
                     # Výběr hiddens pro letadla: stride je max_steps*num_agents. 
                     # Pokud je dron (Scout) v týmu první, letadlo je na indexu 1, 401, 801...
-                    offset = 1 # Index letadla v týmu (0=Scout, 1=Commander)
+                    offset = 1 if N_QUADS > 0 else 0 # Index letadla v týmu (0=Scout, 1=Commander)
                     b_hiddens_c = torch.stack([batch_data["hiddens"][k * stride + offset] for k in range(episodes)])
                     b_hiddens_c = b_hiddens_c.squeeze(2).transpose(0, 1).contiguous().to(device)
 
@@ -457,7 +488,7 @@ def train():
                 # a entropy_sum je bonus, který podporuje průzkum (vyšší entropie znamená, že agent více experimentuje s různými akcemi).
                 # celková ztráta kombinuje všechny tyto aspekty, přičemž klade největší důraz na policy_loss, menší na value_loss a 
                 # přidává malý bonus za entropii, aby se zabránilo příliš brzy konvergenci na suboptimální politiku.
-                loss = policy_loss + 0.01 * value_loss - 0.01 * entropy_sum
+                loss = policy_loss + 0.01 * value_loss - 0.02 * entropy_sum
                 # Uložíme si průměrné hodnoty pro graf (převod na float z tensoru)
                 loss_history.append(loss.item())
                 v_loss_history.append(value_loss.item())
@@ -466,20 +497,23 @@ def train():
                 optimizer.zero_grad()
                 loss.backward()
                 # === GRADIENT CLIPPING (Prevence explozí) ===
-                params = list(scout_actor.parameters()) + list(critic.parameters())
+                params = list(critic.parameters())
+                if scout_actor:
+                    params += list(scout_actor.parameters())
                 if commander_actor:
                     params += list(commander_actor.parameters())
                 # max_norm znamena, jak moc se mohou gradienty změnit v jednom kroku. 
                 # 0.2 je poměrně konzervativní hodnota, která pomáhá stabilizovat trénink a 
                 # zabraňuje příliš velkým updateům, které by mohly způsobit kolaps učení.
-                nn.utils.clip_grad_norm_(params, max_norm=0.2)
+                nn.utils.clip_grad_norm_(params, max_norm=0.5)
                 optimizer.step()
             
             # Reset bufferů
             for k in batch_data: batch_data[k] = []
 
         if episode % 10 == 0:
-            torch.save(scout_actor.state_dict(), f"saved_models/scout_ep{episode}.pt")
+            if scout_actor:
+                torch.save(scout_actor.state_dict(), f"saved_models/scout_ep{episode}.pt")
             if commander_actor:
                 torch.save(commander_actor.state_dict(), f"saved_models/commander_ep{episode}.pt")
 
