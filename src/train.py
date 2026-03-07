@@ -10,6 +10,42 @@ import matplotlib.pyplot as plt
 # Importy
 from env_core import DroneFireEnv
 from models import ScoutActor, CommanderActor, MAPPOCritic
+from concurrent.futures import ProcessPoolExecutor
+
+# Tuto funkci dáš někam nahoru do train.py
+def collect_single_episode(scout_weights, commander_weights, max_steps):
+    """Tohle poběží na jednom vyhrazeném CPU jádře."""
+    
+    # 1. Každý proces si vytvoří VLASTNÍ prostředí a VLASTNÍ sítě na CPU!
+    local_env = DroneFireEnv(num_quads=1, num_fixed=1, grid_size_m=4000.0, max_steps=max_steps)
+    
+    # Inicializace lokálních sítí (inference při hraní běží vždy nejrychleji na CPU)
+    local_scout = ScoutActor(...) 
+    local_commander = CommanderActor(...)
+    
+    # Nahrajeme aktuální mozek z hlavního vlákna
+    local_scout.load_state_dict(scout_weights)
+    local_commander.load_state_dict(commander_weights)
+    
+    # 2. ODEHRÁNÍ EPIZODY
+    obs, _ = local_env.reset()
+    episode_data = {'states': [], 'actions': [], 'rewards': [], ...}
+    total_reward = 0
+    
+    for step in range(max_steps):
+        # ... tvůj klasický kód pro výběr akce a local_env.step(actions) ...
+        # Uložíš si data z tohoto kroku do episode_data
+        
+        if done:
+            break
+            
+    # Úklid, aby se nám nezahltila paměť z mnoha PyBullet instancí
+    local_env.sim.stop_simulation()
+    
+    # Vrátíme nasbíraná data a celkové skóre zpět do hlavního vlákna
+    return episode_data, total_reward
+
+
 
 def train():
     print("🚀 Spouštím Heterogenní MAPPO Trénink (Communication Link)...")
@@ -189,7 +225,7 @@ def train():
 
                 else:
                     # Dron je mrtvý -> Posílá prázdnou zprávu a je maskován
-                    scout_messages.append(torch.zeros(1, scout_msg_dim))
+                    scout_messages.append(torch.zeros(1, scout_msg_dim).to(device))
                     scout_alive_mask.append(True) # Mrtvý (Ignorovat v Attention)
 
                     current_step_data[q_agent] = {
@@ -210,7 +246,7 @@ def train():
             # Sestavení komunikačního balíčku pro Commandera
             # Shape: [1, N_Scouts, Msg_Dim]
             if scout_messages:
-                msgs_tensor = torch.stack(scout_messages, dim=1) 
+                msgs_tensor = torch.stack(scout_messages, dim=1).to(device)
                 msgs_mask = torch.tensor(scout_alive_mask).unsqueeze(0) # [1, N_Scouts]
             else:
                 # Fallback kdyby nebyly drony (nemělo by nastat)
