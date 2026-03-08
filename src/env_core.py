@@ -500,7 +500,8 @@ class DroneFireEnv(ParallelEnv):
 
         # 2. Penalizace za výškový limit
         max_alt = 200.0 if "fixed" in agent else 200.0
-        if pos[2] > max_alt:
+        min_alt = 15.0 if "fixed" in agent else 35.0
+        if pos[2] > max_alt or pos[2] < min_alt:
             reward -= 0.05
             
         return reward
@@ -516,10 +517,10 @@ class DroneFireEnv(ParallelEnv):
         fire_under_drone = np.sum(reward_zone)
         
         if fire_under_drone > 0.1:
-            reward += (fire_under_drone * 0.01)
+            reward += (fire_under_drone * 0.0001)
             # Penalizace za rychlost nad ohněm
             speed = np.linalg.norm(drone.get_velocity())
-            reward -= speed * 0.001
+            reward -= speed * 0.01
             
         return reward
 

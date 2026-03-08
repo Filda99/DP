@@ -26,7 +26,7 @@ def run_demo():
     MODEL_PATH = "saved_models/scout_ep3600.pt" 
     
     # 2. Inicializace prostředí
-    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=400.0)
+    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=1000.0)
     
     # Zjištění dimenzí (stejné jako v train.py)
     obs_q = env.observation_space("quad_0")
