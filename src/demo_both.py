@@ -7,7 +7,7 @@ import os
 from env_core import DroneFireEnv
 from models import ScoutActor, CommanderActor
 
-def run_animated_demo(scout_path="saved_models/scout_best.pt", commander_path="saved_models/commander_ep400.pt"):
+def run_animated_demo(scout_path="saved_models/scout_best.pt", commander_path="saved_models/commander_ep5400.pt"):
     print(f"🚀 Generuji animované demo...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     

@@ -197,7 +197,7 @@ class DroneFireEnv(ParallelEnv):
 
         # 2. DANGER FLAG: 1.0 pokud je blíž než 150m k okraji, jinak 0.0
         # 150 metrů je pro letadlo při rychlosti 20 m/s cca 7 sekund letu.
-        danger_flag = 1.0 if min(self._get_boundary_measurements(pos)) < 150.0 else 0.0
+        danger_flag = 1.0 if min(self._get_boundary_measurements(pos)) < 300.0 else 0.0
 
         self_state = np.array([
             norm_pos[0], norm_pos[1], norm_pos[2],
@@ -339,16 +339,16 @@ class DroneFireEnv(ParallelEnv):
         self.sim.start_simulation()
         
         # 3. Zapneme oheň (Zatím na fixní pozici [0,0] pro snazší učení)
-        # self.sim.enable_fire_simulation(
-        #     grid_width_m=self.grid_size_m,
-        #     grid_height_m=self.grid_size_m,
-        #     cell_size_m=10.0,
-        #     dt=0.1
-        # )
+        self.sim.enable_fire_simulation(
+            grid_width_m=self.grid_size_m,
+            grid_height_m=self.grid_size_m,
+            cell_size_m=10.0,
+            dt=0.1
+        )
         # Oheň spawne kdekoli ve čtverci 100x100m kolem středu
         self.fire_x = random.uniform(-400, 400)
         self.fire_y = random.uniform(-400, 400)
-        # self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
+        self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
         
         # 4. Přidáme drony na náhodné startovní pozice
         for agent in self.agents:
@@ -488,14 +488,14 @@ class DroneFireEnv(ParallelEnv):
         # 1. Penalizace za přílišné přiblížení k hranicím (Boundary Proximity)
         dist_boundaries = self._get_boundary_measurements(pos)
         dist_to_edge = min(dist_boundaries)
-        threshold = 250.0   # Metry od okraje, kdy začíná trest
+        threshold = 800 if "fixed" in agent else 250
         if dist_to_edge < threshold:
-            reward -= 0.2 * (1.0 - dist_to_edge / threshold)**2
+            reward -= 0.3 * (1.0 - dist_to_edge / threshold)**2
 
         # 1b. Přísnější penalizace pro letadlo, kdy se blíží k okraji
         if "fixed" in agent:
-            if dist_to_edge < 150.0:
-                reward -= 0.15
+            if dist_to_edge < 300.0:
+                reward -= 0.5
 
         # 2. Penalizace za výškový limit
         max_alt = 200.0 if "fixed" in agent else 100.0
@@ -523,37 +523,27 @@ class DroneFireEnv(ParallelEnv):
         return reward
 
     def _get_fixed_reward_survival(self, agent):
-        """
-        FÁZE 1: UČENÍ LÉTÁNÍ V MAPĚ
-        """
         drone = self.sim.drones[agent]
         pos = drone.get_position()
         vel = drone.get_velocity()
-        speed = np.linalg.norm(vel)
-        rpy = drone.get_orientation_rpy()
-        
-        reward = 0.05 # Základní survival bonus
-
-        # 1. Rychlost (tolerujeme i mírné zpomalení v zatáčkách)
-        # if 12.0 < speed < 25.0:
-        #     reward += 0.05
-        # elif speed <= 12.0:
-        #     reward -= 0.1 # Stall prevence
-
-        # 2. Výška (ZATÍM MÍRNĚJŠÍ, ať se nebojí zatočit a klesnout)
-        # alt_error = abs(pos[2] - 60.0)
-        # if alt_error > 20.0:
-        #     reward -= 0.05
-
-        # (Tresty za Pitch a Roll jsme ZRUŠILI. Ať se naučí aerodynamiku samo!)
-
-        # 3. TRYCHTÝŘ DO STŘEDU MAPY (Tohle je ten game-changer!)
-        # Místo paušálu mu dáváme gradient. 
-        # Přímo ve středu [0,0] dostane +0.15. Na okraji mapy dostane 0.0.
+        reward = 0.05
+ 
         dist_from_center = np.linalg.norm(pos[:2])
-        center_bonus = 0.15 * (1.0 - (dist_from_center / self.map_bounds))
-        reward += max(0.0, center_bonus)
-            
+        # 1. Koblihový bonus (všude do 500m od středu je to super)
+        if dist_from_center < 500.0:
+            reward += 0.15
+        else:
+            # Čím dál je, tím menší má plošný bonus
+            reward += max(0.0, 0.15 * (1.0 - ((dist_from_center - 500.0) / (self.map_bounds - 500.0))))
+            # 2. GUMOVÉ LANO (Magnet na střed) - To ho donutí zatočit!
+            # Vypočítáme vektor směřující přesně do středu [0,0]
+            vec_to_center = -pos[:2]
+            dir_to_center = vec_to_center / dist_from_center
+            # Skalární součin: Jak moc jeho aktuální rychlost míří do středu?
+            # Kladné číslo = letí do bezpečí. Záporné = letí ven z mapy.
+            approach_speed = np.dot(vel[:2], dir_to_center)
+            # Tady je to kouzlo: Pokud točí zpět, dostane obrovskou odměnu, která přebije tresty u zdi!
+            reward += approach_speed * 0.02
         return reward
 
     def _get_fixed_reward(self, agent):
