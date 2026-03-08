@@ -247,7 +247,7 @@ def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 1. Hyperparametry
-    num_episodes = 8000
+    num_episodes = 80000
     max_steps = 1000
     learning_rate = 3e-4
     gamma = 0.99    # Jak moc se agent zajímá o budoucí odměny (0.99 = velmi, 0.9 = méně)
@@ -264,7 +264,7 @@ def train():
     N_FIXED = 0
     
     # Dočasné prostředí jen pro zjištění dimenzí sítí (pak ho smažeme)
-    temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=4000.0, max_steps=max_steps)
+    temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=500.0, max_steps=max_steps)
     if N_QUADS > 0:
         scout_self_dim = temp_env.observation_space("quad_0")["self_state"].shape[0]
     else:
@@ -283,7 +283,7 @@ def train():
 
     # Config dict pro workery
     worker_config = {
-        'N_QUADS': N_QUADS, 'N_FIXED': N_FIXED, 'grid_size_m': 4000.0, 'max_steps': max_steps,
+        'N_QUADS': N_QUADS, 'N_FIXED': N_FIXED, 'grid_size_m': 500.0, 'max_steps': max_steps,
         'scout_self_dim': scout_self_dim, 'scout_msg_dim': scout_msg_dim, 'scout_hidden_dim': scout_hidden_dim,
         'fixed_self_dim': fixed_self_dim, 'global_state_dim': global_state_dim, 'gamma': gamma
     }
@@ -291,7 +291,7 @@ def train():
     # 3. Inicializace Sítí na GPU
     if N_QUADS > 0:
         scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
-        path_to_old_model = "retrainModels/scout_ep8000.pt"
+        path_to_old_model = "retrainModels/scout_ep3600.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Načítám naučený model drona z {path_to_old_model}")
             scout_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)

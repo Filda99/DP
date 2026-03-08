@@ -346,8 +346,9 @@ class DroneFireEnv(ParallelEnv):
             dt=0.1
         )
         # Oheň spawne kdekoli ve čtverci 100x100m kolem středu
-        self.fire_x = random.uniform(-400, 400)
-        self.fire_y = random.uniform(-400, 400)
+        sixtyPercentOfMap = self.grid_size_m/2 * 0.6
+        self.fire_x = random.uniform(-sixtyPercentOfMap, sixtyPercentOfMap)
+        self.fire_y = random.uniform(-sixtyPercentOfMap, sixtyPercentOfMap)
         self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
         
         # 4. Přidáme drony na náhodné startovní pozice
@@ -498,7 +499,7 @@ class DroneFireEnv(ParallelEnv):
                 reward -= 0.5
 
         # 2. Penalizace za výškový limit
-        max_alt = 200.0 if "fixed" in agent else 100.0
+        max_alt = 200.0 if "fixed" in agent else 200.0
         if pos[2] > max_alt:
             reward -= 0.05
             
@@ -515,7 +516,7 @@ class DroneFireEnv(ParallelEnv):
         fire_under_drone = np.sum(reward_zone)
         
         if fire_under_drone > 0.1:
-            reward += (fire_under_drone * 0.0001)
+            reward += (fire_under_drone * 0.01)
             # Penalizace za rychlost nad ohněm
             speed = np.linalg.norm(drone.get_velocity())
             reward -= speed * 0.001

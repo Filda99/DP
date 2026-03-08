@@ -20,13 +20,13 @@ def run_demo():
     # 1. Konfigurace (Stejná jako při tréninku)
     N_QUADS = 1
     N_FIXED = 0
-    MAX_STEPS = 300
+    MAX_STEPS = 1000
     
     # Který model chceme načíst? (Změň číslo podle toho, který měl u tebe nejlepší Reward)
-    MODEL_PATH = "saved_models/scout_ep2400.pt" 
+    MODEL_PATH = "saved_models/scout_ep3600.pt" 
     
     # 2. Inicializace prostředí
-    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=200.0)
+    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=400.0)
     
     # Zjištění dimenzí (stejné jako v train.py)
     obs_q = env.observation_space("quad_0")
@@ -127,6 +127,7 @@ def run_demo():
         
         # --- VYKRESLOVÁNÍ (Každý 2. krok, ať GIF není zbytečně obrovský) ---
         if step % 2 == 0 and agent in env.sim.drones:
+            b = env.map_bounds
             drone = env.sim.drones[agent]
             pos = drone.get_position()
             
@@ -141,7 +142,7 @@ def run_demo():
             ax.set_facecolor('#2b2b2b') # Tmavé pozadí
             
             # Vykreslíme oheň
-            extent = [-100, 100, -100, 100]
+            extent = [-b, b, -b, b]
             # Maska, aby se nuly (žádný oheň) nevykreslovaly
             fire_map_masked = np.ma.masked_where(fire_map < 0.01, fire_map)
             ax.imshow(fire_map_masked, extent=extent, origin='lower', cmap='YlOrRd', vmin=0, vmax=1.0)
@@ -153,11 +154,16 @@ def run_demo():
             ax.scatter(pos[0], pos[1], c='cyan', s=150, marker='^', edgecolors='white', label='Scout')
             
             # Vykreslíme Zorné pole (Kameru) dronu (30x30 metrů)
-            rect = plt.Rectangle((pos[0]-15, pos[1]-15), 30, 30, fill=False, edgecolor='cyan', linestyle='-', alpha=0.8)
+            # rect = plt.Rectangle((pos[0]-15, pos[1]-15), 30, 30, fill=False, edgecolor='cyan', linestyle='-', alpha=0.8)
+            # Vykreslíme Zorné pole (Kameru) dronu podle skutečné logiky z env_core
+            current_z = env.sim.drones[agent].get_position()[2]
+            win_size = max(10.0, current_z * 1.5)
+            rect = plt.Rectangle((pos[0]-win_size/2, pos[1]-win_size/2), win_size, win_size, 
+                                fill=False, edgecolor='cyan', linestyle='-', alpha=0.8)
             ax.add_patch(rect)
             
-            ax.set_xlim(-100, 100)
-            ax.set_ylim(-100, 100)
+            ax.set_xlim(-b, b)
+            ax.set_ylim(-b, b)
             ax.set_title(f"Krok: {step:03d} | Reward: {total_reward:.1f}", color='black', fontsize=14)
             ax.grid(color='white', alpha=0.1)
             
