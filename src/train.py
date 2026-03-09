@@ -132,7 +132,7 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
                 for a in local_env.possible_agents: step_results[a]["reward"] = 0.0
             for a in local_env.possible_agents: ep_rollouts[a].append(step_results[a])
 
-        print(f"Worker {os.getpid()} | Epizoda {batch_start_idx + ep_offset} | Odměna: {episode_reward:.2f} | Lifespan průměr: {np.mean(list(agent_lifespans.values())):.1f} kroků")
+        # print(f"Worker {os.getpid()} | Epizoda {batch_start_idx + ep_offset} | Odměna: {episode_reward:.2f} | Lifespan průměr: {np.mean(list(agent_lifespans.values())):.1f} kroků")
  
         # Výpočet Returns (Discounting) - zpětně přes celých 1000 kroků
         for a in local_env.possible_agents:
