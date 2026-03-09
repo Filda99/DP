@@ -36,3 +36,6 @@ output/
 
 # Trained models
 *pt
+
+# Allow results folder tracking
+!results/
