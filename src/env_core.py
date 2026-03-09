@@ -342,21 +342,22 @@ class DroneFireEnv(ParallelEnv):
         self.sim.enable_fire_simulation(
             grid_width_m=self.grid_size_m,
             grid_height_m=self.grid_size_m,
-            cell_size_m=1.0,
+            cell_size_m=5.0,
             dt=0.1
         )
 
         # Ohen startovni pozice
         if epizode_number < 2000:
             safe_zone = self.map_bounds * 0.1
-            self.sim.start_fire([0, 0], intensity=0.5)
             self.fire_x = 0.0
             self.fire_y = 0.0
         else:
             safe_zone = self.map_bounds * 0.6
             self.fire_x = random.uniform(-safe_zone, safe_zone)
             self.fire_y = random.uniform(-safe_zone, safe_zone)
-            self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
+        
+        self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
+        
         # Dron startovni pozice        
         if epizode_number < 300:
             start_x = random.uniform(-10, 10)
@@ -369,8 +370,6 @@ class DroneFireEnv(ParallelEnv):
 
         # 4. Přidáme drony na náhodné startovní pozice
         for agent in self.agents:
-            
-            
             if "fixed" in agent:
                 # Vypočítáme vektor od startu do středu [0,0]
                 to_center_vec = -np.array([start_x, start_y])
