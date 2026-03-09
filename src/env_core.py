@@ -466,6 +466,8 @@ class DroneFireEnv(ParallelEnv):
                 
                 if time_is_up:
                     rewards[agent] += 10.0
+                
+                rewards[agent] = np.clip(rewards[agent], -10.0, 10.0)
             
             # Pokud agent žije a neukončil epizodu, přidáme jeho pozorování a necháme si ho
             if not terminations[agent]:
@@ -483,7 +485,6 @@ class DroneFireEnv(ParallelEnv):
                         "neighbor_mask": np.ones((self.max_neighbors,), dtype=bool)
                     }
             
-            rewards[agent] = np.clip(rewards[agent], -10.0, 10.0)
             
         # 5. AKTUALIZACE SEZNAMU ŽIJÍCÍCH AGENTŮ
         self.agents = agents_to_keep
@@ -527,13 +528,14 @@ class DroneFireEnv(ParallelEnv):
         
         # Adaptivní kamera pro odměnu (využívá stejnou logiku jako senzory)
         reward_zone = self._extract_local_fire_map(pos) 
-        avg_fire_intensity = np.sum(reward_zone) # Čím víc ohně pod dronem, tím větší odměna
+        avg_fire_intensity = np.mean(reward_zone) # Čím víc ohně pod dronem, tím větší odměna
         
-        if avg_fire_intensity > 0.1:
-            reward += (avg_fire_intensity * 0.05)
+        if avg_fire_intensity > 0.001:
+            reward += 1
+            reward += (avg_fire_intensity * 10)
             # Penalizace za rychlost nad ohněm
             speed = np.linalg.norm(drone.get_velocity())
-            reward -= speed * 0.01
+            reward -= speed * 0.001
             
         return reward
 
