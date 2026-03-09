@@ -18,7 +18,6 @@ from shapely.geometry import Point
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-from config import EnvironmentConfig
 from src.fire_grid import FireGrid
 from src.grid_mapper import GridMapper
 

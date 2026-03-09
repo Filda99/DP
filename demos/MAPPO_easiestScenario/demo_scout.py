@@ -23,7 +23,7 @@ def run_demo():
     MAX_STEPS = 1000
     
     # Který model chceme načíst? (Změň číslo podle toho, který měl u tebe nejlepší Reward)
-    MODEL_PATH = "saved_models/scout_ep3600.pt" 
+    MODEL_PATH = "saved_models/scout_ep16000.pt" 
     
     # 2. Inicializace prostředí
     env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=1000.0)
@@ -68,11 +68,11 @@ def run_demo():
     print("🚁 Dron startuje...")
     
     for step in range(MAX_STEPS):
-        if not env.agents: 
+        agent = "quad_0"
+        if not env.sim.drones[agent]: 
             print("💥 Dron havaroval nebo uletěl!")
             break
             
-        agent = "quad_0"
         
         # Příprava dat pro síť
         local_map = torch.FloatTensor(obs[agent]["local_map"]).unsqueeze(0)
@@ -105,7 +105,7 @@ def run_demo():
         # Vypíšeme to např. každý 5. krok, ať nám to nezahltí celou konzoli
         if step % 5 == 0:
             act_np = action.squeeze(0).numpy().round(2)
-            print(f"Krok {step:03d} | Pozice: [X:{pos[0]:5.1f}, Y:{pos[1]:5.1f}] | Kamera: {fire_pixels:5.2f} {fire_alert} | Akce [Roll, Pitch, Yaw, Thr]: {act_np}")
+            print(f"Krok {step:03d} | Pozice: [X:{pos[0]:5.1f}, Y:{pos[1]:5.1f}, Z:{pos[2]:5.1f}] | Kamera: {fire_pixels:5.2f} {fire_alert} | Akce [Roll, Pitch, Yaw, Thr]: {act_np}")
         # ===========================
         
         # Krok prostředí

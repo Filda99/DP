@@ -15,7 +15,7 @@ from concurrent.futures import ProcessPoolExecutor
 # ============================================================================
 # WORKER FUNKCE: Běží paralelně na oddělených CPU jádrech
 # ============================================================================
-def collect_single_episode(scout_w, cmdr_w, critic_w, config):
+def collect_single_episode(scout_w, cmdr_w, critic_w, config, epizode_number):
     """Tohle poběží na jednom vyhrazeném CPU jádře."""
     # import cProfile
     # import os
@@ -44,7 +44,7 @@ def collect_single_episode(scout_w, cmdr_w, critic_w, config):
     local_critic.eval()
 
     # 3. Příprava proměnných pro epizodu (Přesunuto z tvé původní smyčky)
-    obs, _ = local_env.reset()
+    obs, _ = local_env.reset(epizode_number)
     
     scout_hiddens = {q: torch.zeros(1, 1, config['scout_hidden_dim']) for q in local_env.quad_agents}
     commander_hiddens = {f: torch.zeros(1, 1, 128) for f in local_env.fixed_agents}
@@ -291,7 +291,7 @@ def train():
     # 3. Inicializace Sítí na GPU
     if N_QUADS > 0:
         scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
-        path_to_old_model = "retrainModels/scout_ep3600.pt"
+        path_to_old_model = "retrainModels/scout_ep8600.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Načítám naučený model drona z {path_to_old_model}")
             scout_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -344,7 +344,7 @@ def train():
             # Vyšleme workery (spustí se jich naráz tolik, kolik je episodes_per_batch)
             futures = []
             for _ in range(episodes_per_batch):
-                futures.append(executor.submit(collect_single_episode, scout_w, cmdr_w, critic_w, worker_config))
+                futures.append(executor.submit(collect_single_episode, scout_w, cmdr_w, critic_w, worker_config, episodes_played))
 
             # Globální buffery z tvého původního kódu
             batch_data = {

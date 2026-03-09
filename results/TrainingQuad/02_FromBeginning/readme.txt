@@ -1,0 +1,3 @@
+Trenujeme od nuly, kvadrokoptere roste odmena,pada cim dal mene, ale i po 2400 epizodach nenasel ani jeden dron ohen ocividne, protze vsechny rewards jsou max 20. 
+Mozna budu muset pridat to, aby se prvnich 200 epizod ohen vytvarel v blizkosti dronu a pak az byl nahodny, cimz by se mohl dron naucit, ze fire_start_x/y znamena, kde je ohen.
+Tak to nefungovalo, dron ani jednou ohen nenasel. Budeme muset dat ohen do stredu pro prvnich treba 500 letu a drone drzet blizko u [0,0]. Pak az ohen posunout dal.

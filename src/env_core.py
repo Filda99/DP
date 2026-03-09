@@ -319,7 +319,7 @@ class DroneFireEnv(ParallelEnv):
         global_state = np.concatenate([fire_summary] + agent_states)
         return global_state
         
-    def reset(self, seed=None, options=None):
+    def reset(self, seed=None, options=None, epizode_number=0):
         """
         Vyčistí mapu, vytvoří nový oheň a nahodí drony na start.
         Volá se na začátku každé epizody.
@@ -342,21 +342,26 @@ class DroneFireEnv(ParallelEnv):
         self.sim.enable_fire_simulation(
             grid_width_m=self.grid_size_m,
             grid_height_m=self.grid_size_m,
-            cell_size_m=10.0,
+            cell_size_m=1.0,
             dt=0.1
         )
-        # Oheň spawne kdekoli ve čtverci 100x100m kolem středu
-        sixtyPercentOfMap = self.grid_size_m/2 * 0.6
-        self.fire_x = random.uniform(-sixtyPercentOfMap, sixtyPercentOfMap)
-        self.fire_y = random.uniform(-sixtyPercentOfMap, sixtyPercentOfMap)
-        self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
+
+        if epizode_number < 2000:
+            safe_zone = self.map_bounds * 0.1
+            self.sim.start_fire([0, 0], intensity=0.5)
+            self.fire_x = 0.0
+            self.fire_y = 0.0
+        else:
+            safe_zone = self.map_bounds * 0.6
+            self.fire_x = random.uniform(-safe_zone, safe_zone)
+            self.fire_y = random.uniform(-safe_zone, safe_zone)
+            self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
         
         # 4. Přidáme drony na náhodné startovní pozice
         for agent in self.agents:
-            # Startujte agenty jen v centrálních 60 % mapy
-            safe_zone = self.map_bounds * 0.6
             start_x = random.uniform(-safe_zone, safe_zone)
             start_y = random.uniform(-safe_zone, safe_zone)
+            start_z = random.uniform(10.0, 40.0)
             
             if "fixed" in agent:
                 # Vypočítáme vektor od startu do středu [0,0]
@@ -364,13 +369,13 @@ class DroneFireEnv(ParallelEnv):
                 yaw_to_center = np.arctan2(to_center_vec[1], to_center_vec[0])
                 
                 # Přidej do sim.add_fixedwing parametr pro orientaci (pokud ho tvá sim podporuje)
-                self.sim.add_fixedwing(agent, position=[start_x, start_y, 60.0], water_capacity=100.0, yaw=yaw_to_center)
+                self.sim.add_fixedwing(agent, position=[start_x, start_y, 60.0], water_capacity=200.0, yaw=yaw_to_center)
 
                 drone = self.sim.drones[agent]
                 drone.state_va = 15.0
             else:
                 # Startuje níž
-                self.sim.add_quadcopter(agent, position=[start_x, start_y, 10.0])
+                self.sim.add_quadcopter(agent, position=[start_x, start_y, start_z])
             
         # 5. Inicializace sledování (Trackerů) pro Odměny
         self.visited_cells = set() # Sem si budeme ukládat, kde už drony byly
@@ -489,17 +494,17 @@ class DroneFireEnv(ParallelEnv):
         # 1. Penalizace za přílišné přiblížení k hranicím (Boundary Proximity)
         dist_boundaries = self._get_boundary_measurements(pos)
         dist_to_edge = min(dist_boundaries)
-        threshold = 800 if "fixed" in agent else 250
+        threshold = self.map_bounds / 2 * 0.25 if "fixed" in agent else self.map_bounds / 2 * 0.1 
         if dist_to_edge < threshold:
             reward -= 0.3 * (1.0 - dist_to_edge / threshold)**2
 
         # 1b. Přísnější penalizace pro letadlo, kdy se blíží k okraji
         if "fixed" in agent:
-            if dist_to_edge < 300.0:
+            if dist_to_edge < threshold * 0.5:
                 reward -= 0.5
 
         # 2. Penalizace za výškový limit
-        max_alt = 200.0 if "fixed" in agent else 200.0
+        max_alt = 200.0 if "fixed" in agent else 150.0
         min_alt = 15.0 if "fixed" in agent else 35.0
         if pos[2] > max_alt or pos[2] < min_alt:
             reward -= 0.05
@@ -517,7 +522,7 @@ class DroneFireEnv(ParallelEnv):
         fire_under_drone = np.sum(reward_zone)
         
         if fire_under_drone > 0.1:
-            reward += (fire_under_drone * 0.0001)
+            reward += (fire_under_drone * 0.005)
             # Penalizace za rychlost nad ohněm
             speed = np.linalg.norm(drone.get_velocity())
             reward -= speed * 0.01
