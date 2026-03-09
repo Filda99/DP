@@ -346,6 +346,7 @@ class DroneFireEnv(ParallelEnv):
             dt=0.1
         )
 
+        # Ohen startovni pozice
         if epizode_number < 2000:
             safe_zone = self.map_bounds * 0.1
             self.sim.start_fire([0, 0], intensity=0.5)
@@ -356,12 +357,19 @@ class DroneFireEnv(ParallelEnv):
             self.fire_x = random.uniform(-safe_zone, safe_zone)
             self.fire_y = random.uniform(-safe_zone, safe_zone)
             self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
-        
-        # 4. Přidáme drony na náhodné startovní pozice
-        for agent in self.agents:
+        # Dron startovni pozice        
+        if epizode_number < 300:
+            start_x = random.uniform(-10, 10)
+            start_y = random.uniform(-10, 10)
+            start_z = random.uniform(10.0, 40.0)
+        else:
             start_x = random.uniform(-safe_zone, safe_zone)
             start_y = random.uniform(-safe_zone, safe_zone)
             start_z = random.uniform(10.0, 40.0)
+
+        # 4. Přidáme drony na náhodné startovní pozice
+        for agent in self.agents:
+            
             
             if "fixed" in agent:
                 # Vypočítáme vektor od startu do středu [0,0]
@@ -519,10 +527,10 @@ class DroneFireEnv(ParallelEnv):
         
         # Adaptivní kamera pro odměnu (využívá stejnou logiku jako senzory)
         reward_zone = self._extract_local_fire_map(pos) 
-        fire_under_drone = np.sum(reward_zone)
+        avg_fire_intensity = np.sum(reward_zone) # Čím víc ohně pod dronem, tím větší odměna
         
-        if fire_under_drone > 0.1:
-            reward += (fire_under_drone * 0.005)
+        if avg_fire_intensity > 0.1:
+            reward += (avg_fire_intensity * 0.05)
             # Penalizace za rychlost nad ohněm
             speed = np.linalg.norm(drone.get_velocity())
             reward -= speed * 0.01
