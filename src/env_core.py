@@ -357,7 +357,14 @@ class DroneFireEnv(ParallelEnv):
             self.fire_y = random.uniform(-safe_zone, safe_zone)
         
         self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
-        
+
+        self.current_episode = epizode_number
+
+        # Refill zóna: umístěna na opačné straně mapy od ohně — motivuje k pendlování
+        refill_x = float(np.clip(-self.fire_x + random.uniform(-20, 20), -self.map_bounds * 0.8, self.map_bounds * 0.8))
+        refill_y = float(np.clip(-self.fire_y + random.uniform(-20, 20), -self.map_bounds * 0.8, self.map_bounds * 0.8))
+        self.sim.environment.create_refill_zone(center_pos=[refill_x, refill_y, 0.0], size=20.0)
+
         # Dron startovni pozice        
         if epizode_number < 300:
             start_x = random.uniform(-10, 10)
@@ -371,12 +378,13 @@ class DroneFireEnv(ParallelEnv):
         # 4. Přidáme drony na náhodné startovní pozice
         for agent in self.agents:
             if "fixed" in agent:
-                # Vypočítáme vektor od startu do středu [0,0]
-                to_center_vec = -np.array([start_x, start_y])
+                # FW startuje na jiné pozici než Quad (offset ±50 m) — zabrání kolizi při startu
+                fw_start_x = float(np.clip(start_x + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
+                fw_start_y = float(np.clip(start_y + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
+                to_center_vec = -np.array([fw_start_x, fw_start_y])
                 yaw_to_center = np.arctan2(to_center_vec[1], to_center_vec[0])
-                
-                # Přidej do sim.add_fixedwing parametr pro orientaci (pokud ho tvá sim podporuje)
-                self.sim.add_fixedwing(agent, position=[start_x, start_y, 60.0], water_capacity=200.0, yaw=yaw_to_center)
+
+                self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=yaw_to_center)
 
                 drone = self.sim.drones[agent]
                 drone.state_va = 15.0
@@ -454,12 +462,17 @@ class DroneFireEnv(ParallelEnv):
 
                 # E) Specifické úkoly
                 if "fixed" in agent:
-                    # Kombinace: Letadlo musí nejdřív umět létat (survival) 
-                    # a pak teprve řešit oheň (mission)
                     survival = self._get_fixed_reward_survival(agent)
-                    # mission = self._get_fixed_reward(agent)
-                    # rewards[agent] += (survival + (mission * 2.0)) / 2
-                    rewards[agent] += survival
+                    mission = self._get_fixed_reward(agent)
+                    # Curriculum: postupný přechod survival → mise podle čísla epizody
+                    ep = getattr(self, 'current_episode', 0)
+                    if ep < 500:
+                        rewards[agent] += survival
+                    elif ep < 2000:
+                        blend = (ep - 500) / 1500.0  # lineárně 0.0 → 1.0
+                        rewards[agent] += survival * (1.0 - blend * 0.7) + mission * (blend * 0.7)
+                    else:
+                        rewards[agent] += survival * 0.3 + mission * 0.7
                 else:
                     rewards[agent] += self._get_quad_reward(agent)
                 
@@ -487,7 +500,17 @@ class DroneFireEnv(ParallelEnv):
             
         # 5. AKTUALIZACE SEZNAMU ŽIJÍCÍCH AGENTŮ
         self.agents = agents_to_keep
-        
+
+        # 6. TÝMOVÁ ODMĚNA: Commander haší → bonus pro něj i pro Scouty (sdílená zpětná vazba)
+        # Tento mechanismus zajišťuje, že Scout dostane zpětnou vazbu, že jeho zprávy pomohly
+        for f_agent in self.fixed_agents:
+            eff = self.sim.drone_extinguish_stats.get(f_agent, 0.0)
+            if eff > 0.0 and f_agent in rewards:
+                fire_bonus = min(0.5, eff * 0.1)
+                rewards[f_agent] = rewards.get(f_agent, 0.0) + fire_bonus
+                for q_agent in [a for a in self.quad_agents if a in rewards]:
+                    rewards[q_agent] = rewards.get(q_agent, 0.0) + fire_bonus * 0.3
+
         return observations, rewards, terminations, truncations, infos
     
 
@@ -609,9 +632,9 @@ class DroneFireEnv(ParallelEnv):
         # Pokud letím přímo k cíli, hodnota je vysoká. Pokud od něj, je záporná.
         approach_speed = np.dot(vel, dir_to_target)
         
-        reward = approach_speed * 0.01 # Bonus za přibližování
-        reward += (1.0 - (dist / self.grid_size_m)) * 0.005 # Bonus za blízkost
-        
+        reward = approach_speed * 0.05  # Bonus za přibližování (5× silnější signál)
+        reward += (1.0 - (dist / self.grid_size_m)) * 0.02  # Bonus za blízkost k cíli
+
         return reward
 
 

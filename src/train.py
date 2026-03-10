@@ -201,11 +201,11 @@ def train():
 
     lr_commander = learning_rate
     lr_critic = learning_rate
-    lr_scout_fine_tune = learning_rate 
+    lr_scout_fine_tune = 5e-5  # Scout je předtrénovaný — jemné doladění, nechceme přepsat naučené chování
     
     # Konfigurace týmu
     N_QUADS = 1
-    N_FIXED = 0
+    N_FIXED = 1
     
     # Dočasné prostředí jen pro zjištění dimenzí sítí (pak ho smažeme)
     temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=500.0, max_steps=max_steps)
@@ -412,8 +412,7 @@ def train():
                     pg_loss2 = -advantages.squeeze() * torch.clamp(ratio, 1.0 - clip_coef, 1.0 + clip_coef)
                     policy_loss = torch.max(pg_loss1, pg_loss2).mean()
                     
-                    # TVÁ ZMĚNĚNÁ ENTROPIE (0.01) JE ZDE:
-                    loss = policy_loss + 0.01 * value_loss - 0.002 * entropy_sum
+                    loss = policy_loss + 0.5 * value_loss - 0.01 * entropy_sum
                     
                     loss_history.append(loss.item())
                     v_loss_history.append(value_loss.item())

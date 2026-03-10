@@ -228,8 +228,9 @@ class CommanderActor(nn.Module):
         self.action_mean = nn.Linear(hidden_dim, action_dim)
         self.action_logstd = nn.Parameter(torch.zeros(1, action_dim))
 
-        # Scaling faktor pro komunikaci (může se učit, jak moc se má spoléhat na zprávy)
-        self.comm_alpha = 0.3
+        # Scaling faktor pro komunikaci: trénuje se jako nn.Parameter
+        # torch.sigmoid zajišťuje, že alpha zůstane v (0, 1) a směr gradientu zůstane stabilní
+        self.comm_alpha = nn.Parameter(torch.tensor(0.3))
 
     def forward(self, self_state, incoming_messages, message_mask, hidden_state):
         # --- A) Detekce sekvence ---
@@ -254,8 +255,9 @@ class CommanderActor(nn.Module):
         context_vector = context_vector.squeeze(1) 
 
         # --- D) Fúze a Paměť (GRU) ---
+        # comm_alpha je nn.Parameter → trénuje se; sigmoid omezuje alpha na (0, 1)
         # combined = torch.cat([self_feat, context_vector], dim=1) 
-        combined = torch.cat([self_feat, self.comm_alpha * context_vector], dim=1)
+        combined = torch.cat([self_feat, torch.sigmoid(self.comm_alpha) * context_vector], dim=1)
         combined = self.layer_norm(combined)
 
         # Vrátíme časovou dimenzi pro GRU
