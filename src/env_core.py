@@ -641,12 +641,12 @@ class DroneFireEnv(ParallelEnv):
     def _check_death(self, agent):
         """Kontrola havárie nebo opuštění mapy."""
         if agent not in self.sim.drones:
-            print(f"💥 {agent} havaroval ve stepu {self.current_step}")
+            # print(f"💥 {agent} havaroval ve stepu {self.current_step}")
             return True, -50
             
         pos = self.sim.drones[agent].get_position()
         if abs(pos[0]) > self.map_bounds or abs(pos[1]) > self.map_bounds:
-            print(f"🚫 {agent} uletěl z mapy ve stepu {self.current_step}")
+            # print(f"🚫 {agent} uletěl z mapy ve stepu {self.current_step}")
             self.sim._destroy_drone(agent)
             return True, -50
             

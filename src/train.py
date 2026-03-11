@@ -43,7 +43,7 @@ def train():
                                #   0.9   = cares mostly about near-future rewards
     clip_coef     = 0.2        # PPO clipping range — prevents the new policy from
                                # deviating too far from the old one in a single update
-    update_epochs = 8          # how many gradient passes over each collected batch
+    update_epochs = 4          # how many gradient passes over each collected batch
     num_workers   = 20         # parallel CPU workers for data collection
     eps_per_worker = 3         # episodes collected by each worker per batch
     episodes_per_batch = num_workers * eps_per_worker   # = 60 episodes per batch
