@@ -46,11 +46,18 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
     local_critic = MAPPOCritic(config['global_state_dim'])
     local_critic.load_state_dict(critic_w); local_critic.eval()
  
-    # Buffery pro data z epizod (budou posílány zpět do hlavního procesu)
-    worker_aggregated = {k: [] for k in ["maps", "self_states", "neighbor_states", "neighbor_masks", 
-                                         "fixed_states", "incoming_msgs", "msg_masks", "g_states", 
-                                         "actions", "logprobs", "returns", "values", "agent_types", 
-                                         "hiddens", "critic_hiddens"]}
+    # Buffery pro data z epizod — předem rozdělené na scout / commander / critic
+    # Tím se vyhneme filtrování na hlavním CPU
+    scout_buf = {k: [] for k in ["maps", "self_states", "neighbor_states", "neighbor_masks",
+                                  "actions", "logprobs", "returns"]}
+    cmdr_buf  = {k: [] for k in ["fixed_states", "incoming_msgs", "msg_masks",
+                                  "actions", "logprobs", "returns"]}
+    critic_buf = {k: [] for k in ["g_states", "returns", "values"]}
+    # Počáteční hidden states (jen první krok každé epizody) — stačí jeden tensor na epizodu
+    scout_init_h_list = []   # shape per ep: [1, 1, hidden_dim]
+    cmdr_init_h_list  = []   # shape per ep: [1, 1, 128]
+    critic_init_h_scout_list = []  # shape per ep: [1, 1, 128]
+    critic_init_h_cmdr_list  = []  # shape per ep: [1, 1, 128]
     worker_total_rewards = []
     worker_lifespans = []
  
@@ -70,6 +77,14 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
         scout_h = {q: torch.zeros(1, 1, config['scout_hidden_dim']) for q in local_env.quad_agents}
         cmdr_h = {f: torch.zeros(1, 1, 128) for f in local_env.fixed_agents}
         crit_h = {a: torch.zeros(1, 1, 128) for a in local_env.possible_agents}
+
+        # Uložíme počáteční hidden states pro tuto epizodu (použijí se v PPO update)
+        if config['N_QUADS'] > 0:
+            scout_init_h_list.append(scout_h[local_env.quad_agents[0]].clone())
+            critic_init_h_scout_list.append(crit_h[local_env.quad_agents[0]].clone())
+        if config['N_FIXED'] > 0:
+            cmdr_init_h_list.append(cmdr_h[local_env.fixed_agents[0]].clone())
+            critic_init_h_cmdr_list.append(crit_h[local_env.fixed_agents[0]].clone())
  
         ep_rollouts = {a: [] for a in local_env.possible_agents}
         agent_lifespans = {a: config['max_steps'] for a in local_env.possible_agents}
@@ -140,44 +155,79 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
             for i in reversed(range(config['max_steps'])):
                 ep_rollouts[a][i]["ret"] = ep_rollouts[a][i]["reward"] + config['gamma'] * disc_sum
                 disc_sum = ep_rollouts[a][i]["ret"]
-        # Sbalení dat do hlavního bufferu (vždy 1000 kroků na agenta!)
+        # Sbalení dat do předem rozdělených bufferů (scout / cmdr / critic)
         for step_idx in range(config['max_steps']):
+            # --- CRITIC buffer (jeden záznam na agenta na krok) ---
             for a_name in local_env.possible_agents:
                 d = ep_rollouts[a_name][step_idx]
-                worker_aggregated["g_states"].append(d["gs"])
-                worker_aggregated["returns"].append(d["ret"])
-                worker_aggregated["values"].append(d.get("val", torch.tensor([[0.0]])))
-                if "dead" in d["type"]:
-                    worker_aggregated["actions"].append(torch.zeros(1, 4))
-                    worker_aggregated["logprobs"].append(torch.tensor([0.0]))
-                    worker_aggregated["hiddens"].append(torch.zeros(1, 1, 128))
-                    worker_aggregated["critic_hiddens"].append(torch.zeros(1, 1, 128))
-                    worker_aggregated["agent_types"].append(0 if "scout" in d["type"] else 1)
-                    worker_aggregated["maps"].append(d_map); worker_aggregated["self_states"].append(d_scout_self if "scout" in d["type"] else d_cmd_self)
-                    worker_aggregated["neighbor_states"].append(d_neigh_s); worker_aggregated["neighbor_masks"].append(d_neigh_m)
-                    worker_aggregated["fixed_states"].append(d_cmd_self); worker_aggregated["incoming_msgs"].append(d_msgs); worker_aggregated["msg_masks"].append(d_msg_m)
-                else:
-                    worker_aggregated["actions"].append(d["act"]); worker_aggregated["logprobs"].append(d["lp"])
-                    worker_aggregated["hiddens"].append(d["h"]); worker_aggregated["critic_hiddens"].append(d["ch"])
-                    if d["type"] == "scout":
-                        worker_aggregated["agent_types"].append(0); worker_aggregated["maps"].append(d["map"]); worker_aggregated["self_states"].append(d["self"])
-                        worker_aggregated["neighbor_states"].append(d["n_s"]); worker_aggregated["neighbor_masks"].append(d["n_m"])
-                        worker_aggregated["fixed_states"].append(d_cmd_self); worker_aggregated["incoming_msgs"].append(d_msgs); worker_aggregated["msg_masks"].append(d_msg_m)
-                    else:
-                        worker_aggregated["agent_types"].append(1); worker_aggregated["fixed_states"].append(d["self"])
-                        worker_aggregated["incoming_msgs"].append(d["msgs"]); worker_aggregated["msg_masks"].append(d["m_m"])
-                        worker_aggregated["maps"].append(d_map); worker_aggregated["self_states"].append(d_scout_self)
-                        worker_aggregated["neighbor_states"].append(d_neigh_s); worker_aggregated["neighbor_masks"].append(d_neigh_m)
+                critic_buf["g_states"].append(d["gs"])
+                critic_buf["returns"].append(d["ret"])
+                critic_buf["values"].append(d.get("val", torch.tensor([[0.0]])))
+
+            # --- SCOUT buffer (jeden záznam na scout na krok) ---
+            for q in local_env.quad_agents:
+                d = ep_rollouts[q][step_idx]
+                if d["type"] == "scout":
+                    scout_buf["maps"].append(d["map"])
+                    scout_buf["self_states"].append(d["self"])
+                    scout_buf["neighbor_states"].append(d["n_s"])
+                    scout_buf["neighbor_masks"].append(d["n_m"])
+                    scout_buf["actions"].append(d["act"])
+                    scout_buf["logprobs"].append(d["lp"])
+                else:  # dead_scout — padding
+                    scout_buf["maps"].append(d_map)
+                    scout_buf["self_states"].append(d_scout_self)
+                    scout_buf["neighbor_states"].append(d_neigh_s)
+                    scout_buf["neighbor_masks"].append(d_neigh_m)
+                    scout_buf["actions"].append(torch.zeros(1, 4))
+                    scout_buf["logprobs"].append(torch.tensor([0.0]))
+                scout_buf["returns"].append(d["ret"])
+
+            # --- COMMANDER buffer (jeden záznam na fixed na krok) ---
+            for f in local_env.fixed_agents:
+                d = ep_rollouts[f][step_idx]
+                if d["type"] == "commander":
+                    cmdr_buf["fixed_states"].append(d["self"])
+                    cmdr_buf["incoming_msgs"].append(d["msgs"])
+                    cmdr_buf["msg_masks"].append(d["m_m"])
+                    cmdr_buf["actions"].append(d["act"])
+                    cmdr_buf["logprobs"].append(d["lp"])
+                else:  # dead_cmdr — padding
+                    cmdr_buf["fixed_states"].append(d_cmd_self)
+                    cmdr_buf["incoming_msgs"].append(d_msgs)
+                    cmdr_buf["msg_masks"].append(d_msg_m)
+                    cmdr_buf["actions"].append(torch.zeros(1, 4))
+                    cmdr_buf["logprobs"].append(torch.tensor([0.0]))
+                cmdr_buf["returns"].append(d["ret"])
  
         worker_total_rewards.append(episode_reward)
         worker_lifespans.append(np.mean(list(agent_lifespans.values())))
  
     local_env.sim.stop_simulation()
-    for k in worker_aggregated:
-        if k == "agent_types": worker_aggregated[k] = torch.tensor(worker_aggregated[k], dtype=torch.long)
-        elif k == "returns": worker_aggregated[k] = torch.tensor(worker_aggregated[k], dtype=torch.float32)
-        else: worker_aggregated[k] = torch.cat(worker_aggregated[k])
-    return worker_aggregated, worker_total_rewards, worker_lifespans
+
+    # Zkompilujeme buffery pomocí torch.cat (na CPU workera, ne na hlavním procesu)
+    def cat_buf(buf):
+        result = {}
+        for k, v in buf.items():
+            if k == "returns":
+                result[k] = torch.tensor(v, dtype=torch.float32)
+            else:
+                result[k] = torch.cat(v)
+        return result
+
+    out_scout  = cat_buf(scout_buf)
+    out_cmdr   = cat_buf(cmdr_buf)
+    out_critic = cat_buf(critic_buf)
+
+    # Počáteční hidden states: [num_eps, 1, hidden_dim] → squeezneme na [num_eps, hidden_dim]
+    out_init_h = {
+        "scout":        torch.cat(scout_init_h_list,         dim=0) if scout_init_h_list else None,
+        "cmdr":         torch.cat(cmdr_init_h_list,          dim=0) if cmdr_init_h_list  else None,
+        "critic_scout": torch.cat(critic_init_h_scout_list,  dim=0) if critic_init_h_scout_list else None,
+        "critic_cmdr":  torch.cat(critic_init_h_cmdr_list,   dim=0) if critic_init_h_cmdr_list  else None,
+    }
+
+    return out_scout, out_cmdr, out_critic, out_init_h, worker_total_rewards, worker_lifespans
 
 
 
@@ -189,14 +239,14 @@ def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 1. Hyperparametry
-    num_episodes = 15000
-    max_steps = 1000
+    num_episodes = 25000
+    max_steps = 2500
     learning_rate = 3e-4
     gamma = 0.99    # Jak moc se agent zajímá o budoucí odměny (0.99 = velmi, 0.9 = méně)
     clip_coef = 0.2 # PPO klipovací faktor (jak moc se může nová politika odchýlit od staré), aby se zabránilo příliš velkým updateům
     update_epochs = 8
-    num_workers = 4
-    eps_per_worker = 5 
+    num_workers = 20
+    eps_per_worker = 3
     episodes_per_batch = num_workers * eps_per_worker 
 
     lr_commander = learning_rate
@@ -235,7 +285,7 @@ def train():
     # 3. Inicializace Sítí na GPU
     if N_QUADS > 0:
         scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
-        path_to_old_model = "retrainModels/scout_ep8600.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_best.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Načítám naučený model drona z {path_to_old_model}")
             scout_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -246,7 +296,7 @@ def train():
     
     if N_FIXED > 0:
         commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
-        path_to_old_model = "retrainModels/commander_ep2400.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_best.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Načítám naučený model letadla z {path_to_old_model}")
             commander_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -280,10 +330,12 @@ def train():
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         for batch_idx in range(1, num_batches + 1):
             # 1. INICIALIZÁCIA BUFFERU (Musí byť TU, aby bol pre každý batch prázdny)
-            batch_data = {k: [] for k in ["maps", "self_states", "neighbor_states", "neighbor_masks", 
-                                          "fixed_states", "incoming_msgs", "msg_masks", "g_states", 
-                                          "actions", "logprobs", "returns", "values", "agent_types", 
-                                          "hiddens", "critic_hiddens"]}
+            batch_scout  = {k: [] for k in ["maps", "self_states", "neighbor_states", "neighbor_masks",
+                                             "actions", "logprobs", "returns"]}
+            batch_cmdr   = {k: [] for k in ["fixed_states", "incoming_msgs", "msg_masks",
+                                             "actions", "logprobs", "returns"]}
+            batch_critic = {k: [] for k in ["g_states", "returns", "values"]}
+            batch_init_h = {"scout": [], "cmdr": [], "critic_scout": [], "critic_cmdr": []}
  
             # 2. Príprava váh na CPU
             scout_w = {k: v.cpu() for k, v in scout_actor.state_dict().items()} if scout_actor else None
@@ -299,15 +351,18 @@ def train():
             # 4. Zber výsledkov
             batch_rewards = []
             for future in futures:
-                w_agg, w_rewards, w_lifespans = future.result()
+                w_scout, w_cmdr, w_critic, w_init_h, w_rewards, w_lifespans = future.result()
                 batch_rewards.extend(w_rewards)
                 lifespan_history.extend(w_lifespans)
                 episode_rewards_history.extend(w_rewards)
                 episodes_played += len(w_rewards)
- 
-                # Tu sa buffer plní dátami z workerov
-                for k in batch_data:
-                    batch_data[k].append(w_agg[k])
+
+                for k in batch_scout:  batch_scout[k].append(w_scout[k])
+                for k in batch_cmdr:   batch_cmdr[k].append(w_cmdr[k])
+                for k in batch_critic: batch_critic[k].append(w_critic[k])
+                for k in batch_init_h:
+                    if w_init_h[k] is not None:
+                        batch_init_h[k].append(w_init_h[k])
 
             # Logování za dávku (místo za epizodu)
             avg_batch = np.mean(batch_rewards)
@@ -324,103 +379,114 @@ def train():
                 print(f"⭐ Uložen nový NEJLEPŠÍ model (Průměr: {best_avg_reward:.2f})!")
 
             # === PPO UPDATE (GPU maká) ===
-            if len(batch_data["returns"]) > 0:
-                # --- KOUZLO ROZBALENÍ ---
-                # Dělníci nám poslali 20 obřích beden. PPO kód ale čeká 20 000 malých krabiček.
-                # Rozsekáme ty bedny zpět na jednotlivé kroky (ve zlomku milisekundy).
-                for k in batch_data:
-                    big_tensor = torch.cat(batch_data[k])
-                    batch_data[k] = list(torch.split(big_tensor, 1))
- 
-                # Stackování dat (Upraveno na torch.cat, jelikož už to jsou tensory)
-                b_actions = torch.cat(batch_data["actions"]).to(device)
-                b_logprobs = torch.cat(batch_data["logprobs"]).to(device)
-                b_returns = torch.cat(batch_data["returns"]).unsqueeze(1).to(device)
-                b_values = torch.cat(batch_data["values"]).to(device)
-                b_g_states = torch.cat(batch_data["g_states"]).to(device)
-                b_types = torch.cat(batch_data["agent_types"]).to(device)
-                print(f"🛠️ UPDATE SÍTÍ ({len(b_returns)} vzorků)...")
-                # Advantages
-                advantages = b_returns - b_values.detach()
-                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-                
-                num_agents = N_QUADS + N_FIXED
-                stride = max_steps * num_agents
-                episodes = episodes_per_batch
-            
+            num_agents = N_QUADS + N_FIXED
+            episodes   = episodes_per_batch
+            if len(batch_critic["returns"]) > 0:
+                # Hlavní proces pouze spojí výsledky z workerů (torch.cat) — žádné filtrování
+                s_maps     = torch.cat(batch_scout["maps"]).to(device)
+                s_self     = torch.cat(batch_scout["self_states"]).to(device)
+                s_neigh_s  = torch.cat(batch_scout["neighbor_states"]).to(device)
+                s_neigh_m  = torch.cat(batch_scout["neighbor_masks"]).to(device)
+                s_actions  = torch.cat(batch_scout["actions"]).to(device)
+                s_logprobs = torch.cat(batch_scout["logprobs"]).to(device)
+                s_returns  = torch.cat(batch_scout["returns"]).to(device)
+
+                c_fixed    = torch.cat(batch_cmdr["fixed_states"]).to(device)
+                c_msgs     = torch.cat(batch_cmdr["incoming_msgs"]).to(device)
+                c_msg_m    = torch.cat(batch_cmdr["msg_masks"]).to(device)
+                c_actions  = torch.cat(batch_cmdr["actions"]).to(device)
+                c_logprobs = torch.cat(batch_cmdr["logprobs"]).to(device)
+                c_returns  = torch.cat(batch_cmdr["returns"]).to(device)
+
+                cr_g_states = torch.cat(batch_critic["g_states"]).to(device)
+                cr_returns  = torch.cat(batch_critic["returns"]).to(device)
+                cr_values   = torch.cat(batch_critic["values"]).to(device)
+
+                # Počáteční hidden states: [episodes, 1, hidden_dim] → [1, episodes, hidden_dim]
+                h_scout        = torch.cat(batch_init_h["scout"],        dim=0).squeeze(1).unsqueeze(0).to(device)
+                h_cmdr         = torch.cat(batch_init_h["cmdr"],         dim=0).squeeze(1).unsqueeze(0).to(device)
+                h_critic_scout = torch.cat(batch_init_h["critic_scout"], dim=0).squeeze(1).unsqueeze(0).to(device)
+                h_critic_cmdr  = torch.cat(batch_init_h["critic_cmdr"],  dim=0).squeeze(1).unsqueeze(0).to(device)
+                # Critic hidden: interleave scout/cmdr per episode → [1, episodes*num_agents, hidden_dim]
+                h_critic = torch.stack([h_critic_scout.squeeze(0), h_critic_cmdr.squeeze(0)], dim=1)
+                h_critic = h_critic.reshape(1, episodes * num_agents, -1)
+
+                print(f"🛠️ UPDATE SÍTÍ ({len(cr_returns)} vzorků)...")
+
+                # Advantages pro každého agenta zvlášť
+                cr_adv = cr_returns.unsqueeze(1) - cr_values.detach()
+                cr_adv = (cr_adv - cr_adv.mean()) / (cr_adv.std() + 1e-8)
+                # Scout/cmdr advantages: každý agent má svůj slice z critic bufferu
+                # Critic buffer je interleaved: [scout_0, cmdr_0, scout_1, cmdr_1, ...]
+                s_adv = cr_adv.view(episodes, max_steps, num_agents)[:, :, 0].reshape(-1)
+                c_adv = cr_adv.view(episodes, max_steps, num_agents)[:, :, 1].reshape(-1)
+
+                def to_seq_agent(t, num_traj):
+                    """Reshape [num_traj*steps, ...] → [num_traj, steps, ...]"""
+                    return t.view(num_traj, max_steps, *t.shape[1:])
+
                 for epoch in range(update_epochs):
-                    new_logprobs = torch.zeros_like(b_logprobs)
                     entropy_sum = torch.tensor(0.0, device=device)
-                    steps = max_steps
 
-                    def to_seq(data_list):
-                        t = torch.cat(data_list).to(device)
-                        num_trajectories = t.shape[0] // steps 
-                        return t.view(num_trajectories, steps, *t.shape[1:])
-                    
-                    def to_seq_critic(data_list):
-                        t = torch.cat(data_list).to(device)
-                        t = t.view(episodes, steps, num_agents, -1)
-                        t = t.transpose(1, 2).contiguous()
-                        return t.view(episodes * num_agents, steps, -1)
-                    
                     # 1. SCOUT UPDATE
-                    idx_s = (b_types == 0)
-                    if idx_s.any():
-                        b_hiddens = torch.stack([batch_data["hiddens"][k * stride] for k in range(episodes)])
-                        b_hiddens = b_hiddens.squeeze(2).transpose(0, 1).contiguous().to(device)
-
-                        if scout_actor is None: raise ValueError("Nemůžu aktualizovat Scouta (N_QUADS=0).")
+                    if scout_actor is not None:
                         dist, _, _ = scout_actor(
-                            to_seq([batch_data["maps"][i] for i in range(len(b_types)) if b_types[i]==0]),
-                            to_seq([batch_data["self_states"][i] for i in range(len(b_types)) if b_types[i]==0]),
-                            to_seq([batch_data["neighbor_states"][i] for i in range(len(b_types)) if b_types[i]==0]),
-                            to_seq([batch_data["neighbor_masks"][i] for i in range(len(b_types)) if b_types[i]==0]),
-                            b_hiddens
+                            to_seq_agent(s_maps,    episodes),
+                            to_seq_agent(s_self,    episodes),
+                            to_seq_agent(s_neigh_s, episodes),
+                            to_seq_agent(s_neigh_m, episodes),
+                            h_scout
                         )
-                        actions_s = b_actions[idx_s]
-                        new_logprobs[idx_s] = dist.log_prob(actions_s).sum(1)
+                        flat_actions_s = s_actions.view(episodes * max_steps, -1)
+                        new_lp_s = dist.log_prob(flat_actions_s).sum(1)
                         entropy_sum += dist.entropy().sum(1).mean()
+
+                        ratio_s = torch.exp(new_lp_s - s_logprobs)
+                        pg1_s = -s_adv * ratio_s
+                        pg2_s = -s_adv * torch.clamp(ratio_s, 1 - clip_coef, 1 + clip_coef)
+                        policy_loss_s = torch.max(pg1_s, pg2_s).mean()
+                    else:
+                        policy_loss_s = torch.tensor(0.0, device=device)
 
                     # 2. COMMANDER UPDATE
-                    idx_c = (b_types == 1)
-                    if idx_c.any() and commander_actor is not None:
-                        offset = 1 if N_QUADS > 0 else 0 
-                        b_hiddens_c = torch.stack([batch_data["hiddens"][k * stride + offset] for k in range(episodes)])
-                        b_hiddens_c = b_hiddens_c.squeeze(2).transpose(0, 1).contiguous().to(device)
-
+                    if commander_actor is not None:
                         dist, _, _ = commander_actor(
-                            to_seq([batch_data["fixed_states"][i] for i in range(len(b_types)) if b_types[i]==1]),
-                            to_seq([batch_data["incoming_msgs"][i] for i in range(len(b_types)) if b_types[i]==1]),
-                            to_seq([batch_data["msg_masks"][i] for i in range(len(b_types)) if b_types[i]==1]),
-                            b_hiddens_c
+                            to_seq_agent(c_fixed,  episodes),
+                            to_seq_agent(c_msgs,   episodes),
+                            to_seq_agent(c_msg_m,  episodes),
+                            h_cmdr
                         )
-                        actions_c = b_actions[idx_c]
-                        new_logprobs[idx_c] = dist.log_prob(actions_c).sum(1)
+                        flat_actions_c = c_actions.view(episodes * max_steps, -1)
+                        new_lp_c = dist.log_prob(flat_actions_c).sum(1)
                         entropy_sum += dist.entropy().sum(1).mean()
 
-                    # Společný Kritik
-                    b_critic_hiddens = torch.stack([batch_data["critic_hiddens"][k * stride + j] for k in range(episodes) for j in range(num_agents)])
-                    b_critic_hiddens = b_critic_hiddens.squeeze(2).transpose(0, 1).contiguous().to(device)
+                        ratio_c = torch.exp(new_lp_c - c_logprobs)
+                        pg1_c = -c_adv * ratio_c
+                        pg2_c = -c_adv * torch.clamp(ratio_c, 1 - clip_coef, 1 + clip_coef)
+                        policy_loss_c = torch.max(pg1_c, pg2_c).mean()
+                    else:
+                        policy_loss_c = torch.tensor(0.0, device=device)
 
-                    new_values, _ = critic(to_seq_critic(batch_data["g_states"]), b_critic_hiddens)
-                    value_loss = nn.MSELoss()(new_values, b_returns)
-                    
-                    # Loss
-                    ratio = torch.exp(new_logprobs - b_logprobs)
-                    pg_loss1 = -advantages.squeeze() * ratio
-                    pg_loss2 = -advantages.squeeze() * torch.clamp(ratio, 1.0 - clip_coef, 1.0 + clip_coef)
-                    policy_loss = torch.max(pg_loss1, pg_loss2).mean()
-                    
+                    # 3. CRITIC UPDATE
+                    # cr_g_states: [episodes*max_steps*num_agents, gs_dim] (interleaved: per step, all agents)
+                    # Potřebujeme: [episodes*num_agents, max_steps, gs_dim]
+                    cr_g_seq = (cr_g_states
+                                .view(episodes, max_steps, num_agents, -1)
+                                .transpose(1, 2)
+                                .reshape(episodes * num_agents, max_steps, -1))
+                    new_values, _ = critic(cr_g_seq, h_critic)
+                    value_loss = nn.MSELoss()(new_values, cr_returns.unsqueeze(1))
+
+                    policy_loss = policy_loss_s + policy_loss_c
                     loss = policy_loss + 0.5 * value_loss - 0.01 * entropy_sum
-                    
+
                     loss_history.append(loss.item())
                     v_loss_history.append(value_loss.item())
-                    entropy_history.append(float(entropy_sum))
-                    
+                    entropy_history.append(entropy_sum.detach().item())
+
                     optimizer.zero_grad()
                     loss.backward()
-                    
+
                     params = list(critic.parameters())
                     if scout_actor: params += list(scout_actor.parameters())
                     if commander_actor: params += list(commander_actor.parameters())
@@ -428,7 +494,7 @@ def train():
                     optimizer.step()
 
             # Vykreslování grafů (Tebou napsané, generuje se každých 10 batchů = 80 epizod)
-            if batch_idx % 1 == 0:
+            if batch_idx % 10 == 0:
                 if scout_actor: torch.save(scout_actor.state_dict(), f"saved_models/scout_ep{episodes_played}.pt")
                 if commander_actor: torch.save(commander_actor.state_dict(), f"saved_models/commander_ep{episodes_played}.pt")
 
