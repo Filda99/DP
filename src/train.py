@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import os
+import cProfile, pstats, io
 import matplotlib
 matplotlib.use('Agg')   # Use non-interactive backend so plots can be saved without a display
 import matplotlib.pyplot as plt
@@ -29,11 +30,12 @@ from worker import collect_episodes_per_worker
 def train():
     print("🚀 Starting Heterogeneous MAPPO Training (PARALLEL)...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    profiling = False  # Set to True to profile the PPO update (runs only for the first batch)
 
     # ==========================================================================
     # 1. HYPERPARAMETERS
     # ==========================================================================
-    num_episodes = 25000       # total episodes to train for
+    num_episodes = 2500       # total episodes to train for
     max_steps    = 2500        # maximum timesteps per episode
     learning_rate = 3e-4       # base learning rate (Adam)
     gamma         = 0.99       # discount factor — how much future rewards matter
@@ -219,6 +221,10 @@ def train():
 
             if len(batch_critic["returns"]) > 0:
 
+                if profiling:
+                    _ppo_prof = cProfile.Profile()
+                    _ppo_prof.enable()
+
                 # --- Concatenate all worker tensors into single GPU tensors ---
                 # Each batch_X[key] is a list of tensors [one per worker];
                 # torch.cat merges them along the first (batch) dimension.
@@ -365,6 +371,18 @@ def train():
                     if commander_actor: params += list(commander_actor.parameters())
                     nn.utils.clip_grad_norm_(params, max_norm=0.5)
                     optimizer.step()
+
+                if profiling:
+                    _ppo_prof.disable()
+                    _s = io.StringIO()
+                    pstats.Stats(_ppo_prof, stream=_s).sort_stats('cumulative').print_stats(30)
+                    print("\n" + "="*80)
+                    print("cProfile — PPO update (1 batch, cumulative time)")
+                    print("="*80)
+                    print(_s.getvalue())
+                    _ppo_prof.dump_stats('ppo_update.prof')
+                    print("Profile saved → ppo_update.prof  (view with: snakeviz ppo_update.prof)")
+                    break   # profile only first batch
 
             # ==============================================================
             # 5g. PERIODIC SNAPSHOT & TRAINING PLOT  (every 10 batches)
