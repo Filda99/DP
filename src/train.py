@@ -7,6 +7,7 @@ import cProfile, pstats, io
 import matplotlib
 matplotlib.use('Agg')   # Use non-interactive backend so plots can be saved without a display
 import matplotlib.pyplot as plt
+import datetime, time
 
 from env_core import DroneFireEnv
 from models import ScoutActor, CommanderActor, MAPPOCritic
@@ -35,7 +36,7 @@ def train():
     # ==========================================================================
     # 1. HYPERPARAMETERS
     # ==========================================================================
-    num_episodes = 2500       # total episodes to train for
+    num_episodes = 25000       # total episodes to train for
     max_steps    = 2500        # maximum timesteps per episode
     learning_rate = 3e-4       # base learning rate (Adam)
     gamma         = 0.99       # discount factor — how much future rewards matter
@@ -94,7 +95,7 @@ def train():
     # ScoutActor — processes local map, own state, neighbour states via CNN+LSTM
     if N_QUADS > 0:
         scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_best.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/01_2500steps/scout_best.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained scout model from {path_to_old_model}")
             scout_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -106,7 +107,7 @@ def train():
     # CommanderActor — processes own state + scout messages (attention) via LSTM
     if N_FIXED > 0:
         commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_best.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/01_2500steps/commander_best.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained commander model from {path_to_old_model}")
             commander_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -146,6 +147,8 @@ def train():
     # for the entire training run — no spawn overhead per batch.
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         for batch_idx in range(1, num_batches + 1):
+            batch_start = time.time()
+            rollout_start = time.time()
 
             # --------------------------------------------------------------
             # 5a. Reset per-batch aggregation buffers
@@ -181,6 +184,7 @@ def train():
             # --------------------------------------------------------------
             batch_rewards = []
             for future in futures:
+
                 w_scout, w_cmdr, w_critic, w_init_h, w_rewards, w_lifespans = future.result()
                 batch_rewards.extend(w_rewards)
                 lifespan_history.extend(w_lifespans)
@@ -196,10 +200,12 @@ def train():
                     if w_init_h[k] is not None:
                         batch_init_h[k].append(w_init_h[k])
 
+            rollout_time = time.time() - rollout_start
+
             # Progress log (one line per batch instead of per episode)
             avg_batch  = np.mean(batch_rewards)
             avg_reward = np.mean(episode_rewards_history[-15:]) if len(episode_rewards_history) >= 15 else np.mean(episode_rewards_history)
-            print(f"Batch {batch_idx:04d} (Ep {episodes_played:04d}) | Avg Batch Reward: {avg_batch:.2f} | Rolling avg (15): {avg_reward:.2f}")
+            print(f"{datetime.datetime.now()} | Batch {batch_idx:04d} (Ep {episodes_played:04d}) | Avg Batch Reward: {avg_batch:.2f} | Rolling avg (15): {avg_reward:.2f} | Rollout: {rollout_time:.1f}s")
 
             # --------------------------------------------------------------
             # 5e. Save best checkpoint
@@ -211,7 +217,7 @@ def train():
                     torch.save(scout_actor.state_dict(), "saved_models/scout_best.pt")
                 if commander_actor:
                     torch.save(commander_actor.state_dict(), "saved_models/commander_best.pt")
-                print(f"⭐ New best model saved! (Rolling avg: {best_avg_reward:.2f})")
+                print(f"{datetime.datetime.now()} | ⭐ New best model saved! (Rolling avg: {best_avg_reward:.2f})")
 
             # ==============================================================
             # 5f. PPO UPDATE  (runs on GPU)
@@ -267,7 +273,7 @@ def train():
                 h_critic = torch.stack([h_critic_scout.squeeze(0), h_critic_cmdr.squeeze(0)], dim=1)
                 h_critic = h_critic.reshape(1, episodes * num_agents, -1)
 
-                print(f"🛠️  Running PPO update ({len(cr_returns)} samples)...")
+                print(f"{datetime.datetime.now()} | 🛠️  Running PPO update ({len(cr_returns)} samples)...")
 
                 # --- Compute advantages ---
                 # Advantage = how much better the actual return was vs. what
@@ -372,6 +378,9 @@ def train():
                     nn.utils.clip_grad_norm_(params, max_norm=0.5)
                     optimizer.step()
 
+                total_time = time.time() - batch_start
+                print(f"{datetime.datetime.now()} | ✅ PPO update complete. Loss: {loss.item():.4f} | Policy Loss: {policy_loss.item():.4f} | Value Loss: {value_loss.item():.4f} | Entropy: {entropy_sum.item():.4f} | Total batch: {total_time:.1f}s (rollout: {rollout_time:.1f}s, PPO: {total_time - rollout_time:.1f}s)")
+                
                 if profiling:
                     _ppo_prof.disable()
                     _s = io.StringIO()
