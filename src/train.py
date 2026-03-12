@@ -222,6 +222,50 @@ def train():
             # ==============================================================
             # 5f. PPO UPDATE  (runs on GPU)
             # ==============================================================
+            # WHAT IS PPO?
+            # -------------
+            # Proximal Policy Optimisation (PPO) is an on-policy reinforcement
+            # learning algorithm.  "On-policy" means the agent must learn from
+            # data it collected itself, using the policy it had AT THAT MOMENT.
+            #
+            # THE CORE PROBLEM PPO SOLVES:
+            # Plain policy gradient (REINFORCE) updates the network weights by
+            # following the gradient of E[log π(a|s) * A(s,a)].  If the learning
+            # rate is too large, one bad update can destroy the policy completely
+            # (it starts taking random actions and never recovers, because the bad
+            # policy then collects bad data, causing even worse updates — a death
+            # spiral).  PPO prevents this by *clipping* how much the policy is
+            # allowed to change in a single gradient step.
+            #
+            # THE THREE PHASES PER BATCH:
+            #   Phase 1 — Rollout (already done above, by workers):
+            #     Run current policy π_old in the environment.
+            #     Record: states s, actions a, log π_old(a|s), rewards r,
+            #             critic predictions V(s), and discounted returns G.
+            #
+            #   Phase 2 — Advantage estimation (below):
+            #     A(s,a) = G - V(s)   (how much better was the actual return
+            #     than the critic's prediction?  Positive = better than expected,
+            #     negative = worse than expected.)
+            #
+            #   Phase 3 — Gradient update (the loop below):
+            #     Re-evaluate the CURRENT (updated) policy π_new on the
+            #     SAME batch of states/actions.
+            #     Compute ratio r(θ) = π_new(a|s) / π_old(a|s).
+            #     If A > 0 (action was good): we want r > 1 (do it more often),
+            #       but we cap the benefit at 1 + clip_coef to stay conservative.
+            #     If A < 0 (action was bad): we want r < 1 (do it less often),
+            #       but we cap the penalty at 1 - clip_coef.
+            #     This clipping is the "Proximal" part — updates are kept
+            #     close (proximal) to the old policy.
+            #
+            # WHY MULTIPLE EPOCHS (update_epochs=4)?
+            #     Collecting data is expensive (it requires interacting with
+            #     the simulator).  PPO allows us to squeeze multiple gradient
+            #     steps out of the same batch without diverging, because the
+            #     clip prevents any single step from going too far.  This makes
+            #     PPO much more sample-efficient than plain policy gradient.
+            # ==============================================================
             num_agents = N_QUADS + N_FIXED
             episodes   = episodes_per_batch
 
@@ -257,10 +301,18 @@ def train():
                 cr_returns  = torch.cat(batch_critic["returns"]).to(device)
                 cr_values   = torch.cat(batch_critic["values"]).to(device)
 
-                # --- Reconstruct LSTM initial hidden states ---
-                # Workers stored per-episode h_0 as [1, 1, hidden_dim].
-                # We stack all episodes and reshape to [1, episodes, hidden_dim]
-                # which is the format expected by PyTorch's LSTM.
+                # --- Reconstruct GRU initial hidden states ---
+                # Each worker stored the per-episode initial hidden state h_0 as a
+                # tensor of shape [1, 1, hidden_dim]  (GRU convention: [layers, batch, dim]).
+                # Here we merge all episodes from all workers into one big tensor:
+                #   torch.cat(lst, dim=0)  -> [num_episodes, 1, hidden_dim]
+                #   .squeeze(1)            -> [num_episodes, hidden_dim]
+                #   .unsqueeze(0)          -> [1, num_episodes, hidden_dim]  ← GRU expects this
+                # Passing h_0 into the GRU means each episode starts from the hidden
+                # state it had at the very beginning of that episode, not from zeros.
+                # This is important because our agents carry memory across timesteps;
+                # if we always reset to zeros the network would never learn to use its
+                # GRU memory effectively.
                 # Lists may be empty when N_QUADS=0 or N_FIXED=0 — guard with None.
                 def _cat_h(lst):
                     return torch.cat(lst, dim=0).squeeze(1).unsqueeze(0).to(device) if lst else None
@@ -270,24 +322,58 @@ def train():
                 h_critic_scout = _cat_h(batch_init_h["critic_scout"])
                 h_critic_cmdr  = _cat_h(batch_init_h["critic_cmdr"])
 
-                # Critic hidden: interleave scout/cmdr hidden states.
-                # Only include agent types that are actually present.
+                # The critic is a SINGLE shared network that evaluates ALL agents.
+                # Its GRU batch dimension interleaves agents: [scout_ep0, cmdr_ep0, scout_ep1, ...].
+                # We stack the per-agent hidden states side by side (dim=1) and
+                # then flatten episodes*agents into the GRU's batch axis.
+                # Only agent types that actually exist are included.
                 h_parts = [h for h in [h_critic_scout, h_critic_cmdr] if h is not None]
-                h_critic = torch.stack([h.squeeze(0) for h in h_parts], dim=1)
-                h_critic = h_critic.reshape(1, episodes * num_agents, -1)
+                h_critic = torch.stack([h.squeeze(0) for h in h_parts], dim=1)  # [ep, agent_types, dim]
+                h_critic = h_critic.reshape(1, episodes * num_agents, -1)        # [1, ep*agents, dim]
 
                 print(f"{datetime.datetime.now()} | 🛠️  Running PPO update ({len(cr_returns)} samples)...")
 
                 # --- Compute advantages ---
-                # Advantage = how much better the actual return was vs. what
-                # the critic predicted.  Normalise per-batch for stability.
-                cr_adv = cr_returns.unsqueeze(1) - cr_values.detach()
-                cr_adv = (cr_adv - cr_adv.mean()) / (cr_adv.std() + 1e-8)
+                # WHAT IS THE ADVANTAGE A(s, a)?
+                # The advantage answers: "How much better (or worse) was the
+                # action I actually took compared to the average action I could
+                # have taken in this state?"
+                #
+                #   A(s, a) = G - V(s)
+                #
+                # where:
+                #   G    = discounted return (actual sum of future rewards,
+                #          computed during rollout via gamma-discounting)
+                #   V(s) = critic's prediction of how good the state is
+                #          (the "baseline" or "expected" return)
+                #
+                # Examples:
+                #   A = +5.0  -> this action led to 5 more reward than expected
+                #                -> the gradient will push the policy to take it
+                #                   MORE often
+                #   A = -3.0  -> this action led to 3 less reward than expected
+                #                -> the gradient will push the policy to take it
+                #                   LESS often
+                #   A ~  0.0  -> performance was exactly as expected
+                #                -> no change to the policy
+                #
+                # .detach() on cr_values: the advantage is used to scale the
+                # POLICY gradient, not the critic gradient.  Detaching stops
+                # gradients from flowing back through the critic via the advantage
+                # term (the critic has its own separate MSE loss below).
+                #
+                # Normalisation (zero mean, unit std):
+                # Advantages are normalised per-batch to have mean~0, std~1.
+                # This acts like an adaptive learning-rate schedule: it prevents
+                # one batch with unusually high returns from causing a giant update
+                # while another batch with low returns barely learns anything.
+                cr_adv = cr_returns.unsqueeze(1) - cr_values.detach()  # A(s,a) = G - V(s)
+                cr_adv = (cr_adv - cr_adv.mean()) / (cr_adv.std() + 1e-8)  # normalise to N(0,1)
 
-                # The critic buffer is interleaved: [scout_0, cmdr_0, scout_1, ...]
-                # Slice out per-agent advantages by agent index within each step.
-                s_adv = cr_adv.view(episodes, max_steps, num_agents)[:, :, 0].reshape(-1)  # scout slice
-                c_adv = cr_adv.view(episodes, max_steps, num_agents)[:, :, 1].reshape(-1) if num_agents > 1 else None  # commander slice
+                # The critic buffer is interleaved: [scout_ep0_t0, cmdr_ep0_t0, scout_ep0_t1, ...]
+                # Reshape to [episodes, steps, num_agents] and slice out per-agent advantages.
+                s_adv = cr_adv.view(episodes, max_steps, num_agents)[:, :, 0].reshape(-1)  # scout
+                c_adv = cr_adv.view(episodes, max_steps, num_agents)[:, :, 1].reshape(-1) if num_agents > 1 else None  # commander
 
                 def to_seq_agent(t, num_traj):
                     """Reshape flat [num_traj*steps, ...] → sequential [num_traj, steps, ...]
@@ -308,14 +394,26 @@ def train():
                     jerk_history.append(avg_jerk)
 
                 # --- Gradient update loop (update_epochs passes over the same data) ---
+                # We run update_epochs gradient passes over this SAME batch of data.
+                # This is safe because the PPO clip (below) limits how much the
+                # policy can change per step -- once the policy has moved enough that
+                # ratio exceeds [1-clip, 1+clip], the loss is clamped and gradients
+                # effectively become zero, so further epochs have diminishing effect.
+                # Using multiple epochs squeezes more learning out of expensive
+                # simulator data without risking a catastrophic policy collapse.
                 for epoch in range(update_epochs):
                     entropy_sum = torch.tensor(0.0, device=device)
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # SCOUT POLICY LOSS  (PPO-clip objective)
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                    # Re-run the scout network over the collected sequences to
-                    # get NEW log-probabilities for the OLD actions.
+                    # We re-run the scout network on the SAME observations that
+                    # were collected during the rollout.  This gives us the
+                    # NEW log-probabilities for the actions that were actually
+                    # taken, under the CURRENT (partially-updated) policy weights.
+                    #
+                    # The network input must be (Batch, Seq, ...) for the GRU,
+                    # so we use to_seq_agent() to reshape the flat buffer.
                     if scout_actor is not None:
                         dist, _, _ = scout_actor(
                             to_seq_agent(s_maps,    episodes),
@@ -325,20 +423,72 @@ def train():
                             h_scout
                         )
                         flat_actions_s = s_actions.view(episodes * max_steps, -1)
-                        new_lp_s       = dist.log_prob(flat_actions_s).sum(1)   # log π_new(a|s)
-                        entropy_sum   += dist.entropy().sum(1).mean()           # encourage exploration
 
-                        # ratio = π_new / π_old  (in log space for numerical stability)
-                        ratio_s       = torch.exp(new_lp_s - s_logprobs)
-                        pg1_s         = -s_adv * ratio_s
-                        pg2_s         = -s_adv * torch.clamp(ratio_s, 1 - clip_coef, 1 + clip_coef)
-                        policy_loss_s = torch.max(pg1_s, pg2_s).mean()   # pessimistic clip
+                        # log π_new(a|s): log-probability of taking the stored action
+                        # under the NEW policy.  .sum(1) sums over the 4 action
+                        # dimensions (Roll, Pitch, Yaw, Throttle) because the
+                        # Normal distribution over the action VECTOR has factored
+                        # dimensions -- log P(a1,a2,a3,a4) = sum log P(ai).
+                        new_lp_s = dist.log_prob(flat_actions_s).sum(1)  # log π_new(a|s)
+
+                        # Entropy of the policy distribution.  High entropy means the
+                        # policy is uncertain / exploratory (good early in training).
+                        # Low entropy means it has converged to near-deterministic
+                        # actions.  Adding entropy to the loss prevents premature
+                        # convergence to a suboptimal deterministic strategy.
+                        entropy_sum += dist.entropy().sum(1).mean()
+
+                        # IMPORTANCE SAMPLING RATIO
+                        # ratio = π_new(a|s) / π_old(a|s)
+                        # We compute it in log space for numerical stability:
+                        #   exp(log π_new - log π_old) = π_new / π_old
+                        # Interpretation:
+                        #   ratio > 1  ->  current policy takes this action MORE often
+                        #   ratio < 1  ->  current policy takes this action LESS often
+                        #   ratio = 1  ->  policy has not changed for this action
+                        ratio_s = torch.exp(new_lp_s - s_logprobs)  # π_new / π_old
+
+                        # PPO CLIPPED OBJECTIVE (the heart of PPO)
+                        # We want to MAXIMISE the policy performance, which means
+                        # MINIMISING the negative of it (gradient descent).
+                        #
+                        # pg1: unclipped surrogate  = -A * ratio
+                        # pg2: clipped  surrogate   = -A * clip(ratio, 1-ε, 1+ε)
+                        #
+                        # Taking max(pg1, pg2) -- the PESSIMISTIC objective --
+                        # means we pick the WORSE of the two estimates:
+                        #
+                        #   When A > 0 (action was good, we want to increase prob):
+                        #     pg1 = -A * ratio        (gets more negative as ratio grows)
+                        #     pg2 = -A * min(ratio, 1+ε)  (floored at clip boundary)
+                        #     max picks the LESS negative one = -A * min(ratio, 1+ε)
+                        #     Effect: we only reward the policy up to ratio=1+ε;
+                        #             beyond that the gradient is zero (no more benefit).
+                        #
+                        #   When A < 0 (action was bad, we want to decrease prob):
+                        #     pg1 = -A * ratio        (positive, gets more positive as ratio grows)
+                        #     pg2 = -A * max(ratio, 1-ε)  (capped at clip boundary)
+                        #     max picks the LARGER (worse) value = -A * ratio
+                        #     Effect: if we've already pushed the probability down
+                        #             enough (ratio < 1-ε), additional penalty is cut off.
+                        #
+                        # Net result: PPO clips the BENEFIT of good updates AND
+                        # the PUNISHMENT of bad ones, keeping the policy close to
+                        # what it was when the data was collected.
+                        pg1_s = -s_adv * ratio_s
+                        pg2_s = -s_adv * torch.clamp(ratio_s, 1 - clip_coef, 1 + clip_coef)
+                        policy_loss_s = torch.max(pg1_s, pg2_s).mean()  # pessimistic (conservative) objective
                     else:
                         policy_loss_s = torch.tensor(0.0, device=device)
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                    # COMMANDER POLICY LOSS  (same PPO-clip logic)
+                    # COMMANDER POLICY LOSS  (identical PPO-clip logic)
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                    # Exact same procedure as the scout, but operating on the
+                    # commander's own state + incoming scout messages.
+                    # When N_FIXED=0 (training scouts only), this block is skipped
+                    # and policy_loss_c is set to zero so the combined loss is
+                    # computed correctly without NaN or unintended scaling.
                     if commander_actor is not None:
                         dist, _, _ = commander_actor(
                             to_seq_agent(c_fixed, episodes),
@@ -359,34 +509,84 @@ def train():
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # CRITIC (VALUE) LOSS
-                    # cr_g_states is currently flat: [eps*steps*agents, gs_dim]
-                    # The critic LSTM needs shape:   [eps*agents, steps, gs_dim]
-                    # Reshape: separate episodes/steps/agents, transpose steps↔agents,
-                    # then merge episodes and agents into the batch dimension.
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                    # The critic learns to predict the expected discounted return
+                    # V(s) from the global state.  It is trained with plain MSE:
+                    #   L_V = MSE( V_new(s),  G )
+                    # where G are the pre-computed discounted returns from the rollout.
+                    #
+                    # A better critic makes better advantage estimates (A = G - V),
+                    # which in turn produces lower-variance policy gradient updates.
+                    # The 0.5 coefficient in the combined loss (below) is a standard
+                    # MAPPO / PPO scaling convention.
+                    #
+                    # RESHAPE EXPLANATION:
+                    # The raw critic buffer is FLAT and interleaved:
+                    #   cr_g_states: [episodes * steps * num_agents, gs_dim]
+                    # The critic GRU needs a contiguous sequence per episode/agent:
+                    #   [episodes * num_agents, steps, gs_dim]
+                    # Transformation:
+                    #   .view(episodes, steps, agents, gs_dim)  -- restore 4-D structure
+                    #   .transpose(1, 2)                        -- swap steps ↔ agents
+                    #                        -> [episodes, agents, steps, gs_dim]
+                    #   .reshape(episodes * agents, steps, gs_dim)  -- merge ep & agent
+                    # Now each "row" in the batch is ONE agent's full episode trajectory.
                     cr_g_seq = (cr_g_states
                                 .view(episodes, max_steps, num_agents, -1)
-                                .transpose(1, 2)                   # → [ep, agents, steps, gs_dim]
+                                .transpose(1, 2)                   # -> [ep, agents, steps, gs_dim]
                                 .reshape(episodes * num_agents, max_steps, -1))
                     new_values, _ = critic(cr_g_seq, h_critic)
                     value_loss    = nn.MSELoss()(new_values, cr_returns.unsqueeze(1))
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # COMBINED LOSS  (standard MAPPO objective)
-                    # The entropy bonus keeps the policy from collapsing to
-                    # a single deterministic action too early.
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                    # The total loss combines three terms:
+                    #
+                    #   L = L_policy + 0.5 * L_value - 0.1 * H
+                    #
+                    #   L_policy  (weight 1.0):
+                    #     Sum of scout + commander PPO-clipped policy losses.
+                    #     This is the PRIMARY learning signal -- it pushes the
+                    #     actors to take actions that had high advantage.
+                    #
+                    #   0.5 * L_value (weight 0.5):
+                    #     Critic MSE loss, scaled down so value learning does
+                    #     not dominate the policy gradient in the shared update.
+                    #     (The critic shares the optimizer with the actors.)
+                    #
+                    #   -0.1 * H (weight -0.1, NEGATIVE):
+                    #     Entropy BONUS.  Since we are minimising the loss,
+                    #     subtracting entropy MAXIMISES it.
+                    #     This prevents the policy from collapsing to a single
+                    #     action too early in training (premature exploitation).
+                    #     0.1 is the entropy coefficient -- a hyperparameter that
+                    #     controls how much exploration is encouraged.
                     policy_loss = policy_loss_s + policy_loss_c
                     loss        = policy_loss + 0.5 * value_loss - 0.1 * entropy_sum
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                    # COMMUNICATION AUXILIARY LOSS (Protocol Enforcement)
+                    # COMMUNICATION AUXILIARY LOSS  (protocol grounding)
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                    # We force the first two components of the Scout's message to represent 
-                    # the relative coordinates of the fire. This "grounds" the communication 
-                    # channel, making it interpretable for the Commander immediately.
+                    # Without supervision, the scout's msg_head would learn an
+                    # arbitrary "language" that the commander cannot bootstrap from.
+                    # This auxiliary loss GROUNDS the first 3 components of every
+                    # scout message to carry a specific, human-readable meaning:
+                    #   msg[0] = relative x-offset to nearest fire
+                    #   msg[1] = relative y-offset to nearest fire
+                    #   msg[2] = fire intensity at that location
+                    # (These values live at indices 12-14 of the scout's self_state.)
+                    #
+                    # By forcing the scout to communicate its CURRENT observation,
+                    # the commander can immediately treat the messages as a map
+                    # of fire locations, making cross-attention interpretable from
+                    # the very first training batch.
+                    #
+                    # The weight of 0.5 is a gentle nudge: strong enough to
+                    # ground the protocol, small enough not to override the
+                    # primary flight / reward optimisation signal.
                     if scout_actor is not None:
-                        # 1. Re-generate messages using current sequential weights
+                        # Re-generate messages with current network weights
                         _, s_msgs, _ = scout_actor(
                             to_seq_agent(s_maps,    episodes),
                             to_seq_agent(s_self,    episodes),
@@ -394,28 +594,50 @@ def train():
                             to_seq_agent(s_neigh_m, episodes),
                             h_scout
                         )
-                        
-                        # 2. Extract DYNAMIC Ground Truth from the updated Scout state
-                        # Indices 12, 13, 14 are [dyn_rel_x, dyn_rel_y, dyn_intensity]
-                        target_protocol = s_self.view(episodes * max_steps, -1)[:, 12:15]
-                        
-                        # 3. Message protocol: first 3 values of the broadcast vector
+
+                        # Ground truth: indices 12, 13, 14 from self_state
+                        # (dyn_rel_x, dyn_rel_y, dyn_intensity)
+                        target_protocol    = s_self.view(episodes * max_steps, -1)[:, 12:15]
+
+                        # The first 3 values of the broadcast message vector
                         generated_protocol = s_msgs.reshape(episodes * max_steps, -1)[:, 0:3]
-                        
-                        # 4. MSE Loss forces the Scout to communicate what it actually sees NOW
+
+                        # MSE pushes the scout's "words" towards their intended meanings
                         comm_aux_loss = nn.MSELoss()(generated_protocol, target_protocol)
-                        
-                        # 5. Integrate into total loss (grounding the language)
                         loss += 0.5 * comm_aux_loss
 
                     loss_history.append(loss.item())
                     v_loss_history.append(value_loss.item())
                     entropy_history.append(entropy_sum.detach().item())
 
-                    # Gradient step
+                    # ----------------------------------------------------------
+                    # GRADIENT STEP
+                    # ----------------------------------------------------------
+                    # 1. optimizer.zero_grad()
+                    #    Clear gradients from the previous epoch.  PyTorch
+                    #    accumulates gradients by default; without this call,
+                    #    gradients from epoch N would be added on top of epoch N-1.
+                    #
+                    # 2. loss.backward()
+                    #    Backpropagation: compute d(loss)/d(param) for every
+                    #    parameter in all three networks (critic, scout, commander)
+                    #    using the chain rule through the entire computation graph.
+                    #
+                    # 3. clip_grad_norm_(params, max_norm=0.5)
+                    #    If the L2 norm of ALL gradients stacked together exceeds
+                    #    0.5, rescale them uniformly so the total norm equals 0.5.
+                    #    This prevents "exploding gradients" -- situations where
+                    #    a rare large loss spike would otherwise cause a massive
+                    #    parameter update that derails training.
+                    #    max_norm=0.5 is a conservative value appropriate for
+                    #    recurrent networks (GRU here), which are more prone to
+                    #    gradient explosions than plain MLPs.
+                    #
+                    # 4. optimizer.step()
+                    #    Apply the (clipped) gradients to update all parameters
+                    #    using the Adam optimiser rule.
                     optimizer.zero_grad()
                     loss.backward()
-                    # Clip gradients to prevent exploding gradients
                     params = list(critic.parameters())
                     if scout_actor:     params += list(scout_actor.parameters())
                     if commander_actor: params += list(commander_actor.parameters())
