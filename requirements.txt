@@ -13,6 +13,7 @@ contextily
 matplotlib
 SciencePlots
 opencv-python
+imageio
 
 # Reinforcement Learning
 torch
