@@ -11,7 +11,7 @@ import random
 class DroneFireEnv(ParallelEnv):
     metadata = {"render_modes": ["human"], "name": "drone_fire_v2"}
 
-    def __init__(self, num_quads=1, num_fixed=1, grid_size_m=200.0, local_map_size=32, max_steps=500):
+    def __init__(self, num_quads=1, num_fixed=1, grid_size_m=2000.0, local_map_size=32, max_steps=500):
         super().__init__()
         
         self.max_steps = max_steps
@@ -55,8 +55,8 @@ class DroneFireEnv(ParallelEnv):
         })
 
         # 2. Konfigurace pro COMMANDERA (Fixed)
-        # Pos(3) + Vel(3) + Walls(4) + WaterLvl(1) + pos_water_fill(2-[x,y]) + init fire(2) + [roll, pitch, yaw] + Danger zone activated (1)
-        self.fixed_self_dim = 19
+        # Pos(3) + Vel(3) + Walls(4) + WaterLvl(1) + pos_water_fill(2-[x,y]) + [roll, pitch, yaw] + Danger zone activated (1)
+        self.fixed_self_dim = 17
         
         fixed_obs_space = gym.spaces.Dict({
             "self_state": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.fixed_self_dim,), dtype=np.float32)
@@ -183,10 +183,6 @@ class DroneFireEnv(ParallelEnv):
             rel_base_x = 0.0
             rel_base_y = 0.0
         
-        # 2. NOVÉ: Kompas k ohni (aby letadlo vědělo, kam se vrátit po doplnění)
-        rel_fire_x = (self.fire_x - pos[0]) / self.map_bounds
-        rel_fire_y = (self.fire_y - pos[1]) / self.map_bounds
-
         # === NORMALIZACE ===
         norm_pos = pos / self.map_bounds
         norm_vel = vel / 20.0
@@ -205,7 +201,6 @@ class DroneFireEnv(ParallelEnv):
             dist_boundaries[0], dist_boundaries[1], dist_boundaries[2], dist_boundaries[3],
             water_lvl,
             rel_base_x, rel_base_y,
-            rel_fire_x, rel_fire_y,
             norm_rpy[0], norm_rpy[1], norm_rpy[2],
             danger_flag
         ], dtype=np.float32)
@@ -504,12 +499,29 @@ class DroneFireEnv(ParallelEnv):
         # 6. TÝMOVÁ ODMĚNA: Commander haší → bonus pro něj i pro Scouty (sdílená zpětná vazba)
         # Tento mechanismus zajišťuje, že Scout dostane zpětnou vazbu, že jeho zprávy pomohly
         for f_agent in self.fixed_agents:
+            # POJISTKA: Pokud agent už nežije, přeskočíme ho, abychom nedostali KeyError
+            if f_agent not in drone_controls or f_agent not in rewards:
+                continue
+                
             eff = self.sim.drone_extinguish_stats.get(f_agent, 0.0)
-            if eff > 0.0 and f_agent in rewards:
-                fire_bonus = min(0.5, eff * 0.1)
-                rewards[f_agent] = rewards.get(f_agent, 0.0) + fire_bonus
+            
+            # Zjištění, zda letadlo kropí vodu (trigger > 0.5)
+            # Teď je to bezpečné, protože víme, že f_agent v drone_controls existuje
+            is_dropping = drone_controls[f_agent][3] > 0.5
+            
+            if eff > 0.0:
+                # Jackpot za hašení
+                fire_bonus = eff * 0.2  
+                rewards[f_agent] += fire_bonus
+                
+                # Scouti dostanou 100 % bonusu – navedli ho tam správně!
                 for q_agent in [a for a in self.quad_agents if a in rewards]:
-                    rewards[q_agent] = rewards.get(q_agent, 0.0) + fire_bonus * 0.3
+                    rewards[q_agent] += fire_bonus
+            
+            elif is_dropping:
+                # PENALIZACE ZA PLÝTVÁNÍ: Letadlo kropí, ale nic netrefuje
+                waste_penalty = -0.05
+                rewards[f_agent] += waste_penalty
 
         return observations, rewards, terminations, truncations, infos
     

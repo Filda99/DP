@@ -52,9 +52,9 @@ def train():
     # Separate learning rates per network:
     # Scout has already been pre-trained → fine-tune with a very small LR
     # so we don't overwrite what it has already learned.
-    lr_commander       = learning_rate
-    lr_critic          = learning_rate
-    lr_scout_fine_tune = 5e-5
+    lr_commander       = 3e-4
+    lr_critic          = 5e-4
+    lr_scout_fine_tune = 1e-5
 
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS
@@ -65,7 +65,7 @@ def train():
     # Spin up a temporary environment just to read observation/state space sizes.
     # We cannot hard-code them because they depend on N_QUADS, N_FIXED, and
     # internal env logic.
-    temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=500.0, max_steps=max_steps)
+    temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=2000.0, max_steps=max_steps)
     if N_QUADS > 0:
         scout_self_dim = temp_env.observation_space("quad_0")["self_state"].shape[0]
     else:
@@ -95,7 +95,7 @@ def train():
     # ScoutActor — processes local map, own state, neighbour states via CNN+LSTM
     if N_QUADS > 0:
         scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/01_2500steps/scout_best.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/02_6kSteps/scout_ep6000.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained scout model from {path_to_old_model}")
             scout_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -107,7 +107,7 @@ def train():
     # CommanderActor — processes own state + scout messages (attention) via LSTM
     if N_FIXED > 0:
         commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/01_2500steps/commander_best.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/none.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained commander model from {path_to_old_model}")
             commander_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
