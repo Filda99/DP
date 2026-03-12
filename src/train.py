@@ -49,23 +49,22 @@ def train():
     eps_per_worker = 3         # episodes collected by each worker per batch
     episodes_per_batch = num_workers * eps_per_worker   # = 60 episodes per batch
 
-    # Separate learning rates per network:
-    # Scout has already been pre-trained → fine-tune with a very small LR
-    # so we don't overwrite what it has already learned.
-    lr_commander       = 3e-4
-    lr_critic          = 5e-4
-    lr_scout_fine_tune = 1e-5
+    # Learning rates — training from scratch, all networks use full LR.
+    # (Use a smaller lr_scout when loading a pre-trained scout for fine-tuning.)
+    lr_commander = 3e-4
+    lr_critic    = 3e-4
+    lr_scout     = 3e-4
 
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS
     # ==========================================================================
     N_QUADS = 1   # number of quadrotor scouts
-    N_FIXED = 1   # number of fixed-wing commanders
+    N_FIXED = 0   # 0 = train scout only first; set to 1 once scout converges
 
     # Spin up a temporary environment just to read observation/state space sizes.
     # We cannot hard-code them because they depend on N_QUADS, N_FIXED, and
     # internal env logic.
-    temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=2000.0, max_steps=max_steps)
+    temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=500.0, max_steps=max_steps)
     if N_QUADS > 0:
         scout_self_dim = temp_env.observation_space("quad_0")["self_state"].shape[0]
     else:
@@ -122,7 +121,7 @@ def train():
     # Adam optimiser with per-network learning rates
     # (using parameter groups so we can fine-tune scout at a lower LR)
     optim_groups = [{"params": critic.parameters(), "lr": lr_critic}]
-    if scout_actor:     optim_groups.append({"params": scout_actor.parameters(),     "lr": lr_scout_fine_tune})
+    if scout_actor:     optim_groups.append({"params": scout_actor.parameters(),     "lr": lr_scout})
     if commander_actor: optim_groups.append({"params": commander_actor.parameters(), "lr": lr_commander})
     optimizer = optim.Adam(optim_groups)
 
@@ -262,16 +261,19 @@ def train():
                 # Workers stored per-episode h_0 as [1, 1, hidden_dim].
                 # We stack all episodes and reshape to [1, episodes, hidden_dim]
                 # which is the format expected by PyTorch's LSTM.
-                h_scout        = torch.cat(batch_init_h["scout"],        dim=0).squeeze(1).unsqueeze(0).to(device)
-                h_cmdr         = torch.cat(batch_init_h["cmdr"],         dim=0).squeeze(1).unsqueeze(0).to(device)
-                h_critic_scout = torch.cat(batch_init_h["critic_scout"], dim=0).squeeze(1).unsqueeze(0).to(device)
-                h_critic_cmdr  = torch.cat(batch_init_h["critic_cmdr"],  dim=0).squeeze(1).unsqueeze(0).to(device)
+                # Lists may be empty when N_QUADS=0 or N_FIXED=0 — guard with None.
+                def _cat_h(lst):
+                    return torch.cat(lst, dim=0).squeeze(1).unsqueeze(0).to(device) if lst else None
 
-                # Critic hidden: interleave scout/cmdr hidden states so they
-                # match the interleaved order in the critic buffer:
-                # [scout_ep0, cmdr_ep0, scout_ep1, cmdr_ep1, ...]
-                # Final shape: [1, episodes * num_agents, hidden_dim]
-                h_critic = torch.stack([h_critic_scout.squeeze(0), h_critic_cmdr.squeeze(0)], dim=1)
+                h_scout        = _cat_h(batch_init_h["scout"])
+                h_cmdr         = _cat_h(batch_init_h["cmdr"])
+                h_critic_scout = _cat_h(batch_init_h["critic_scout"])
+                h_critic_cmdr  = _cat_h(batch_init_h["critic_cmdr"])
+
+                # Critic hidden: interleave scout/cmdr hidden states.
+                # Only include agent types that are actually present.
+                h_parts = [h for h in [h_critic_scout, h_critic_cmdr] if h is not None]
+                h_critic = torch.stack([h.squeeze(0) for h in h_parts], dim=1)
                 h_critic = h_critic.reshape(1, episodes * num_agents, -1)
 
                 print(f"{datetime.datetime.now()} | 🛠️  Running PPO update ({len(cr_returns)} samples)...")
@@ -285,7 +287,7 @@ def train():
                 # The critic buffer is interleaved: [scout_0, cmdr_0, scout_1, ...]
                 # Slice out per-agent advantages by agent index within each step.
                 s_adv = cr_adv.view(episodes, max_steps, num_agents)[:, :, 0].reshape(-1)  # scout slice
-                c_adv = cr_adv.view(episodes, max_steps, num_agents)[:, :, 1].reshape(-1)  # commander slice
+                c_adv = cr_adv.view(episodes, max_steps, num_agents)[:, :, 1].reshape(-1) if num_agents > 1 else None  # commander slice
 
                 def to_seq_agent(t, num_traj):
                     """Reshape flat [num_traj*steps, ...] → sequential [num_traj, steps, ...]

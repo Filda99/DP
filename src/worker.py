@@ -300,6 +300,9 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
     def cat_buf(buf):
         result = {}
         for k, v in buf.items():
+            if len(v) == 0:
+                result[k] = torch.tensor([], dtype=torch.float32)
+                continue
             if k == "returns":
                 # Returns are plain floats — wrap them in a tensor
                 result[k] = torch.tensor(v, dtype=torch.float32)
