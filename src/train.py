@@ -364,6 +364,35 @@ def train():
                     policy_loss = policy_loss_s + policy_loss_c
                     loss        = policy_loss + 0.5 * value_loss - 0.01 * entropy_sum
 
+                    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                    # COMMUNICATION AUXILIARY LOSS (Protocol Enforcement)
+                    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                    # We force the first two components of the Scout's message to represent 
+                    # the relative coordinates of the fire. This "grounds" the communication 
+                    # channel, making it interpretable for the Commander immediately.
+                    if scout_actor is not None:
+                        # 1. Re-generate messages using current sequential weights
+                        _, s_msgs, _ = scout_actor(
+                            to_seq_agent(s_maps,    episodes),
+                            to_seq_agent(s_self,    episodes),
+                            to_seq_agent(s_neigh_s, episodes),
+                            to_seq_agent(s_neigh_m, episodes),
+                            h_scout
+                        )
+                        
+                        # 2. Extract DYNAMIC Ground Truth from the updated Scout state
+                        # Indices 12, 13, 14 are [dyn_rel_x, dyn_rel_y, dyn_intensity]
+                        target_protocol = s_self.view(episodes * max_steps, -1)[:, 12:15]
+                        
+                        # 3. Message protocol: first 3 values of the broadcast vector
+                        generated_protocol = s_msgs.reshape(episodes * max_steps, -1)[:, 0:3]
+                        
+                        # 4. MSE Loss forces the Scout to communicate what it actually sees NOW
+                        comm_aux_loss = nn.MSELoss()(generated_protocol, target_protocol)
+                        
+                        # 5. Integrate into total loss (grounding the language)
+                        loss += 0.5 * comm_aux_loss
+
                     loss_history.append(loss.item())
                     v_loss_history.append(value_loss.item())
                     entropy_history.append(entropy_sum.detach().item())

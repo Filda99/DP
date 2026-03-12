@@ -37,12 +37,13 @@ class DroneFireEnv(ParallelEnv):
         # === OBSERVATION SPACE (ASYMETRICKÝ) ===
         
         # 1. Konfigurace pro SCOUTA (Quad)
-        # Co znamená 12 čísel v self_state:
+        # Co znamená 15 čísel v self_state:
         # 0-2: pozice x, y, z (relativně k mapě)
         # 3-5: rychlost vx, vy, vz
         # 6-9: vzdálenost k okrajům (sever, jih, východ, západ)
         # 10-11: informace o ohni (smer dx, dy)
-        self.quad_self_dim = 12
+        # 12-15: 3 dynamic fire info (rel_x, rel_y, intensity)
+        self.quad_self_dim = 15
         self.max_neighbors = self.num_quads - 1 if self.num_quads > 1 else 1 # Aby to nepadlo při 1 dronu
         
         quad_obs_space = gym.spaces.Dict({
@@ -91,26 +92,27 @@ class DroneFireEnv(ParallelEnv):
         pos = drone.get_position()  # [x, y, z]
         vel = drone.get_velocity()  # [vx, vy, vz]
 
-        # === NORMALIZACE VSTUPŮ (Kritické pro stabilitu sítě!) ===
-        # Pozice dělíme hranicí mapy (aby byly cca -1..1)
+        # 1. Normalization
         norm_pos = pos / self.map_bounds 
-        # Rychlost dělíme 20 m/s (max speed)
         norm_vel = vel / 20.0 
-
-        # KOMPAS: Relativní vektor k ohni (normalizovaný na mapu)
-        # fire_x/y jsou definovány v reset()
-        rel_fire_x = (self.fire_x - pos[0]) / self.map_bounds
-        rel_fire_y = (self.fire_y - pos[1]) / self.map_bounds
         
-        # 1. Výpočet vzdáleností k okrajům mapy (Boundary Awareness)
+        # 2. STATIC FIRE INFO (Keep for initial orientation as requested)
+        rel_fire_start_x = (self.fire_x - pos[0]) / self.map_bounds
+        rel_fire_start_y = (self.fire_y - pos[1]) / self.map_bounds
+        
         dist_measurements = self._get_boundary_measurements_norm(pos)
         
-        # 2. Sestavení Self-State
+        # 3. DYNAMIC FIRE INFO (From actual visual local map)
+        local_map = self._extract_local_fire_map(pos)
+        dyn_x, dyn_y, dyn_intensity = self._calculate_fire_info(local_map)
+        
+        # 4. Assemble Self-State (15 elements)
         self_state = np.array([
             norm_pos[0], norm_pos[1], norm_pos[2],    # 0-2: Pozice (x,y,z)
             norm_vel[0], norm_vel[1], norm_vel[2],    # 3-5: Rychlost (vx,vy,vz)
             dist_measurements[0], dist_measurements[1], dist_measurements[2], dist_measurements[3], # 6-9: Vzdálenosti ke zdem
-            rel_fire_x, rel_fire_y # 10-11: Směr k ohni (dx, dy)
+            rel_fire_start_x, rel_fire_start_y,        # 10-11: Static start position
+            dyn_x, dyn_y, dyn_intensity               # 12-14: Dynamic info for protocol
         ], dtype=np.float32)
 
         # 3. Získání pozic OSTATNÍCH dronů (Self-Attention Inputs)
@@ -147,6 +149,31 @@ class DroneFireEnv(ParallelEnv):
             "neighbor_states": np.array(neighbor_states, dtype=np.float32),
             "neighbor_mask": np.array(neighbor_mask, dtype=bool)
         }
+
+    def _calculate_fire_info(self, local_map):
+        """
+        Calculates the centroid and average intensity of the fire 
+        from the 32x32 local occupancy map for the communication protocol.
+        """
+        # Calculate mean intensity of the whole local map
+        intensity = np.mean(local_map)
+        
+        if intensity > 0.001:
+            # Find pixel coordinates where fire is present (intensity > 0.1)
+            # local_map is (1, 32, 32)
+            grid_i, grid_j = np.where(local_map[0] > 0.1)
+            
+            if len(grid_i) > 0:
+                # Calculate pixel centroid
+                c_i = np.mean(grid_i)
+                c_j = np.mean(grid_j)
+                
+                # Normalize centroid to [-1, 1] relative to drone's center (15.5)
+                rel_x = (c_j - 15.5) / 15.5
+                rel_y = (c_i - 15.5) / 15.5
+                return rel_x, rel_y, intensity
+                
+        return 0.0, 0.0, intensity
     
     def _get_boundary_measurements_norm(self, pos):
         distances = self._get_boundary_measurements(pos)
@@ -597,57 +624,71 @@ class DroneFireEnv(ParallelEnv):
             reward += approach_speed * 0.02
         return reward
 
-    def _get_fixed_reward(self, agent):
+
+    def _calculate_orbital_reward(self, pos, vel, target_pos, ideal_radius=150.0):
         """
-        Odměna pro letadlo (Commander).
-        REŽIM MISE: Hašení + Logistika
+        Helper to calculate reward for loitering/orbiting around a target point.
         """
-        # drone = self.sim.drones[agent]
-        # pos = drone.get_position()
-        
-        # # Hašení
-        # extinguished = self.sim.drone_extinguish_stats.get(agent, 0.0)
-        # reward = min(0.1, extinguished * 0.05)
-            
-        # # Směrová navigace (k ohni s vodou / k bázi bez vody)
-        # if drone.current_water > 0:
-        #     dist = np.linalg.norm(np.array([self.fire_x, self.fire_y]) - pos[:2])
-        # elif self.sim.environment.refill_zone:
-        #     ref_pos = self.sim.environment.refill_zone['position']
-        #     dist = np.linalg.norm(pos[:2] - ref_pos[:2])
-        # else: dist = self.grid_size_m
-            
-        # reward += (1.0 - (dist / self.grid_size_m)) * 0.05
-        # return reward
-        drone = self.sim.drones[agent]
-        pos = drone.get_position()
-        vel = drone.get_velocity()[:2] # Rychlost v ploše XY
-        
-        # Určení cíle (oheň nebo báze)
-        if drone.current_water > 0:
-            target_pos = np.array([self.fire_x, self.fire_y])
-        elif self.sim.environment.refill_zone:
-            target_pos = self.sim.environment.refill_zone['position'][:2]
-        else: 
-            return 0.0
-            
-        # Vektor k cíli
         vec_to_target = target_pos - pos[:2]
         dist = np.linalg.norm(vec_to_target)
         
-        if dist < 1e-5: return 0.01
-        
-        # Normalizovaný směr k cíli
-        dir_to_target = vec_to_target / dist
-        
-        # RADIÁLNÍ RYCHLOST: Jak moc letím přímo k cíli (skalární součin)
-        # Pokud letím přímo k cíli, hodnota je vysoká. Pokud od něj, je záporná.
-        approach_speed = np.dot(vel, dir_to_target)
-        
-        reward = approach_speed * 0.05  # Bonus za přibližování (5× silnější signál)
-        reward += (1.0 - (dist / self.grid_size_m)) * 0.02  # Bonus za blízkost k cíli
+        if dist < ideal_radius * 0.6: # Too close (min turn radius)
+            return -0.05
+        elif ideal_radius * 0.6 <= dist <= ideal_radius * 1.5: # Sweet spot
+            # Tangential velocity bonus
+            dir_to_target = vec_to_target / (dist + 1e-6)
+            radial_speed = np.dot(vel[:2], dir_to_target)
+            return 0.2 + (1.0 - abs(radial_speed / 20.0)) * 0.05
+        else: # Too far, navigate towards
+            dir_to_target = vec_to_target / (dist + 1e-6)
+            approach_speed = np.dot(vel[:2], dir_to_target)
+            return approach_speed * 0.05 + (1.0 - dist/self.grid_size_m) * 0.01
 
-        return reward
+    def _get_fixed_reward(self, agent):
+        """
+        Three-state mission reward for the Commander.
+        1. Mission: Drone reports fire -> go to dynamic fire location.
+        2. Refill: No fire seen & low water -> go to base.
+        3. Patrol: No fire seen & has water -> circle map center.
+        """
+        drone = self.sim.drones[agent]
+        pos = drone.get_position()
+        vel = drone.get_velocity()
+        water_lvl = drone.current_water / drone.water_capacity if drone.water_capacity > 0 else 0.0
+        
+        # Check fire status from drones (for training we use ground truth, 
+        # but the plane must learn this correlation from messages)
+        # We take the intensity of the most significant fire seen by any quad
+        max_seen_intensity = 0.0
+        best_fire_pos = None
+        
+        for q_name in self.quad_agents:
+            if q_name in self.sim.drones:
+                q_obs = self._get_quad_obs(q_name)
+                # Dynamic intensity is at index 14 of self_state
+                q_intensity = q_obs["self_state"][14]
+                if q_intensity > max_seen_intensity:
+                    max_seen_intensity = q_intensity
+                    # Real world coordinates of the fire centroid seen by drone
+                    # (Simplified for reward: actual centroid on the grid)
+                    best_fire_pos = np.array([self.fire_x, self.fire_y]) # Placeholder for current fire center
+
+        # --- STATE 1: MISSION ---
+        if max_seen_intensity > 0.1:
+            return self._calculate_orbital_reward(pos, vel, best_fire_pos, ideal_radius=150.0)
+            
+        # --- STATE 2: REFILL ---
+        elif water_lvl < 0.1:
+            if self.sim.environment.refill_zone:
+                target = self.sim.environment.refill_zone['position'][:2]
+                return self._calculate_orbital_reward(pos, vel, target, ideal_radius=80.0)
+                
+        # --- STATE 3: PATROL ---
+        else:
+            # Stay in the middle of the map
+            return self._calculate_orbital_reward(pos, vel, np.array([0.0, 0.0]), ideal_radius=300.0)
+            
+        return 0.0
 
 
     def _check_death(self, agent):
