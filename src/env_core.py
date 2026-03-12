@@ -74,6 +74,9 @@ class DroneFireEnv(ParallelEnv):
         # Mapa(256) + Všechny Quads(10 * N) + Všechny Fixed(11 * M)
         self.global_state_size = (16 * 16) + (self.num_quads * self.quad_self_dim) + (self.num_fixed * self.fixed_self_dim)
         self.state_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.global_state_size,), dtype=np.float32)
+        
+        # Inicializace historie akcí pro smoothing (pro každého agenta vektor 4 nul)
+        self.last_actions = {agent: np.zeros(4, dtype=np.float32) for agent in self.possible_agents}
 
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent):
@@ -352,6 +355,7 @@ class DroneFireEnv(ParallelEnv):
             
         # 1. Obnovíme seznam žijících agentů
         self.agents = self.possible_agents[:]
+        self.last_actions = {agent: np.zeros(4, dtype=np.float32) for agent in self.possible_agents}
         
         # 2. Tvrdý restart PyBullet enginu (Zabrání memory leakům)
         if hasattr(self, 'sim') and self.sim is not None:
@@ -436,16 +440,21 @@ class DroneFireEnv(ParallelEnv):
         # Mapování akcí pro simulaci
         drone_controls = {}
         for agent_name, action in actions.items():
+            # Vypočítáme vážený průměr: 80% stará akce, 20% nová akce z neuronové sítě.
+            # To zabrání "cukání" a letadlo bude plynuleji zatáčet.
+            smooth_action = 0.8 * self.last_actions[agent_name] + 0.2 * action
+            self.last_actions[agent_name] = smooth_action # Uložíme pro příští krok
+
             if "fixed" in agent_name:
                 # FixedWing: [Roll, Pitch, Throttle, Water]
                 # NN vrací [-1, 1], my to mapujeme
-                mapped_action = np.copy(action)
-                mapped_action[2] = 0.4 + (action[2] + 1.0) * 0.3 # 0.4 až 1.0 (prevence stallu)
-                mapped_action[3] = (action[3] + 1.0) / 2.0  # Water 0..1
+                mapped_action = np.copy(smooth_action)
+                mapped_action[2] = 0.4 + (smooth_action[2] + 1.0) * 0.3 # 0.4 až 1.0 (prevence stallu)
+                mapped_action[3] = (smooth_action[3] + 1.0) / 2.0  # Water 0..1
                 drone_controls[agent_name] = mapped_action
             else:
                 # Quad: [Roll, Pitch, Yaw, Throttle]
-                drone_controls[agent_name] = action
+                drone_controls[agent_name] = smooth_action
             
         # Pustíme fyziku
         for _ in range(frame_skip):
@@ -671,7 +680,13 @@ class DroneFireEnv(ParallelEnv):
                     max_seen_intensity = q_intensity
                     # Real world coordinates of the fire centroid seen by drone
                     # (Simplified for reward: actual centroid on the grid)
-                    best_fire_pos = np.array([self.fire_x, self.fire_y]) # Placeholder for current fire center
+                    rel_x = q_obs["self_state"][12]
+                    rel_y = q_obs["self_state"][13]
+                    q_pos = self.sim.drones[q_name].get_position()
+                    fov_size = max(10.0, q_pos[2] * 1.5)
+                    target_x = q_pos[0] + (rel_x * (fov_size / 2.0))
+                    target_y = q_pos[1] + (rel_y * (fov_size / 2.0))
+                    best_fire_pos = np.array([target_x, target_y])
 
         # --- STATE 1: MISSION ---
         if max_seen_intensity > 0.1:

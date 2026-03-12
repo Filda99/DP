@@ -134,6 +134,7 @@ def train():
     entropy_history         = []   # policy entropy (exploration measure)
     v_loss_history          = []   # critic (value) loss per update epoch
     lifespan_history        = []   # average agent lifespan per episode
+    jerk_history            = []   # Track action smoothness
 
     os.makedirs("saved_models", exist_ok=True)
     best_avg_reward = -1000.0
@@ -291,6 +292,19 @@ def train():
                     needed because the LSTM expects (batch, seq, features)."""
                     return t.view(num_traj, max_steps, *t.shape[1:])
 
+                # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                # CALCULATE ACTION JERK (Smoothness Metric)
+                # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                # We measure how much the actions change between consecutive 
+                # timesteps. Lower values = smoother flight.
+                with torch.no_grad():
+                    # Scout actions: [episodes, max_steps, 4]
+                    s_seq = s_actions.view(episodes, max_steps, -1)
+                    # Absolute difference between step t and t+1
+                    s_diff = torch.abs(s_seq[:, 1:] - s_seq[:, :-1])
+                    avg_jerk = s_diff.mean().item()
+                    jerk_history.append(avg_jerk)
+
                 # --- Gradient update loop (update_epochs passes over the same data) ---
                 for epoch in range(update_epochs):
                     entropy_sum = torch.tensor(0.0, device=device)
@@ -357,12 +371,11 @@ def train():
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # COMBINED LOSS  (standard MAPPO objective)
-                    # = policy_loss + 0.5 * value_loss - 0.01 * entropy
                     # The entropy bonus keeps the policy from collapsing to
                     # a single deterministic action too early.
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     policy_loss = policy_loss_s + policy_loss_c
-                    loss        = policy_loss + 0.5 * value_loss - 0.01 * entropy_sum
+                    loss        = policy_loss + 0.5 * value_loss - 0.1 * entropy_sum
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # COMMUNICATION AUXILIARY LOSS (Protocol Enforcement)
@@ -437,7 +450,7 @@ def train():
 
                 # Panel 1: Episode rewards over time
                 # Raw rewards are noisy; 20-episode moving average shows the trend.
-                plt.subplot(1, 4, 1)
+                plt.subplot(1, 5, 1)
                 plt.plot(episode_rewards_history, label="Reward", alpha=0.3, color='green')
                 if len(episode_rewards_history) > 20:
                     plt.plot(np.convolve(episode_rewards_history, np.ones(20)/20, mode='valid'),
@@ -447,7 +460,7 @@ def train():
                 plt.legend()
 
                 # Panel 2: Loss curves (log scale because values span many orders)
-                plt.subplot(1, 4, 2)
+                plt.subplot(1, 5, 2)
                 plt.plot(loss_history,   label="Total Loss",         color='red',  alpha=0.5)
                 plt.plot(v_loss_history, label="Value Loss (Critic)", color='blue', alpha=0.5)
                 plt.title("Loss (log scale)")
@@ -457,7 +470,7 @@ def train():
 
                 # Panel 3: Policy entropy — measures how exploratory the policy is.
                 # Should start high (random) and slowly decrease as policy converges.
-                plt.subplot(1, 4, 3)
+                plt.subplot(1, 5, 3)
                 if entropy_history:
                     plt.plot(entropy_history, color='purple')
                     plt.title("Policy Entropy (exploration)")
@@ -467,9 +480,18 @@ def train():
 
                 # Panel 4: Average agent lifespan — how long agents survive per episode.
                 # Increasing lifespan generally means agents are getting better.
-                plt.subplot(1, 4, 4)
+                plt.subplot(1, 5, 4)
                 plt.plot(lifespan_history, color='orange')
                 plt.title("Avg agent lifespan (steps)")
+
+                # Panel 5: Action Jerk (The new smoothness metric)
+                plt.subplot(1, 5, 5)
+                if jerk_history:
+                    plt.plot(jerk_history, color='teal')
+                    plt.title("Action Jerk (Smoothness)")
+                    plt.xlabel("Batches")
+                    plt.ylabel("Avg Δ Action")
+                plt.grid(True, alpha=0.3)
 
                 plt.tight_layout()
                 plt.savefig("final_training_plot.png")
