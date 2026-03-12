@@ -285,7 +285,8 @@ class ScoutActor(nn.Module):
         #   Normal(mean, std) supports .rsample() for the reparameterisation
         #   trick needed in PPO, and .log_prob() for the importance-sampling ratio.
         action_mean = torch.tanh(self.action_mean(features))
-        dist        = Normal(action_mean, torch.exp(self.action_logstd))
+        log_std     = self.action_logstd.clamp(-3.0, 0.5)   # std in [e^-3≈0.05, e^0.5≈1.65]
+        dist        = Normal(action_mean, torch.exp(log_std))
 
         # Outbound message for the commander.
         message = self.msg_head(features)  # (B*S, msg_dim), values in [-1, 1]
@@ -456,7 +457,11 @@ class CommanderActor(nn.Module):
         # E) Action output
         # ------------------------------------------------------------------
         action_mean = torch.tanh(self.action_mean(features))
-        dist        = Normal(action_mean, torch.exp(self.action_logstd))
+        # It is a hard structural guardrail so that even if the loss 
+        # pushes in the wrong direction, the network physically 
+        # cannot go past those boundaries.
+        log_std     = self.action_logstd.clamp(-3.0, 0.5)   # std in [e^-3≈0.05, e^0.5≈1.65]
+        dist        = Normal(action_mean, torch.exp(log_std))
 
         # Second return value is None: the commander does not broadcast messages.
         return dist, None, new_hidden
