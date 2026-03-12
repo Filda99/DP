@@ -4,318 +4,544 @@ import torch.nn.functional as F
 from torch.distributions.normal import Normal
 import numpy as np
 
-# ==========================================
-# POMOCNÉ MODULY (ATTENTION)
-# ==========================================
+# =============================================================================
+# HELPER MODULES -- Reusable attention building blocks
+# =============================================================================
 
 class MultiHeadAttention(nn.Module):
     """
-    Univerzální Attention blok.
-    Pokud query == keys, funguje jako Self-Attention (pro sousedy Scoutů).
-    Pokud query != keys, funguje jako Cross-Attention (pro zprávy Commanderovi).
+    Generic Multi-Head Attention block.
+
+    When query == key == value (same source), it performs Self-Attention
+    (used in ScoutActor to reason over neighbouring drones).
+    When query comes from a different source than key/value, it performs
+    Cross-Attention (used in CommanderActor to read scout messages).
+
+    PyTorch's nn.MultiheadAttention uses the convention:
+        key_padding_mask[b, i] = True  ->  position i is IGNORED for batch b
+    This is the opposite of the "attend-to" mask used in some other libraries.
     """
     def __init__(self, embed_dim, num_heads=4):
         super().__init__()
+        # batch_first=True means tensors are (Batch, Seq, Embed) rather than (Seq, Batch, Embed).
         self.multihead_attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
 
     def forward(self, query, key, value, key_padding_mask=None):
         """
-        query: [Batch, 1, Embed_Dim] (pro Commandera) nebo [Batch, Seq, Embed_Dim] (pro Scouta)
-        key, value: [Batch, Seq_Len, Embed_Dim] (Sousedé nebo Zprávy)
-        key_padding_mask: [Batch, Seq_Len] - True tam, kde jsou 'mrtví' agenti (padding)
+        Parameters
+        ----------
+        query            : (Batch, Q_len,  Embed_Dim) -- what the agent is "asking"
+        key, value       : (Batch, KV_len, Embed_Dim) -- what neighbours / messages offer
+        key_padding_mask : (Batch, KV_len) bool       -- True where a position must be ignored
+                           (e.g. dead/absent agents padded with zeros)
+
+        Returns
+        -------
+        attn_output : (Batch, Q_len, Embed_Dim)
         """
+        # Edge case: no keys at all (e.g. agent has zero neighbours).
+        # Return a zero tensor with the same shape as query so downstream
+        # layers still receive a valid-shaped input.
         if key.size(1) == 0:
             return torch.zeros_like(query)
 
         if key_padding_mask is not None:
-            # Zjistíme, které řádky v batchi mají všechny prvky zamaskované (True)
-            all_masked = key_padding_mask.all(dim=1)
-            
+            # Detect rows in the batch where EVERY key position is masked (True).
+            # If softmax receives a row of all -inf (from masking), it produces NaN
+            # because exp(-inf) / sum(exp(-inf)) = 0/0.
+            all_masked = key_padding_mask.all(dim=1)  # (Batch,) bool
+
             if all_masked.any():
-                # Vytvoříme 'bezpečnou' masku – tam, kde jsou všichni mrtví, 
-                # dočasně odmaskujeme první prvek, aby Softmax nehodil NaN
+                # Safety fix: temporarily unmask position 0 for all-dead rows so
+                # that softmax can compute a finite (but arbitrary) distribution.
+                # We will zero out the output for those rows afterwards, making
+                # the temporary unmasking completely harmless.
                 safe_mask = key_padding_mask.clone()
-                safe_mask[all_masked, 0] = False
-                
+                safe_mask[all_masked, 0] = False  # unblock one slot per bad row
+
                 attn_output, _ = self.multihead_attn(query, key, value, key_padding_mask=safe_mask)
-                
-                # Výsledek pro ty, co mají být 'všichni mrtví', ručně vynulujeme
-                # query.shape je (Batch, Seq, Dim), attn_output taky
+
+                # Overwrite the result for all-dead rows with zeros so the
+                # GRU / downstream layers receive no spurious information.
                 attn_output[all_masked] = 0.0
                 return attn_output
 
-        # Standardní cesta, pokud není vše zamaskováno
+        # Standard path -- at least one unmasked key per row.
         attn_output, _ = self.multihead_attn(query, key, value, key_padding_mask=key_padding_mask)
         return attn_output
 
 
+# =============================================================================
+# 1. SCOUT ACTOR  (quadcopter drone)
+# =============================================================================
+
 class ScoutActor(nn.Module):
     """
-    ACTOR (Herec): Rozhoduje, co dron udělá.
-    Vstup: Pouze LOKÁLNÍ data (local_map + self_state).
-    Výstup: Akce (Roll, Pitch, Yaw, Throttle).
+    Actor network for a scout drone.  Follows the MAPPO actor convention:
+    it maps purely LOCAL observations to a stochastic action distribution
+    and an outbound communication message.
+
+    Architecture overview (three parallel perception branches + GRU memory):
+
+        local_map  --(CNN)-->  vis_feat  (128-d)  -\
+        self_state --(MLP)-->  self_feat  (64-d)  --+--[cat]--[LayerNorm]--[GRU]--> dist, message
+        neighbors  --(Attn)-> neigh_ctx  (64-d)  -/
+
+    Inputs
+    ------
+    local_map       : (Batch [, Seq], 1, 32, 32)         -- single-channel fire-intensity grid
+    self_state      : (Batch [, Seq], self_state_dim)     -- velocity, boundary distances, ...
+    neighbor_states : (Batch [, Seq], N_neighbours, 3)   -- relative [dx, dy, dz] per neighbour
+    neighbor_mask   : (Batch [, Seq], N_neighbours) bool -- True for absent/dead neighbours (padding)
+    hidden_state    : (1, Batch, hidden_dim)             -- GRU memory carried across time steps
+
+    Outputs
+    -------
+    dist        : Normal distribution over actions (Roll, Pitch, Yaw, Throttle)
+    message     : (Batch*Seq, msg_dim) -- compact vector broadcast to the commander
+    new_hidden  : updated GRU hidden state, same shape as hidden_state
     """
     def __init__(self, self_state_dim, action_dim=4, msg_dim=5, hidden_dim=128):
         super().__init__()
-        
-        # 1. Zpracování obrázku (Local Map 32x32) pomocí CNN
-        # Bere černobílou mřížku ohně 32x32 a pomocí konvolučních vrstev z ní vytáhne tzv. Visual Features (vektor 128 čísel). Hledá tvary, hrany a intenzitu.
+
+        # ------------------------------------------------------------------
+        # Branch 1 -- Visual perception: CNN over the 32x32 fire map
+        # ------------------------------------------------------------------
+        # The local fire map is treated as a single-channel (greyscale) image.
+        # Two strided Conv2d layers extract spatial features (edges, hotspots,
+        # fire fronts), then a Linear layer compresses them to a 128-d vector.
+        #
+        # Output spatial size after each Conv2d  (formula: floor((W-K)/S + 1)):
+        #   32 -> floor((32-4)/2 + 1) = 15   (after Conv1)
+        #   15 -> floor((15-4)/2 + 1) = 6    (after Conv2)
+        # Flattened: 32 filters x 6 x 6 = 1152 values -> compressed to 128.
         self.cnn = nn.Sequential(
-            # Vstup: 1 kanál, 32x32 -> Výstup: 16 filtrů, 15x15
-            nn.Conv2d(1, 16, kernel_size=4, stride=2), 
+            nn.Conv2d(1, 16, kernel_size=4, stride=2),   # (B,  1, 32, 32) -> (B, 16, 15, 15)
             nn.ReLU(),
-            # Vstup: 16 filtrů, 15x15 -> Výstup: 32 filtrů, 6x6
-            nn.Conv2d(16, 32, kernel_size=4, stride=2),
+            nn.Conv2d(16, 32, kernel_size=4, stride=2),  # (B, 16, 15, 15) -> (B, 32,  6,  6)
             nn.ReLU(),
-            nn.Flatten(),
-            # 32 * 6 * 6 = 1152 hodnot. Stlačíme to do 128.
-            nn.Linear(1152, hidden_dim),
+            nn.Flatten(),                                # (B, 32, 6, 6) -> (B, 1152)
+            nn.Linear(1152, hidden_dim),                 # compress to 128-d visual feature
             nn.ReLU()
         )
 
-        # 2. Sousedé Scoutové (Self-Attention)
-        # Vstup: Relativní pozice souseda [x, y, z] -> Embedding
-        # Používáme Self-Attention . Dron se zeptá (Query = jeho vlastní stav): "Jsem tady a letím tamhle, kdo z vás 
-        # je pro mě teď důležitý?" Sousedé (Keys/Values) odpoví svými pozicemi.
+        # ------------------------------------------------------------------
+        # Branch 2 -- Situational awareness: Self-Attention over neighbours
+        # ------------------------------------------------------------------
+        # Each neighbour is described by its relative offset [dx, dy, dz].
+        # neighbor_embed lifts that 3-d vector into a 64-d embedding space
+        # so the attention mechanism has richer representations to work with.
         #
-        # Síť dynamicky ignoruje drony, které jsou na druhé straně mapy, a zaměří pozornost (dá vysoké váhy) dronům, 
-        # se kterými by se mohla srazit nebo u kterých je oheň. 
-        # Dokáže tak zpracovat 1 i 50 kolegů najednou a vždy z toho "vypadne" jeden fixní vektor (64 čísel). 
-        # Navíc pomocí neighbor_mask umí ignorovat "mrtvé" drony.
+        # MultiHeadAttention is used here as *Self-Attention*:
+        #   Query  = own embedded state ("who matters to me right now?")
+        #   Key    = neighbour embeddings ("here is what I can offer")
+        #   Value  = same neighbour embeddings (the actual information payload)
+        #
+        # Advantages over a simple mean/max aggregation:
+        #   * Dynamically weights nearby / relevant drones higher.
+        #   * Handles a variable number of neighbours (1...N) and always
+        #     produces a fixed-size 64-d context vector.
+        #   * Gracefully ignores absent/dead drones via neighbor_mask.
         self.neighbor_embed = nn.Sequential(
             nn.Linear(3, 64),
             nn.ReLU()
         )
         self.neighbor_attention = MultiHeadAttention(embed_dim=64, num_heads=2)
-        
-        # 3. Zpracování čísel (Self State) pomocí MLP
-        # Klasické MLP (Lineární vrstva). Vezme 10 čísel o rychlosti a vzdálenosti od stěn a udělá z nich vektor 64 čísel.
+
+        # ------------------------------------------------------------------
+        # Branch 3 -- Proprioception: MLP over own state vector
+        # ------------------------------------------------------------------
+        # Encodes ego-centric information (velocity components, distances to
+        # arena boundaries, altitude, etc.) into a 64-d feature vector.
         self.self_embed = nn.Sequential(
             nn.Linear(self_state_dim, 64),
             nn.ReLU()
         )
 
-        # 4.1 LAYER NORMALIZATION
-        # Stabilizuje vstup do paměti GRU. Zabraňuje explozím gradientů.
-        # Vstupní velikost je součet všech větví: 128 (CNN) + 64 (Self) + 64 (Neighbors) = 256
+        # ------------------------------------------------------------------
+        # Fusion layer -- Layer Normalisation before the GRU
+        # ------------------------------------------------------------------
+        # The three branches are concatenated: 128 (CNN) + 64 (self) + 64 (neighbours) = 256.
+        # LayerNorm normalises across the feature dimension independently for each
+        # sample, which stabilises the scale of the fused representation and
+        # prevents gradient explosions at the GRU input gate.
         self.layer_norm = nn.LayerNorm(128 + 64 + 64)
 
-        # 4.2 PAMĚŤ (GRU)
-        # Vstup do GRU: CNN(128) + Neighbor_Attn(64) + Self(64) = 256
-        # Všechny tři vjemy (Oči + Tělo + Sousedé) se spojí dohromady a pošlou se do GRU vrstvy. 
-        # To je paměťová buňka. Na vstup jde kromě vjemů i hidden_state (Stav paměti z minulého kroku).
+        # ------------------------------------------------------------------
+        # Temporal memory -- GRU
+        # ------------------------------------------------------------------
+        # The GRU receives the fused 256-d perception vector at every time step
+        # and maintains a hidden state of size hidden_dim (128).
+        # This gives the drone episodic memory: it can recall where fire was
+        # spotted several steps ago and plan patrol routes without revisiting
+        # areas it already covered.
         #
-        # Dron si nyní dokáže pamatovat: "Před 5 sekundami jsem viděl oheň na východě, poletím to tam 
-        # zkontrolovat znovu," nebo si dokáže vytvořit strategii hlídkování (zametání mapy), aby nelétal v kruzích.
+        # GRU over LSTM rationale:
+        #   * Fewer parameters (no separate cell state) -> trains faster.
+        #   * Empirically performs on par with LSTM for tasks of this scale.
+        # batch_first=True keeps tensor shapes consistent with the rest of the network.
         self.gru = nn.GRU(input_size=128 + 64 + 64, hidden_size=hidden_dim, batch_first=True)
 
-        # 5. VÝSTUPNÍ HLAVY
-        # 1. Action Head (Pohyb)
-        # Už nepotřebuje "přemýšlet" (zmenšovat vrstvy), jen převede myšlenku (hidden_dim) na pohyb (action_dim).
-        # Linear(128 -> 4)
-        self.action_mean = nn.Linear(hidden_dim, action_dim)
-        self.action_logstd = nn.Parameter(torch.zeros(1, action_dim))
-        
-        # 2. Message Head (Komunikace)
-        # Vypouští vektor 5 čísel, která posíláme letadlu
+        # ------------------------------------------------------------------
+        # Output head 1 -- Action distribution (movement)
+        # ------------------------------------------------------------------
+        # Maps the GRU output to action means.  A separate learned log-std
+        # parameter (not state-dependent) controls exploration noise globally.
+        # Using nn.Parameter means log_std is optimised directly by the PPO
+        # objective alongside all other network weights.
+        self.action_mean    = nn.Linear(hidden_dim, action_dim)
+        self.action_logstd  = nn.Parameter(torch.zeros(1, action_dim))
+
+        # ------------------------------------------------------------------
+        # Output head 2 -- Outbound message (communication)
+        # ------------------------------------------------------------------
+        # Produces a msg_dim-dimensional message vector that gets broadcast
+        # to the CommanderActor via the environment's communication channel.
+        # Tanh squashes values to [-1, 1], providing a bounded signal that
+        # is easy for the commander's message encoder to process.
         self.msg_head = nn.Sequential(
             nn.Linear(hidden_dim, msg_dim),
-            nn.Tanh() # Zprávy budou v rozsahu -1 až 1
+            nn.Tanh()  # messages bounded to [-1, 1]
         )
 
-
     def forward(self, local_map, self_state, neighbor_states, neighbor_mask, hidden_state):
-        # 1. Detekce režimu
-        # V tréninku dostáváme [15, 200, ...], v demu [1, ...]
-        is_sequential = (local_map.dim() >= 4) # Maps jsou [Batch, Seq, 1, 32, 32]
+        # ------------------------------------------------------------------
+        # Step 1: Detect operating mode (training vs. demo / inference)
+        # ------------------------------------------------------------------
+        # During training the rollout buffer stores full episodes, so tensors
+        # carry an extra sequence dimension:
+        #   local_map : (Batch, Seq, 1, 32, 32)
+        # During demo / single env.step() they arrive without that dimension:
+        #   local_map : (Batch, 1, 32, 32)  or  (1, 32, 32)
+        is_sequential = (local_map.dim() >= 4)  # True when Seq dimension is present
         batch_size = local_map.size(0)
-        seq_len = local_map.size(1) if is_sequential else 1
+        seq_len    = local_map.size(1) if is_sequential else 1
 
-        # 2. TOTÁLNÍ ZPLOŠTĚNÍ (Flattening)
-        # Spojíme Epizody a Kroky (15 * 200 = 3000) pro paralelní výpočet
+        # ------------------------------------------------------------------
+        # Step 2: Flatten batch x sequence into a single batch axis
+        # ------------------------------------------------------------------
+        # CNN and Linear layers do not understand sequence dimensions, so we
+        # merge (Batch, Seq) -> (Batch*Seq) to process all time steps in parallel.
+        # Example for training: (15 envs, 200 steps) -> 3000 independent samples.
         if is_sequential:
-            local_map = local_map.reshape(-1, 1, 32, 32)
-            self_state = self_state.reshape(-1, self_state.size(-1))
-            # Sousedé: [15, 200, N, 3] -> [3000, N, 3]
+            local_map       = local_map.reshape(-1, 1, 32, 32)
+            self_state      = self_state.reshape(-1, self_state.size(-1))
             neighbor_states = neighbor_states.reshape(batch_size * seq_len, -1, neighbor_states.size(-1))
-            # Maska: [15, 200, N] -> [3000, N]
-            neighbor_mask = neighbor_mask.reshape(batch_size * seq_len, -1)
+            neighbor_mask   = neighbor_mask.reshape(batch_size * seq_len, -1)
         else:
-            # Demo/Inference režim
-            if local_map.dim() == 2: local_map = local_map.reshape(-1, 1, 32, 32)
-            if self_state.dim() == 1: self_state = self_state.unsqueeze(0)
+            # Demo / single-step inference -- ensure correct tensor rank.
+            if local_map.dim() == 2:
+                local_map  = local_map.reshape(-1, 1, 32, 32)
+            if self_state.dim() == 1:
+                self_state = self_state.unsqueeze(0)
 
-        # 3. SENZORY (CNN + Attention)
-        vis_feat = self.cnn(local_map)           # [3000, 128]
-        self_feat = self.self_embed(self_state) # [3000, 64]
-        
-        # Attention nad sousedy (Nyní Query [3000, 1, 64] a Key [3000, N, 64] sedí!)
-        neigh_embed = self.neighbor_embed(neighbor_states) 
-        query = self_feat.unsqueeze(1)
-        neigh_context = self.neighbor_attention(query, neigh_embed, neigh_embed, key_padding_mask=neighbor_mask)
-        neigh_context = neigh_context.squeeze(1) # [3000, 64]
+        # ------------------------------------------------------------------
+        # Step 3: Run all three perception branches
+        # ------------------------------------------------------------------
+        vis_feat  = self.cnn(local_map)          # (B*S, 128) -- visual features from fire map
+        self_feat = self.self_embed(self_state)  # (B*S,  64) -- encoded own state
 
-        # Fúze
-        combined = torch.cat([vis_feat, self_feat, neigh_context], dim=1) # [3000, 256]
+        # Self-Attention over neighbours:
+        #   embed each neighbour -> (B*S, N, 64)
+        #   query with own state -> (B*S, 1, 64) ("what is relevant to me?")
+        #   output context       -> (B*S, 1, 64) -> squeeze to (B*S, 64)
+        neigh_embed   = self.neighbor_embed(neighbor_states)             # (B*S, N, 64)
+        query         = self_feat.unsqueeze(1)                           # (B*S, 1, 64)
+        neigh_context = self.neighbor_attention(
+            query, neigh_embed, neigh_embed, key_padding_mask=neighbor_mask
+        )                                                                # (B*S, 1, 64)
+        neigh_context = neigh_context.squeeze(1)                         # (B*S,   64)
+
+        # ------------------------------------------------------------------
+        # Step 4: Fuse all branches and normalise
+        # ------------------------------------------------------------------
+        combined = torch.cat([vis_feat, self_feat, neigh_context], dim=1)  # (B*S, 256)
         combined = self.layer_norm(combined)
 
-        # 4. ROZPLÉTÁNÍ PRO PAMĚŤ (GRU)
-        # Vrátíme časovou dimenzi, aby GRU viděla plynulý film
+        # ------------------------------------------------------------------
+        # Step 5: Re-introduce the sequence dimension for the GRU
+        # ------------------------------------------------------------------
+        # GRU expects (Batch, Seq, Features) -- restore that shape here.
         if is_sequential:
-            combined = combined.view(batch_size, seq_len, -1) # [15, 200, 256]
+            combined = combined.view(batch_size, seq_len, -1)  # (B, S, 256)
         else:
-            combined = combined.unsqueeze(1) # [Batch, 1, 256]
-            
-        gru_out, new_hidden = self.gru(combined, hidden_state)
-        
-        # Zploštění pro výstupní vrstvy
-        features = gru_out.reshape(-1, 128)
+            combined = combined.unsqueeze(1)                   # (B, 1, 256)
 
-        # 5. VÝSTUPY
+        gru_out, new_hidden = self.gru(combined, hidden_state)
+        # gru_out    : (B, S, hidden_dim=128)
+        # new_hidden : (1, B, hidden_dim) -- passed back to the next env step
+
+        # Flatten again for output Linear layers.
+        features = gru_out.reshape(-1, 128)  # (B*S, 128)
+
+        # ------------------------------------------------------------------
+        # Step 6: Compute outputs
+        # ------------------------------------------------------------------
+        # Action distribution:
+        #   mean  = tanh(linear(features)) -- bounded to (-1, 1), matching the
+        #           normalised action space of the PyBullet drone controller.
+        #   std   = exp(log_std)           -- always positive; shared across
+        #           the batch (state-independent exploration noise).
+        #   Normal(mean, std) supports .rsample() for the reparameterisation
+        #   trick needed in PPO, and .log_prob() for the importance-sampling ratio.
         action_mean = torch.tanh(self.action_mean(features))
-        dist = Normal(action_mean, torch.exp(self.action_logstd))
-        message = self.msg_head(features)
+        dist        = Normal(action_mean, torch.exp(self.action_logstd))
+
+        # Outbound message for the commander.
+        message = self.msg_head(features)  # (B*S, msg_dim), values in [-1, 1]
 
         return dist, message, new_hidden
 
 
-# ==========================================
-# 2. COMMANDER ACTOR (Letadlo)
-# ==========================================
+# =============================================================================
+# 2. COMMANDER ACTOR  (fixed-wing water-bomber aircraft)
+# =============================================================================
 
 class CommanderActor(nn.Module):
+    """
+    Actor network for the commander aircraft.
+
+    The commander has no direct visual sensor (no local map); instead it
+    receives summarised reports (messages) from all scout drones and uses
+    Cross-Attention to selectively focus on the most relevant ones.
+
+    Architecture overview:
+
+        self_state  --(MLP)---> self_feat  (64-d) --\
+        messages    --(MLP)---> msg_feat   (N, 64)   Cross-Attn -> ctx (64-d) --+-- [cat] --[gate]--[LayerNorm]--[GRU]--> dist
+                                                                                /
+                                                         comm_alpha gate ------/
+
+    Inputs
+    ------
+    self_state        : (Batch [, Seq], self_state_dim)           -- velocity, altitude, water level
+    incoming_messages : (Batch [, Seq], N_scouts, msg_input_dim) -- msg vectors from drones
+    message_mask      : (Batch [, Seq], N_scouts) bool           -- True for silent/absent scouts
+    hidden_state      : (1, Batch, hidden_dim)                   -- GRU memory from previous step
+
+    Outputs
+    -------
+    dist        : Normal distribution over actions (Roll, Pitch, Yaw, Throttle)
+    None        : placeholder (commander sends no messages in this architecture)
+    new_hidden  : updated GRU hidden state
+    """
     def __init__(self, self_state_dim=15, msg_input_dim=5, action_dim=4, hidden_dim=128):
         super().__init__()
-        
-        # 1. SELF STATE ENCODER (Jeho vlastní fyzický stav (rychlost, výška, hladina vody v nádrži, pozice))
-        # Převede tato čísla na vektor (např. 64 čísel), který reprezentuje "Kdo jsem a co mám k dispozici".
+
+        # ------------------------------------------------------------------
+        # Branch 1 -- Own-state encoder
+        # ------------------------------------------------------------------
+        # Encodes the commander's proprioceptive state (position, velocity,
+        # water remaining, ...) into a 64-d latent vector.
         self.self_embed = nn.Sequential(
             nn.Linear(self_state_dim, 64),
             nn.ReLU()
         )
 
-        # 2. MESSAGE ENCODER
-        # Seznam zpráv od všech Scoutů (např. od 5 dronů). Každá zpráva je ten vektor 5 čísel, který vyplivl dron.
-        # Každou zprávu "nafoukne" (pomocí Lineární vrstvy) na vektor 64 čísel
+        # ------------------------------------------------------------------
+        # Branch 2 -- Scout message encoder
+        # ------------------------------------------------------------------
+        # Each incoming scout message is a msg_input_dim-dimensional vector.
+        # This MLP lifts every message into the same 64-d embedding space
+        # as the commander's own state, so attention dot-products are
+        # dimensionally consistent.
         self.msg_embed = nn.Sequential(
             nn.Linear(msg_input_dim, 64),
             nn.ReLU()
         )
 
-        # 3. CROSS-ATTENTION (Naslouchání)
-        # Query = Letadlo, Key/Value = Zprávy
-        # Self-Attention (u dronů) porovnává sousedy navzájem (aby do sebe nenarazili).
-        # Cross-Attention porovnává MĚ (Letadlo) s NIMI (Drony).
+        # ------------------------------------------------------------------
+        # Branch 3 -- Cross-Attention (commander listens to scout messages)
+        # ------------------------------------------------------------------
+        # Unlike ScoutActor (Self-Attention: agents compare each other),
+        # the commander uses Cross-Attention:
+        #   Query  = commander's own embedded state
+        #            ("I am at position X with Y litres -- who is useful to me?")
+        #   Key    = scout message embeddings  ("here is what I know")
+        #   Value  = same scout message embeddings (the actual payload)
         #
-        # Jak to funguje:
-        # Query (Dotaz): "Jsem na pozici [100, 100]."
-        # Keys (Nabídky):
-        # Dron 1: "Jsem na [10, 10] a vidím trávu." -> Nízká shoda (daleko + nic zajímavého).
-        # Dron 2: "Jsem na [90, 100] a vidím PEKLO." -> Vysoká shoda! (blízko + oheň).
-        # Váhy (Attention Weights): Síť přiřadí Dronu 1 váhu 0.05 a Dronu 2 váhu 0.95.
-        # Weighted Sum: Síť vezme 5 % zprávy Drona 1 a 95 % zprávy Drona 2 a sečte je.
-        # Výsledek (context_vector): Vznikne jeden vektor, který obsahuje esenci toho nejdůležitějšího 
-        # z celého bojiště, přesně na míru pro toto konkrétní letadlo.
+        # The attention weights reflect relevance: a scout reporting a large
+        # fire close to the commander gets high weight; a distant scout with
+        # nothing to report gets near-zero weight.
+        # The weighted sum (context vector) distils the entire swarm's
+        # situational awareness into one 64-d vector tailored to the commander.
         self.attention = MultiHeadAttention(embed_dim=64, num_heads=4)
 
-        # 4.1 LAYER NORMALIZATION
-        # Stabilizace vstupu před rozhodovací částí
-        # 64 (Self) + 64 (Attention Context) = 128
+        # ------------------------------------------------------------------
+        # Fusion -- Layer Normalisation
+        # ------------------------------------------------------------------
+        # 64 (self) + 64 (attention context) = 128
         self.layer_norm = nn.LayerNorm(64 + 64)
 
+        # ------------------------------------------------------------------
+        # Temporal memory -- GRU
+        # ------------------------------------------------------------------
+        # Same role as in ScoutActor: lets the commander remember past
+        # observations (e.g. which sectors were already covered) and plan
+        # multi-step attack runs across consecutive time steps.
         self.gru = nn.GRU(input_size=64 + 64, hidden_size=hidden_dim, batch_first=True)
 
-        self.action_mean = nn.Linear(hidden_dim, action_dim)
+        # ------------------------------------------------------------------
+        # Output head -- Action distribution
+        # ------------------------------------------------------------------
+        self.action_mean   = nn.Linear(hidden_dim, action_dim)
         self.action_logstd = nn.Parameter(torch.zeros(1, action_dim))
 
-        # Scaling faktor pro komunikaci: trénuje se jako nn.Parameter
-        # torch.sigmoid zajišťuje, že alpha zůstane v (0, 1) a směr gradientu zůstane stabilní
+        # ------------------------------------------------------------------
+        # Learnable communication gate (comm_alpha)
+        # ------------------------------------------------------------------
+        # comm_alpha is a scalar nn.Parameter initialised to 0.3.
+        # It is passed through sigmoid() in forward() so the effective gate
+        # value stays in (0, 1) regardless of the raw parameter value.
+        # This acts as a soft switch controlling how much the attention context
+        # influences the fused representation.  The network can learn to
+        # suppress scout input (alpha -> 0) if messages are noisy or
+        # uninformative, or to rely on it heavily (alpha -> 1) when useful.
         self.comm_alpha = nn.Parameter(torch.tensor(0.3))
 
     def forward(self, self_state, incoming_messages, message_mask, hidden_state):
-        # --- A) Detekce sekvence ---
-        is_sequential = (self_state.dim() == 3)
+        # ------------------------------------------------------------------
+        # A) Detect operating mode
+        # ------------------------------------------------------------------
+        is_sequential = (self_state.dim() == 3)  # True when Seq dimension present
         batch_size = self_state.size(0)
-        seq_len = self_state.size(1) if is_sequential else 1
+        seq_len    = self_state.size(1) if is_sequential else 1
 
-        # --- B) Zploštění pro Attention (pro trénink i demo) ---
+        # ------------------------------------------------------------------
+        # B) Flatten batch x sequence for Linear / Attention layers
+        # ------------------------------------------------------------------
         if is_sequential:
-            target_batch = batch_size * seq_len
-            self_state = self_state.reshape(target_batch, self_state.size(-1))
+            target_batch      = batch_size * seq_len
+            self_state        = self_state.reshape(target_batch, self_state.size(-1))
             incoming_messages = incoming_messages.reshape(target_batch, incoming_messages.size(-2), incoming_messages.size(-1))
-            message_mask = message_mask.reshape(target_batch, message_mask.size(-1))
+            message_mask      = message_mask.reshape(target_batch, message_mask.size(-1))
 
-        # --- C) Senzory a Attention ---
-        self_feat = self.self_embed(self_state)   
-        msg_feat = self.msg_embed(incoming_messages) 
-        query = self_feat.unsqueeze(1)
-        
-        # Cross-Attention (Letadlo se dívá na zprávy od dronů)
-        context_vector = self.attention(query, msg_feat, msg_feat, key_padding_mask=message_mask)
-        context_vector = context_vector.squeeze(1) 
+        # ------------------------------------------------------------------
+        # C) Run both perception branches
+        # ------------------------------------------------------------------
+        self_feat = self.self_embed(self_state)        # (B*S, 64)
+        msg_feat  = self.msg_embed(incoming_messages)  # (B*S, N_scouts, 64)
 
-        # --- D) Fúze a Paměť (GRU) ---
-        # comm_alpha je nn.Parameter → trénuje se; sigmoid omezuje alpha na (0, 1)
-        # combined = torch.cat([self_feat, context_vector], dim=1) 
-        combined = torch.cat([self_feat, torch.sigmoid(self.comm_alpha) * context_vector], dim=1)
+        # Cross-Attention: commander queries the scout message embeddings.
+        # unsqueeze(1) because the commander asks a single question per step.
+        query = self_feat.unsqueeze(1)                 # (B*S, 1, 64)
+        context_vector = self.attention(
+            query, msg_feat, msg_feat, key_padding_mask=message_mask
+        )                                              # (B*S, 1, 64)
+        context_vector = context_vector.squeeze(1)     # (B*S, 64)
+
+        # ------------------------------------------------------------------
+        # D) Gated fusion and temporal memory
+        # ------------------------------------------------------------------
+        # sigmoid(comm_alpha) keeps the gate in (0, 1) and ensures smooth
+        # gradient flow regardless of the raw parameter value.
+        # Scaling context_vector by this gate lets the network learn whether
+        # listening to scouts is beneficial for this particular task.
+        gate     = torch.sigmoid(self.comm_alpha)
+        combined = torch.cat([self_feat, gate * context_vector], dim=1)  # (B*S, 128)
         combined = self.layer_norm(combined)
 
-        # Vrátíme časovou dimenzi pro GRU
+        # Re-introduce sequence dimension for the GRU.
         if is_sequential:
-            combined = combined.view(batch_size, seq_len, -1)
+            combined = combined.view(batch_size, seq_len, -1)  # (B, S, 128)
         else:
-            combined = combined.unsqueeze(1)
-            
+            combined = combined.unsqueeze(1)                   # (B, 1, 128)
+
         gru_out, new_hidden = self.gru(combined, hidden_state)
-        
-        # Pro lineární vrstvy opět zploštíme na [Batch*Seq, Hidden]
-        features = gru_out.reshape(-1, 128)
 
-        # --- E) Výstup (Akce) ---
+        # Flatten for output Linear layer.
+        features = gru_out.reshape(-1, 128)  # (B*S, 128)
+
+        # ------------------------------------------------------------------
+        # E) Action output
+        # ------------------------------------------------------------------
         action_mean = torch.tanh(self.action_mean(features))
-        dist = Normal(action_mean, torch.exp(self.action_logstd))
+        dist        = Normal(action_mean, torch.exp(self.action_logstd))
 
+        # Second return value is None: the commander does not broadcast messages.
         return dist, None, new_hidden
+
+
+# =============================================================================
+# 3. MAPPO CRITIC  (centralised value function)
+# =============================================================================
 
 class MAPPOCritic(nn.Module):
     """
-    CRITIC (Kritik): Hodnotí, jak dobrý je současný stav.
-    Vstup: 
-        GLOBÁLNÍ data (Pohled boha na mapu ohně a všechny drony).
-        Hidden state z minulého kroku (paměť).
-    Výstup: Jedno číslo (očekávaná budoucí odměna).
+    Centralised critic for the MAPPO algorithm.
+
+    MAPPO follows the CTDE paradigm (Centralised Training, Decentralised
+    Execution): during training the critic has access to the *global* state
+    -- the full fire map, all agent positions, and any other privileged
+    information.  This richer input allows it to estimate V(s) (expected
+    future cumulative reward) far more accurately than a per-agent critic
+    that only sees local observations.
+
+    During *execution* the critic is not used; only the actors run on-device.
+
+    Inputs
+    ------
+    global_state : (Batch [, Seq], global_state_size) -- concatenated global observation
+    hidden_state : (1, Batch, hidden_dim)             -- GRU memory from previous step
+
+    Outputs
+    -------
+    value      : (Batch*Seq, 1) -- scalar state-value estimate V(s)
+    new_hidden : updated GRU hidden state
     """
     def __init__(self, global_state_size, hidden_dim=128):
         super().__init__()
-        # 1. Encoder (zmenšíme obří globální stav na rozumný vektor)
+
+        # ------------------------------------------------------------------
+        # State encoder -- two-layer MLP
+        # ------------------------------------------------------------------
+        # The global state vector can be very large (concatenation of all
+        # agents' observations plus shared map features).  This MLP compresses
+        # it from global_state_size -> 256 -> hidden_dim in two steps,
+        # allowing the GRU to operate on a compact, dense representation.
         self.encoder = nn.Sequential(
             nn.Linear(global_state_size, 256),
             nn.ReLU(),
             nn.Linear(256, hidden_dim),
             nn.ReLU()
         )
-        # 2. GRU Paměť (umožní kritikovi vidět časový trend)
+
+        # ------------------------------------------------------------------
+        # Temporal memory -- GRU
+        # ------------------------------------------------------------------
+        # Gives the critic a sense of temporal dynamics: it can track whether
+        # the fire is growing or shrinking and adjust value estimates
+        # accordingly, rather than treating every time step as independent.
         self.gru = nn.GRU(hidden_dim, hidden_dim, batch_first=True)
-        # 3. Value Head (finální odhad odměny)
+
+        # ------------------------------------------------------------------
+        # Value head -- scalar output
+        # ------------------------------------------------------------------
+        # Projects the GRU hidden state to a single scalar V(s).
+        # No activation function -- value estimates are unbounded real numbers.
         self.value_head = nn.Linear(hidden_dim, 1)
 
     def forward(self, global_state, hidden_state):
-        # global_state v tréninku: [Batch, Seq, GS_DIM] | v rolloutu: [Batch, GS_DIM]
+        # ------------------------------------------------------------------
+        # Detect operating mode and flatten
+        # ------------------------------------------------------------------
+        # Training: global_state is (Batch, Seq, global_state_size)
+        # Rollout:  global_state is (Batch,      global_state_size)
         is_sequential = (global_state.dim() == 3)
         batch_size = global_state.size(0)
-        seq_len = global_state.size(1) if is_sequential else 1
+        seq_len    = global_state.size(1) if is_sequential else 1
 
-        # Zploštění pro Lineární vrstvy
+        # Flatten to (Batch*Seq, global_state_size) so the encoder MLP can
+        # process all time steps simultaneously (no sequential loop needed).
         x = global_state.reshape(-1, global_state.size(-1))
-        x = self.encoder(x) # [Batch*Seq, hidden_dim]
+        x = self.encoder(x)  # (B*S, hidden_dim)
 
-        # Rozplétání pro GRU
+        # Restore sequence dimension for the GRU: (B, S, hidden_dim)
         x = x.view(batch_size, seq_len, -1)
-        
-        # Průchod pamětí
+
         gru_out, new_hidden = self.gru(x, hidden_state)
 
-        # Výstupní hodnota (opět zploštíme pro lineární hlavu)
-        value = self.value_head(gru_out.reshape(-1, gru_out.size(-1)))
+        # Flatten again for the value head.
+        value = self.value_head(gru_out.reshape(-1, gru_out.size(-1)))  # (B*S, 1)
 
         return value, new_hidden
