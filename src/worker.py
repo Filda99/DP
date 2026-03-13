@@ -403,36 +403,70 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
                 ep_rollouts[a].append(step_results[a])
 
         # =======================================================================
-        # 7. COMPUTE DISCOUNTED RETURNS  (backward pass over the episode)
+        # 7. COMPUTE DISCOUNTED RETURNS (Generalized Advantage Estimation - GAE)
         # =======================================================================
-        # The discounted return G_t is defined recursively:
+        # WHAT IS GAE?
+        # The standard discounted return (Monte Carlo) has high variance because
+        # it sums up hundreds of noisy, delayed rewards. GAE solves this by mixing
+        # the real environmental rewards with the Critic's predictions (V(s)).
         #
-        #   G_t = r_t + gamma * G_{t+1}
-        #   G_T = r_T               (last step, no future)
+        # HOW IT WORKS:
+        # 1. Temporal Difference (TD) Error (delta):
+        #    delta_t = r_t + (gamma * V_{t+1}) - V_t
+        #    This asks: "How much better was the actual reward + next state
+        #    compared to what the critic expected for this current state?"
         #
-        # Worked example with gamma=0.99 and T=3:
-        #   step 3:  G_3 = r_3 = 1.0
-        #   step 2:  G_2 = r_2 + 0.99 * G_3 = 0.5 + 0.99*1.0 = 1.49
-        #   step 1:  G_1 = r_1 + 0.99 * G_2 = 0.0 + 0.99*1.49 = 1.475
-        #   step 0:  G_0 = r_0 + 0.99 * G_1 = 2.0 + 0.99*1.475 = 3.460
+        # 2. Advantage Accumulation:
+        #    A_t = delta_t + (gamma * lambda) * A_{t+1}
+        #    We accumulate these TD errors backwards. The lambda parameter (0 to 1)
+        #    controls the bias-variance tradeoff:
+        #      lambda = 1.0  -> Pure Monte Carlo (high variance, zero bias)
+        #      lambda = 0.0  -> Pure 1-step TD (low variance, high bias)
+        #      lambda = 0.95 -> Standard sweet spot used in PPO/MAPPO.
         #
-        # WHY DISCOUNT?
-        # Rewards far in the future are worth less than immediate rewards.
-        # A reward received 100 steps from now is worth gamma^100 = 0.99^100 ~ 0.37
-        # of its face value.  This models:
-        #   (a) Temporal preference for immediate rewards.
-        #   (b) Uncertainty: the further in the future, the less sure we are
-        #       that the action NOW caused that reward.
-        #   (c) Mathematical convenience: keeps G bounded even in infinite horizons.
+        # WHY BACKWARD?
+        # Just like standard returns, we need the future (A_{t+1} and V_{t+1}) 
+        # to compute the present (A_t).
         #
-        # WHY BACKWARD? We need G_{t+1} before we can compute G_t, so we must
-        # iterate from the END of the episode towards the beginning.
-        # disc_sum accumulates the running sum across the backward pass.
+        # THE PPO TRICK:
+        # The main process in train.py computes advantages simply as: 
+        #    Advantage = Returns - V_t
+        # To pass our computed GAE to train.py without changing its logic, we
+        # store a pseudo-return calculated as:
+        #    Return = GAE + V_t
+        # That way, when train.py runs its formula: (GAE + V_t) - V_t = GAE!
+        # This also serves as a stable TD(lambda) target for training the Critic.
+        
+        gamma = config.get('gamma', 0.99)
+        gae_lambda = config.get('gae_lambda', 0.95)
+
         for a in local_env.possible_agents:
-            disc_sum = 0.0
+            gae = 0.0
             for i in reversed(range(config['max_steps'])):
-                ep_rollouts[a][i]["ret"] = ep_rollouts[a][i]["reward"] + config['gamma'] * disc_sum
-                disc_sum = ep_rollouts[a][i]["ret"]
+                d = ep_rollouts[a][i]
+                
+                # Get the critic's value estimate for the current state.
+                # If the agent is dead, 'val' will not exist, so we default to 0.0.
+                # .item() extracts the float from the [1, 1] tensor.
+                val_t = d.get("val", torch.tensor([[0.0]])).item()
+                
+                # Get the critic's value estimate for the next state.
+                # For the very last step of the episode, there is no future, so V_{t+1} is 0.0.
+                if i == config['max_steps'] - 1:
+                    val_next = 0.0
+                else:
+                    val_next = ep_rollouts[a][i+1].get("val", torch.tensor([[0.0]])).item()
+                    
+                r_t = d["reward"]
+                
+                # 1. Calculate the TD error for this step
+                delta = r_t + gamma * val_next - val_t
+                
+                # 2. Accumulate the GAE backwards
+                gae = delta + gamma * gae_lambda * gae
+                
+                # 3. Store the pseudo-return (GAE + Value) for the main PPO loop
+                d["ret"] = gae + val_t
 
         # =======================================================================
         # 8. PACK EPISODE DATA INTO PRE-SPLIT BUFFERS
