@@ -44,7 +44,7 @@ def train():
                                #   0.9   = cares mostly about near-future rewards
     clip_coef     = 0.2        # PPO clipping range — prevents the new policy from
                                # deviating too far from the old one in a single update
-    update_epochs = 4          # how many gradient passes over each collected batch
+    update_epochs = 8          # how many gradient passes over each collected batch
     num_workers   = 20         # parallel CPU workers for data collection
     eps_per_worker = 3         # episodes collected by each worker per batch
     episodes_per_batch = num_workers * eps_per_worker   # = 60 episodes per batch
@@ -94,7 +94,7 @@ def train():
     # ScoutActor — processes local map, own state, neighbour states via CNN+LSTM
     if N_QUADS > 0:
         scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingQuad/05_TrainingFromZero_Added3Inputs/scout_ep4800.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingQuad/06_ContinueTraining_WithClipAndLoweredEntropy/scout_ep6000.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained scout model from {path_to_old_model}")
             scout_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -563,7 +563,7 @@ def train():
                     #     0.1 is the entropy coefficient -- a hyperparameter that
                     #     controls how much exploration is encouraged.
                     policy_loss = policy_loss_s + policy_loss_c
-                    loss        = policy_loss + 0.5 * value_loss - 0.005 * entropy_sum
+                    loss        = policy_loss + 0.5 * value_loss - 0.001 * entropy_sum
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # COMMUNICATION AUXILIARY LOSS  (protocol grounding)

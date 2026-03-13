@@ -879,7 +879,7 @@ class DroneFireEnv(ParallelEnv):
             reward += (avg_fire_intensity * 10)     # proportional intensity bonus
             # Speed penalty: slow down over fire for better observation
             speed = np.linalg.norm(drone.get_velocity())
-            reward -= speed * 0.001
+            reward -= speed * 0.05
 
         return reward
 
