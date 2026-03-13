@@ -124,6 +124,8 @@ def train():
     if scout_actor:     optim_groups.append({"params": scout_actor.parameters(),     "lr": lr_scout})
     if commander_actor: optim_groups.append({"params": commander_actor.parameters(), "lr": lr_commander})
     optimizer = optim.Adam(optim_groups)
+    num_batches = num_episodes // episodes_per_batch
+    scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.05, total_iters=num_batches)
 
     # ==========================================================================
     # 4. TRAINING HISTORY  (for plotting)
@@ -138,7 +140,6 @@ def train():
     os.makedirs("saved_models", exist_ok=True)
     best_avg_reward = -1000.0
     episodes_played = 0
-    num_batches = num_episodes // episodes_per_batch
 
     # ==========================================================================
     # 5. MAIN PARALLEL TRAINING LOOP
@@ -149,6 +150,10 @@ def train():
         for batch_idx in range(1, num_batches + 1):
             batch_start = time.time()
             rollout_start = time.time()
+
+            # Dynamic calculation of entropy_coef
+            # Start higher (0.01) for starting searching and go lineary down to almost zero 
+            current_entropy_coef = 0.01 - (0.01 - 0.0001) * (batch_idx / num_batches)
 
             # --------------------------------------------------------------
             # 5a. Reset per-batch aggregation buffers
@@ -527,8 +532,8 @@ def train():
                     value_loss = nn.MSELoss()(new_values, mb_cr_ret)
                     
                     # COMBINED LOSS (standard MAPPO objective)
-                    # L = L_policy + 0.5 * L_value - 0.01 * H
-                    loss += 0.5 * value_loss - 0.01 * entropy_sum
+                    # L = L_policy + 0.5 * L_value - <0.01; 0.0001> * H
+                    loss += 0.5 * value_loss - current_entropy_coef * entropy_sum
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # 4. BACKPROPAGATION
@@ -556,14 +561,15 @@ def train():
                 v_loss_history.append(epoch_vloss / num_minibatches)
                 entropy_history.append(epoch_entropy / num_minibatches)
 
+            scheduler.step()
             total_time = time.time() - batch_start
             
             # Získáme zprůměrované metriky z poslední epochy pro přesnější logování
             final_loss = loss_history[-1] if loss_history else 0.0
             final_vloss = v_loss_history[-1] if v_loss_history else 0.0
             final_entropy = entropy_history[-1] if entropy_history else 0.0
-
-            print(f"{datetime.datetime.now()} | ✅ PPO update complete. Loss: {final_loss:.4f} | Value Loss: {final_vloss:.4f} | Entropy: {final_entropy:.4f} | Total batch: {total_time:.1f}s (rollout: {rollout_time:.1f}s, PPO: {total_time - rollout_time:.1f}s)")
+            current_lr = scheduler.get_last_lr()[0]
+            print(f"{datetime.datetime.now()} | ✅ PPO update complete. Loss: {loss.item():.4f} | Entropy Coef: {current_entropy_coef:.4f} | LR: {current_lr:.6f} | Total batch: {total_time:.1f}s")
             
             if profiling:
                 _ppo_prof.disable()

@@ -170,6 +170,8 @@ class DroneFireEnv(ParallelEnv):
         # Used in step() to blend the previous action with the new one,
         # preventing jerky or oscillatory control signals.
         self.last_actions = {agent: np.zeros(4, dtype=np.float32) for agent in self.possible_agents}
+        # Raw action history to calculate Jerk rewards
+        self.last_raw_actions = {agent: np.zeros(4, dtype=np.float32) for agent in self.possible_agents}
 
     # =========================================================================
     # PettingZoo required property accessors
@@ -546,6 +548,7 @@ class DroneFireEnv(ParallelEnv):
         # agents are terminated during the episode.
         self.agents = self.possible_agents[:]
         self.last_actions = {agent: np.zeros(4, dtype=np.float32) for agent in self.possible_agents}
+        self.last_raw_actions = {agent: np.zeros(4, dtype=np.float32) for agent in self.possible_agents}
 
         # --- 2. Hard-restart the PyBullet engine ---
         # Calling stop_simulation() then creating a fresh Simulation() object
@@ -571,14 +574,14 @@ class DroneFireEnv(ParallelEnv):
         # added difficulty of searching a large arena.
         # After episode 2000 the fire spawns at a random position inside a
         # 60%-of-half-map radius, forcing generalisation across scenarios.
-        if epizode_number < 2000:
-            safe_zone = self.map_bounds * 0.1
-            self.fire_x = 0.0
-            self.fire_y = 0.0
-        else:
-            safe_zone = self.map_bounds * 0.6
-            self.fire_x = random.uniform(-safe_zone, safe_zone)
-            self.fire_y = random.uniform(-safe_zone, safe_zone)
+        # if epizode_number < 2000:
+        #     safe_zone = self.map_bounds * 0.1
+        #     self.fire_x = 0.0
+        #     self.fire_y = 0.0
+        # else:
+        safe_zone = self.map_bounds * 0.6
+        self.fire_x = random.uniform(-safe_zone, safe_zone)
+        self.fire_y = random.uniform(-safe_zone, safe_zone)
 
         self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
         self.current_episode = epizode_number
@@ -681,9 +684,15 @@ class DroneFireEnv(ParallelEnv):
         # jumping discontinuously, which would excite unphysical oscillations
         # in the rigid-body simulator.
         drone_controls = {}
+        jerk_penalties = {}
+
         for agent_name, action in actions.items():
             smooth_action = 0.8 * self.last_actions[agent_name] + 0.2 * action
             self.last_actions[agent_name] = smooth_action  # save for next step
+
+            jerk_diff = np.sum(np.abs(action - self.last_raw_actions[agent_name]))
+            jerk_penalties[agent_name] = jerk_diff * 0.02  # Weight of penalty
+            self.last_raw_actions[agent_name] = np.copy(action)
 
             if "fixed" in agent_name:
                 # Fixed-wing action mapping:
@@ -734,6 +743,7 @@ class DroneFireEnv(ParallelEnv):
                     
             else:
                 rewards[agent] += self._apply_physics_shaping(agent)
+                rewards[agent] -= jerk_penalties.get(agent, 0.0)
 
                 # Agent-type-specific mission reward
                 if "fixed" in agent:
