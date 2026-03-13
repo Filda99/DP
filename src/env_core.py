@@ -751,9 +751,10 @@ class DroneFireEnv(ParallelEnv):
                 else:
                     rewards[agent] += self._get_quad_reward(agent)
                 
-                if time_is_up:
-                    rewards[agent] += 10.0
+                # if time_is_up:
+                #     rewards[agent] += 10.0
                 
+                rewards[agent] *= 0.1  # scale down rewards to keep them in a reasonable range
                 rewards[agent] = np.clip(rewards[agent], -10.0, 10.0)
             
                 # If alive: store observation and keep the agent in the active list.

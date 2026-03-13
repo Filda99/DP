@@ -37,14 +37,14 @@ def train():
     # 1. HYPERPARAMETERS
     # ==========================================================================
     num_episodes = 25000       # total episodes to train for
-    max_steps    = 2500        # maximum timesteps per episode
+    max_steps    = 500         # maximum timesteps per episode
     learning_rate = 3e-4       # base learning rate (Adam)
     gamma         = 0.99       # discount factor — how much future rewards matter
                                #   0.99  = cares a lot about long-term rewards
                                #   0.9   = cares mostly about near-future rewards
     clip_coef     = 0.2        # PPO clipping range — prevents the new policy from
                                # deviating too far from the old one in a single update
-    update_epochs = 8          # how many gradient passes over each collected batch
+    update_epochs = 4          # how many gradient passes over each collected batch
     num_workers   = 20         # parallel CPU workers for data collection
     eps_per_worker = 3         # episodes collected by each worker per batch
     episodes_per_batch = num_workers * eps_per_worker   # = 60 episodes per batch
