@@ -75,7 +75,12 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
     # inherit the parent's globals or imported modules.  That is why every
     # import the worker needs must be repeated here, inside the function body,
     # not at the top of the file.
+    import os
+    os.environ["OMP_NUM_THREADS"] = "1"  # Force OpenMP to 1 thread
+    
     import torch
+    torch.set_num_threads(1)
+
     import numpy as np
     from env_core import DroneFireEnv
     from models import ScoutActor, CommanderActor, MAPPOCritic

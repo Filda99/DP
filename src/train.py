@@ -29,7 +29,7 @@ from worker import collect_episodes_per_worker
 #   └───────────────────────────────────────────────────────────────────────┘
 # ============================================================================
 def train():
-    print("🚀 Starting Heterogeneous MAPPO Training (PARALLEL)...")
+    print("Starting MAPPO Training...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     profiling = False  # Set to True to profile the PPO update (runs only for the first batch)
 
@@ -527,8 +527,8 @@ def train():
                     value_loss = nn.MSELoss()(new_values, mb_cr_ret)
                     
                     # COMBINED LOSS (standard MAPPO objective)
-                    # L = L_policy + 0.5 * L_value - 0.001 * H
-                    loss += 0.5 * value_loss - 0.001 * entropy_sum
+                    # L = L_policy + 0.5 * L_value - 0.01 * H
+                    loss += 0.5 * value_loss - 0.01 * entropy_sum
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # 4. BACKPROPAGATION
@@ -557,9 +557,13 @@ def train():
                 entropy_history.append(epoch_entropy / num_minibatches)
 
             total_time = time.time() - batch_start
+            
+            # Získáme zprůměrované metriky z poslední epochy pro přesnější logování
+            final_loss = loss_history[-1] if loss_history else 0.0
+            final_vloss = v_loss_history[-1] if v_loss_history else 0.0
+            final_entropy = entropy_history[-1] if entropy_history else 0.0
 
-
-            print(f"{datetime.datetime.now()} | ✅ PPO update complete. Loss: {loss.item():.4f} | Policy Loss: {policy_loss.item():.4f} | Value Loss: {value_loss.item():.4f} | Entropy: {entropy_sum.item():.4f} | Total batch: {total_time:.1f}s (rollout: {rollout_time:.1f}s, PPO: {total_time - rollout_time:.1f}s)")
+            print(f"{datetime.datetime.now()} | ✅ PPO update complete. Loss: {final_loss:.4f} | Value Loss: {final_vloss:.4f} | Entropy: {final_entropy:.4f} | Total batch: {total_time:.1f}s (rollout: {rollout_time:.1f}s, PPO: {total_time - rollout_time:.1f}s)")
             
             if profiling:
                 _ppo_prof.disable()
