@@ -36,7 +36,7 @@ def train():
     # ==========================================================================
     # 1. HYPERPARAMETERS
     # ==========================================================================
-    num_episodes = 25000       # total episodes to train for
+    num_episodes = 225000       # total episodes to train for
     max_steps    = 500         # maximum timesteps per episode
     learning_rate = 3e-4       # base learning rate (Adam)
     gamma         = 0.99       # discount factor — how much future rewards matter
@@ -51,20 +51,20 @@ def train():
 
     # Learning rates — training from scratch, all networks use full LR.
     # (Use a smaller lr_scout when loading a pre-trained scout for fine-tuning.)
-    lr_commander = 3e-4
+    lr_commander = 1e-4
     lr_critic    = 3e-4
-    lr_scout     = 3e-4
+    lr_scout     = 1e-5
 
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS
     # ==========================================================================
     N_QUADS = 1   # number of quadrotor scouts
-    N_FIXED = 0   # 0 = train scout only first; set to 1 once scout converges
+    N_FIXED = 1   # 0 = train scout only first; set to 1 once scout converges
 
     # Spin up a temporary environment just to read observation/state space sizes.
     # We cannot hard-code them because they depend on N_QUADS, N_FIXED, and
     # internal env logic.
-    temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=500.0, max_steps=max_steps)
+    temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=2000.0, max_steps=max_steps)
     if N_QUADS > 0:
         scout_self_dim = temp_env.observation_space("quad_0")["self_state"].shape[0]
     else:
@@ -83,7 +83,7 @@ def train():
 
     # Pack all dims into a config dict — this is what gets sent to each worker
     worker_config = {
-        'N_QUADS': N_QUADS, 'N_FIXED': N_FIXED, 'grid_size_m': 500.0, 'max_steps': max_steps,
+        'N_QUADS': N_QUADS, 'N_FIXED': N_FIXED, 'grid_size_m': 2000.0, 'max_steps': max_steps,
         'scout_self_dim': scout_self_dim, 'scout_msg_dim': scout_msg_dim, 'scout_hidden_dim': scout_hidden_dim,
         'fixed_self_dim': fixed_self_dim, 'global_state_dim': global_state_dim, 'gamma': gamma, 'gae_lambda': 0.95
     }
@@ -94,7 +94,7 @@ def train():
     # ScoutActor — processes local map, own state, neighbour states via CNN+LSTM
     if N_QUADS > 0:
         scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingQuad/none.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingQuad/08_QuadTrainedWithDemo/scout_ep24600.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained scout model from {path_to_old_model}")
             scout_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -139,7 +139,7 @@ def train():
 
     os.makedirs("saved_models", exist_ok=True)
     best_avg_reward = -1000.0
-    episodes_played = 0
+    episodes_played = 25000
 
     # ==========================================================================
     # 5. MAIN PARALLEL TRAINING LOOP
