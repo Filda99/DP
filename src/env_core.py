@@ -1149,4 +1149,8 @@ class DroneFireEnv(ParallelEnv):
             self.sim._destroy_drone(agent)
             return True, -50
 
+        max_ceiling = 350.0 if "fixed" in agent else 200.0
+        if pos[2] > max_ceiling:
+            return True, -50.0
+
         return False, 0.0
