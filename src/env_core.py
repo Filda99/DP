@@ -574,14 +574,14 @@ class DroneFireEnv(ParallelEnv):
         # added difficulty of searching a large arena.
         # After episode 2000 the fire spawns at a random position inside a
         # 60%-of-half-map radius, forcing generalisation across scenarios.
-        # if epizode_number < 2000:
-        #     safe_zone = self.map_bounds * 0.1
-        #     self.fire_x = 0.0
-        #     self.fire_y = 0.0
-        # else:
-        safe_zone = self.map_bounds * 0.6
-        self.fire_x = random.uniform(-safe_zone, safe_zone)
-        self.fire_y = random.uniform(-safe_zone, safe_zone)
+        if epizode_number < 1500:
+            safe_zone = self.map_bounds * 0.1
+            self.fire_x = 0.0
+            self.fire_y = 0.0
+        else:
+            safe_zone = self.map_bounds * 0.6
+            self.fire_x = random.uniform(-safe_zone, safe_zone)
+            self.fire_y = random.uniform(-safe_zone, safe_zone)
 
         self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
         self.current_episode = epizode_number
@@ -598,33 +598,59 @@ class DroneFireEnv(ParallelEnv):
         # centre (within 10 m) so the fire is always visible immediately.
         # After episode 300 the spawn radius expands to safe_zone, requiring
         # agents to actively navigate to find the fire.
-        if epizode_number < 300:
+        if epizode_number < 1500:
             start_x = random.uniform(-10, 10)
             start_y = random.uniform(-10, 10)
-            start_z = random.uniform(10.0, 40.0)
+            start_z = random.uniform(30.0, 70.0)
         else:
             start_x = random.uniform(-safe_zone, safe_zone)
             start_y = random.uniform(-safe_zone, safe_zone)
-            start_z = random.uniform(10.0, 40.0)
+            start_z = random.uniform(10.0, 70.0)
 
         # --- 4. Spawn every agent at its starting position ---
         for agent in self.agents:
             if "fixed" in agent:
-                # Fixed-wing spawns at an offset from the quad start to avoid
-                # mid-air collisions at the very beginning of the episode.
-                fw_start_x = float(np.clip(start_x + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
-                fw_start_y = float(np.clip(start_y + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
-                # Point the aircraft toward the map centre so it immediately
-                # starts flying inward rather than away from the action.
-                to_center_vec = -np.array([fw_start_x, fw_start_y])
-                yaw_to_center = np.arctan2(to_center_vec[1], to_center_vec[0])
+                # # Fixed-wing spawns at an offset from the quad start to avoid
+                # # mid-air collisions at the very beginning of the episode.
+                # fw_start_x = float(np.clip(start_x + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
+                # fw_start_y = float(np.clip(start_y + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
+                # # Point the aircraft toward the map centre so it immediately
+                # # starts flying inward rather than away from the action.
+                # to_center_vec = -np.array([fw_start_x, fw_start_y])
+                # yaw_to_center = np.arctan2(to_center_vec[1], to_center_vec[0])
 
-                self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=yaw_to_center)
+                # self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=yaw_to_center)
 
-                # Set a meaningful initial airspeed so the fixed-wing physics
-                # are in a stable flight regime from frame 0.
+                # # Set a meaningful initial airspeed so the fixed-wing physics
+                # # are in a stable flight regime from frame 0.
+                # drone = self.sim.drones[agent]
+                # drone.state_va = 15.0
+
+                if epizode_number < 1500:
+                    # Letadlo se spawne 150 metrů od ohně, v ideální výšce 60m
+                    angle = random.uniform(0, 2 * np.pi)
+                    dist = 100.0
+                    fw_start_x = float(np.clip(self.fire_x + np.cos(angle) * dist, -self.map_bounds * 0.8, self.map_bounds * 0.8))
+                    fw_start_y = float(np.clip(self.fire_y + np.sin(angle) * dist, -self.map_bounds * 0.8, self.map_bounds * 0.8))
+                    
+                    # Natočíme ho tak, aby letělo přímo na oheň
+                    to_fire_vec = -np.array([np.cos(angle), np.sin(angle)])
+                    yaw_to_fire = np.arctan2(to_fire_vec[1], to_fire_vec[0])
+                    
+                    self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=yaw_to_fire)
+                else:
+                    # Těžký režim (původní kód): Náhodný spawn dál od ohně
+                    fw_start_x = float(np.clip(start_x + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
+                    fw_start_y = float(np.clip(start_y + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
+                    to_center_vec = -np.array([fw_start_x, fw_start_y])
+                    yaw_to_center = np.arctan2(to_center_vec[1], to_center_vec[0])
+                    self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=yaw_to_center)
+
+                # Set a meaningful initial airspeed
                 drone = self.sim.drones[agent]
                 drone.state_va = 15.0
+
+
             else:
                 # Quads spawn at a lower altitude — they hover in place so
                 # altitude at start doesn't matter much.
@@ -765,7 +791,7 @@ class DroneFireEnv(ParallelEnv):
                 #     rewards[agent] += 10.0
                 
                 rewards[agent] *= 0.1  # scale down rewards to keep them in a reasonable range
-                rewards[agent] = np.clip(rewards[agent], -10.0, 10.0)
+                # rewards[agent] = np.clip(rewards[agent], -10.0, 10.0)
             
                 # If alive: store observation and keep the agent in the active list.
             # If dead: PettingZoo requires us to still return a final observation
@@ -814,6 +840,8 @@ class DroneFireEnv(ParallelEnv):
                 fire_bonus = eff * 0.2
                 rewards[f_agent] += fire_bonus
 
+                print(f"[{self.current_step}] 🔥 ZÁSAH OHNĚ! Efektivita: {eff:.2f} | Bonus: +{fire_bonus:.2f}")
+
                 # Scouts get 100% of the same bonus — they guided the commander
                 for q_agent in [a for a in self.quad_agents if a in rewards]:
                     rewards[q_agent] += fire_bonus
@@ -821,7 +849,26 @@ class DroneFireEnv(ParallelEnv):
             elif is_dropping:
                 # Waste penalty: aircraft is spraying but hitting nothing.
                 # This discourages random water release when not on target.
-                rewards[f_agent] += -0.05
+                # rewards[f_agent] += -0.05
+
+                # todo: prepsat komentare
+                if f_agent in self.sim.drones:
+                    f_pos = self.sim.drones[f_agent].get_position()
+                    dist_to_fire = np.linalg.norm([f_pos[0] - self.fire_x, f_pos[1] - self.fire_y])
+                    
+                    # Pokud letadlo vypouští vodu do 150m od ohně a je níž než 100m:
+                    if dist_to_fire < 150.0 and f_pos[2] < 100.0:
+                        rewards[f_agent] += 0.5  # Pochvala za snahu (správné místo a výška!)
+
+                        if random.random() < 0.01: 
+                            print(f"[{self.current_step}] 💧 Autopilot sype vodu! Výška: {f_pos[2]:.1f}m | Vzdálenost: {dist_to_fire:.1f}m")
+                    else:
+                        # Waste penalty: vypouští vodu naslepo nebo moc vysoko
+                        # rewards[f_agent] += -0.05
+                        pass
+
+        for agent in rewards:
+            rewards[agent] = np.clip(rewards[agent], -15.0, 15.0)
 
         return observations, rewards, terminations, truncations, infos
     
@@ -863,8 +910,14 @@ class DroneFireEnv(ParallelEnv):
         # --- Altitude limit penalty ---
         max_alt = 200.0 if "fixed" in agent else 150.0
         min_alt = 15.0 if "fixed" in agent else 35.0
-        if pos[2] > max_alt or pos[2] < min_alt:
+        if pos[2] > max_alt:
+            # Vypočítáme lineární trest podle výšky
+            alt_penalty = 0.1 * ((pos[2] - max_alt) / 10.0)
+            # OMEZENÍ: Trest nebude nikdy horší než -0.5 za jeden krok
+            reward -= min(alt_penalty, 0.5)
+        elif pos[2] < min_alt:
             reward -= 0.05
+       
 
         return reward
 

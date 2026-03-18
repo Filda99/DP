@@ -36,8 +36,8 @@ def train():
     # ==========================================================================
     # 1. HYPERPARAMETERS
     # ==========================================================================
-    num_episodes = 225000       # total episodes to train for
-    max_steps    = 500         # maximum timesteps per episode
+    num_episodes = 50000       # total episodes to train for
+    max_steps    = 2000         # maximum timesteps per episode
     learning_rate = 3e-4       # base learning rate (Adam)
     gamma         = 0.99       # discount factor — how much future rewards matter
                                #   0.99  = cares a lot about long-term rewards
@@ -106,7 +106,7 @@ def train():
     # CommanderActor — processes own state + scout messages (attention) via LSTM
     if N_FIXED > 0:
         commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/none.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/04_scoutFrom08_fwFrom0/commander_ep24600.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained commander model from {path_to_old_model}")
             commander_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -139,7 +139,7 @@ def train():
 
     os.makedirs("saved_models", exist_ok=True)
     best_avg_reward = -1000.0
-    episodes_played = 25000
+    episodes_played = 0
 
     # ==========================================================================
     # 5. MAIN PARALLEL TRAINING LOOP
@@ -153,7 +153,8 @@ def train():
 
             # Dynamic calculation of entropy_coef
             # Start higher (0.01) for starting searching and go lineary down to almost zero 
-            current_entropy_coef = 0.01 - (0.01 - 0.0001) * (batch_idx / num_batches)
+            progress = min(1.0, (batch_idx / (num_batches * 0.5))) 
+            current_entropy_coef = 0.01 - (0.01 - 0.0001) * progress
 
             # --------------------------------------------------------------
             # 5a. Reset per-batch aggregation buffers
@@ -478,7 +479,21 @@ def train():
                         # COMMUNICATION AUXILIARY LOSS (protocol grounding)
                         # OPTIMIZATION: We reuse s_msgs from the forward pass above!
                         # There is no need to run the actor a second time.
-                        target_protocol = mb_self.view(-1, mb_self.size(-1))[:, 12:15]
+                        # target_protocol = mb_self.view(-1, mb_self.size(-1))[:, 12:15]
+                        # generated_protocol = s_msgs.reshape(-1, s_msgs.size(-1))[:, 0:3]
+                        # comm_aux_loss = nn.MSELoss()(generated_protocol, target_protocol)
+
+                        # todo: prepsat komentare
+                        # COMMUNICATION AUXILIARY LOSS (protocol grounding)
+                        # ZMĚNA: Učíme skauta vysílat svou GPS pozici (indexy 0, 1) a intenzitu (14)
+                        mb_self_flat = mb_self.view(-1, mb_self.size(-1))
+                        # Poskládáme nový cíl: [norm_pos_x, norm_pos_y, dyn_intensity]
+                        target_protocol = torch.stack([
+                            mb_self_flat[:, 0],   # Skautovo X (kde jsem)
+                            mb_self_flat[:, 1],   # Skautovo Y (kde jsem)
+                            mb_self_flat[:, 14]   # Intenzita (jak moc to tu hoří)
+                        ], dim=1)
+                        
                         generated_protocol = s_msgs.reshape(-1, s_msgs.size(-1))[:, 0:3]
                         comm_aux_loss = nn.MSELoss()(generated_protocol, target_protocol)
                         

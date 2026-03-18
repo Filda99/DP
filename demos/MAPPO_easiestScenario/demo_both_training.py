@@ -32,8 +32,8 @@ from src.models import ScoutActor, CommanderActor
 # ============================================================
 # KONFIGURACE  — uprav cesty k modelům
 # ============================================================
-MODEL_SCOUT     = os.path.join(project_root, "saved_models", "scout_ep2400.pt")
-MODEL_COMMANDER = os.path.join(project_root, "saved_models", "commander_ep2400.pt")
+MODEL_SCOUT     = os.path.join(project_root, "saved_models", "scout_ep10800.pt")
+MODEL_COMMANDER = os.path.join(project_root, "saved_models", "commander_ep10800.pt")
 
 N_QUADS    = 1
 N_FIXED    = 1
@@ -41,7 +41,7 @@ MAX_STEPS  = 1000
 GRID_SIZE  = 2000.0    # musí odpovídat grid_size_m z worker_config v train.py
 GIF_EVERY  = 3        # každý N-tý krok uložit snímek (menší = hladší gif, větší soubor)
 GIF_FPS    = 15
-EPISODE_SEED = 42
+EPISODE_SEED = 12
 # ============================================================
 
 
@@ -183,7 +183,7 @@ def run_demo():
     # ── Prostředí ───────────────────────────────────────────────────────────
     env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED,
                        grid_size_m=GRID_SIZE, max_steps=MAX_STEPS)
-    obs, _ = env.reset(seed=EPISODE_SEED)
+    obs, _ = env.reset(seed=EPISODE_SEED, epizode_number=5000)
 
     b = env.map_bounds   # polovina velikosti mapy
 
