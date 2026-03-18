@@ -51,9 +51,9 @@ def train():
 
     # Learning rates — training from scratch, all networks use full LR.
     # (Use a smaller lr_scout when loading a pre-trained scout for fine-tuning.)
-    lr_commander = 1e-4
+    lr_commander = 3e-5
     lr_critic    = 3e-4
-    lr_scout     = 1e-5
+    lr_scout     = 1e-6
 
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS
@@ -94,7 +94,7 @@ def train():
     # ScoutActor — processes local map, own state, neighbour states via CNN+LSTM
     if N_QUADS > 0:
         scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingQuad/08_QuadTrainedWithDemo/scout_ep24600.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/05_scoutFromTrainingQuad_fwFrom04Here/scout_ep10800.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained scout model from {path_to_old_model}")
             scout_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -106,7 +106,7 @@ def train():
     # CommanderActor — processes own state + scout messages (attention) via LSTM
     if N_FIXED > 0:
         commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/04_scoutFrom08_fwFrom0/commander_ep24600.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/05_scoutFromTrainingQuad_fwFrom04Here/commander_ep10800.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained commander model from {path_to_old_model}")
             commander_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -548,7 +548,7 @@ def train():
                     
                     # COMBINED LOSS (standard MAPPO objective)
                     # L = L_policy + 0.5 * L_value - <0.01; 0.0001> * H
-                    loss += 0.5 * value_loss - current_entropy_coef * entropy_sum
+                    loss += 0.5 * value_loss - 0 * entropy_sum
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # 4. BACKPROPAGATION

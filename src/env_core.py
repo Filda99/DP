@@ -574,14 +574,14 @@ class DroneFireEnv(ParallelEnv):
         # added difficulty of searching a large arena.
         # After episode 2000 the fire spawns at a random position inside a
         # 60%-of-half-map radius, forcing generalisation across scenarios.
-        if epizode_number < 1500:
-            safe_zone = self.map_bounds * 0.1
-            self.fire_x = 0.0
-            self.fire_y = 0.0
-        else:
-            safe_zone = self.map_bounds * 0.6
-            self.fire_x = random.uniform(-safe_zone, safe_zone)
-            self.fire_y = random.uniform(-safe_zone, safe_zone)
+        # if epizode_number < 1500:
+        #     safe_zone = self.map_bounds * 0.1
+        #     self.fire_x = 0.0
+        #     self.fire_y = 0.0
+        # else:
+        safe_zone = self.map_bounds * 0.6
+        self.fire_x = random.uniform(-safe_zone, safe_zone)
+        self.fire_y = random.uniform(-safe_zone, safe_zone)
 
         self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
         self.current_episode = epizode_number
@@ -598,14 +598,14 @@ class DroneFireEnv(ParallelEnv):
         # centre (within 10 m) so the fire is always visible immediately.
         # After episode 300 the spawn radius expands to safe_zone, requiring
         # agents to actively navigate to find the fire.
-        if epizode_number < 1500:
-            start_x = random.uniform(-10, 10)
-            start_y = random.uniform(-10, 10)
-            start_z = random.uniform(30.0, 70.0)
-        else:
-            start_x = random.uniform(-safe_zone, safe_zone)
-            start_y = random.uniform(-safe_zone, safe_zone)
-            start_z = random.uniform(10.0, 70.0)
+        # if epizode_number < 1500:
+        #     start_x = random.uniform(-10, 10)
+        #     start_y = random.uniform(-10, 10)
+        #     start_z = random.uniform(30.0, 70.0)
+        # else:
+        start_x = random.uniform(-safe_zone, safe_zone)
+        start_y = random.uniform(-safe_zone, safe_zone)
+        start_z = random.uniform(10.0, 70.0)
 
         # --- 4. Spawn every agent at its starting position ---
         for agent in self.agents:
@@ -626,25 +626,25 @@ class DroneFireEnv(ParallelEnv):
                 # drone = self.sim.drones[agent]
                 # drone.state_va = 15.0
 
-                if epizode_number < 1500:
-                    # Letadlo se spawne 150 metrů od ohně, v ideální výšce 60m
-                    angle = random.uniform(0, 2 * np.pi)
-                    dist = 100.0
-                    fw_start_x = float(np.clip(self.fire_x + np.cos(angle) * dist, -self.map_bounds * 0.8, self.map_bounds * 0.8))
-                    fw_start_y = float(np.clip(self.fire_y + np.sin(angle) * dist, -self.map_bounds * 0.8, self.map_bounds * 0.8))
+                # if epizode_number < 1500:
+                #     # Letadlo se spawne 150 metrů od ohně, v ideální výšce 60m
+                #     angle = random.uniform(0, 2 * np.pi)
+                #     dist = 100.0
+                #     fw_start_x = float(np.clip(self.fire_x + np.cos(angle) * dist, -self.map_bounds * 0.8, self.map_bounds * 0.8))
+                #     fw_start_y = float(np.clip(self.fire_y + np.sin(angle) * dist, -self.map_bounds * 0.8, self.map_bounds * 0.8))
                     
-                    # Natočíme ho tak, aby letělo přímo na oheň
-                    to_fire_vec = -np.array([np.cos(angle), np.sin(angle)])
-                    yaw_to_fire = np.arctan2(to_fire_vec[1], to_fire_vec[0])
+                #     # Natočíme ho tak, aby letělo přímo na oheň
+                #     to_fire_vec = -np.array([np.cos(angle), np.sin(angle)])
+                #     yaw_to_fire = np.arctan2(to_fire_vec[1], to_fire_vec[0])
                     
-                    self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=yaw_to_fire)
-                else:
-                    # Těžký režim (původní kód): Náhodný spawn dál od ohně
-                    fw_start_x = float(np.clip(start_x + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
-                    fw_start_y = float(np.clip(start_y + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
-                    to_center_vec = -np.array([fw_start_x, fw_start_y])
-                    yaw_to_center = np.arctan2(to_center_vec[1], to_center_vec[0])
-                    self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=yaw_to_center)
+                #     self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=yaw_to_fire)
+                # else:
+                # Těžký režim (původní kód): Náhodný spawn dál od ohně
+                fw_start_x = float(np.clip(start_x + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
+                fw_start_y = float(np.clip(start_y + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
+                to_center_vec = -np.array([fw_start_x, fw_start_y])
+                yaw_to_center = np.arctan2(to_center_vec[1], to_center_vec[0])
+                self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=yaw_to_center)
 
                 # Set a meaningful initial airspeed
                 drone = self.sim.drones[agent]
@@ -776,14 +776,14 @@ class DroneFireEnv(ParallelEnv):
                     survival = self._get_fixed_reward_survival(agent)
                     mission = self._get_fixed_reward(agent)
                     # Curriculum blending: linearly increase mission weight with episode count
-                    ep = getattr(self, 'current_episode', 0)
-                    if ep < 500:
-                        rewards[agent] += survival
-                    elif ep < 2000:
-                        blend = (ep - 500) / 1500.0  # linearly 0.0 -> 1.0
-                        rewards[agent] += survival * (1.0 - blend * 0.7) + mission * (blend * 0.7)
-                    else:
-                        rewards[agent] += survival * 0.3 + mission * 0.7
+                    # ep = getattr(self, 'current_episode', 0)
+                    # if ep < 500:
+                    #     rewards[agent] += survival
+                    # elif ep < 2000:
+                    #     blend = (ep - 500) / 1500.0  # linearly 0.0 -> 1.0
+                    #     rewards[agent] += survival * (1.0 - blend * 0.7) + mission * (blend * 0.7)
+                    # else:
+                    rewards[agent] += survival * 0.3 + mission * 0.7
                 else:
                     rewards[agent] += self._get_quad_reward(agent)
                 
@@ -909,14 +909,14 @@ class DroneFireEnv(ParallelEnv):
 
         # --- Altitude limit penalty ---
         max_alt = 200.0 if "fixed" in agent else 150.0
-        min_alt = 15.0 if "fixed" in agent else 35.0
+        min_alt = 15.0 if "fixed" in agent else 20.0
         if pos[2] > max_alt:
             # Vypočítáme lineární trest podle výšky
             alt_penalty = 0.1 * ((pos[2] - max_alt) / 10.0)
             # OMEZENÍ: Trest nebude nikdy horší než -0.5 za jeden krok
             reward -= min(alt_penalty, 0.5)
         elif pos[2] < min_alt:
-            reward -= 0.05
+            reward -= 0.1
        
 
         return reward
