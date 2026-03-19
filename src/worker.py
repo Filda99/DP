@@ -364,14 +364,15 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
                         # # todo
                         # # === TVŮJ AUTOPILOT (ACTION FORCING) ===
                         # # Zjistíme, kde letadlo je vůči ohni
-                        # epizode_number = batch_start_idx + ep_offset
-                        # if epizode_number < 1500:
-                        #     f_pos = local_env.sim.drones[f].get_position()
-                        #     dist_to_fire = np.linalg.norm([f_pos[0] - local_env.fire_x, f_pos[1] - local_env.fire_y])
-                            
-                        #     # Pokud je blízko a nízko, "donutíme" ho zmáčknout spoušť
-                        #     if dist_to_fire < 80.0 and f_pos[2] < 500.0:
-                        #         act[0, 3] = 1.0  # 4. dimenze akce (index 3) je trigger ventilu
+                        epizode_number = batch_start_idx + ep_offset
+                        if epizode_number < 3000:  # jen pro prvních 3000 epizod
+                            f_pos = local_env.sim.drones[f].get_position()
+                            dist_to_fire = np.linalg.norm([f_pos[0] - local_env.fire_x, 
+                                                            f_pos[1] - local_env.fire_y])
+                            if dist_to_fire < 150.0 and f_pos[2] < 120.0:
+                                # 70% šance vynutit trigger — policy si musí pamatovat co udělal
+                                if np.random.random() < 0.7:
+                                    act[0, 3] = torch.tensor(1.0)
                         # =======================================
                     step_results[f] = {
                         "type": "commander",

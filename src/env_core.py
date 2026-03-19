@@ -765,7 +765,9 @@ class DroneFireEnv(ParallelEnv):
             
             if dead:
                 terminations[agent] = True
-                rewards[agent] += crash_reward
+                # rewards[agent] += crash_reward
+                scaled_penalty = crash_reward * (0.3 if "fixed" in agent else 0.1)
+                rewards[agent] += scaled_penalty  # = -15 nebo -5, ne -50
                     
             else:
                 rewards[agent] += self._apply_physics_shaping(agent)
@@ -841,14 +843,14 @@ class DroneFireEnv(ParallelEnv):
 
             if eff > 0.0:
                 # Extinguish bonus: proportional to how much fire was put out
-                fire_bonus = eff * 10
+                fire_bonus = eff * 10 * 0.3
                 rewards[f_agent] += fire_bonus
 
                 print(f"[{self.current_step}] 🔥 ZÁSAH OHNĚ! Efektivita: {eff:.2f} | Bonus: +{fire_bonus:.2f}")
 
                 # Scouts get 100% of the same bonus — they guided the commander
                 for q_agent in [a for a in self.quad_agents if a in rewards]:
-                    rewards[q_agent] += fire_bonus
+                    rewards[q_agent] += fire_bonus * 0.1
 
             elif is_dropping:
                 # Waste penalty: aircraft is spraying but hitting nothing.
@@ -872,7 +874,7 @@ class DroneFireEnv(ParallelEnv):
                         pass
 
         for agent in rewards:
-            rewards[agent] = np.clip(rewards[agent], -15.0, 15.0)
+            rewards[agent] = np.clip(rewards[agent], -15.0, 50.0)
 
         return observations, rewards, terminations, truncations, infos
     
@@ -1112,9 +1114,9 @@ class DroneFireEnv(ParallelEnv):
     
             # Přímý bonus za to že vůbec aktivuje water trigger když je nad ohněm
             dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
-            is_dropping = (self.last_actions.get(agent, np.zeros(4))[3] > 0)  # smooth action
-            if is_dropping and dist_to_fire < 200.0 and pos[2] < 120.0:
-                orbital += 0.5  # výrazný bonus za aktivaci triggeru na správném místě
+            is_dropping = (self.last_actions.get(agent, np.zeros(4))[3] > -0.5)  # smooth action
+            if is_dropping and dist_to_fire < 300.0 and pos[2] < 150.0:
+                orbital += 0.8  # výrazný bonus za aktivaci triggeru na správném místě
             
             return orbital
 

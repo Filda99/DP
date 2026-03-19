@@ -42,7 +42,7 @@ def train():
     gamma         = 0.99       # discount factor — how much future rewards matter
                                #   0.99  = cares a lot about long-term rewards
                                #   0.9   = cares mostly about near-future rewards
-    clip_coef     = 0.2        # PPO clipping range — prevents the new policy from
+    clip_coef     = 0.1        # PPO clipping range — prevents the new policy from
                                # deviating too far from the old one in a single update
     update_epochs = 4          # how many gradient passes over each collected batch
     num_workers   = 20         # parallel CPU workers for data collection
@@ -52,8 +52,8 @@ def train():
     # Learning rates — training from scratch, all networks use full LR.
     # (Use a smaller lr_scout when loading a pre-trained scout for fine-tuning.)
     lr_scout     = 0
-    lr_commander = 1e-4
-    lr_critic    = 3e-4
+    lr_commander = 3e-5
+    lr_critic    = 1e-4
 
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS
@@ -442,7 +442,7 @@ def train():
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # 1. SCOUT POLICY LOSS (PPO-clip objective)
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                    if scout_actor is not None:
+                    if scout_actor is not None and False: # todo
                         # Slice out this minibatch's sequences
                         mb_maps    = s_maps_seq[mb_inds]
                         mb_self    = s_self_seq[mb_inds]
@@ -522,7 +522,7 @@ def train():
                         pg2_c   = -mb_adv * torch.clamp(ratio_c, 1 - clip_coef, 1 + clip_coef)
                         policy_loss_c = torch.max(pg1_c, pg2_c).mean()
                         
-                        loss += policy_loss_c - 0.005 * dist.entropy().sum(1).mean()
+                        loss += policy_loss_c# - 0.02 * dist.entropy().sum(1).mean()
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # 3. CRITIC VALUE LOSS
@@ -561,7 +561,7 @@ def train():
                     optimizer.zero_grad()
                     loss.backward()
                     params = list(critic.parameters())
-                    if scout_actor:     params += list(scout_actor.parameters())
+                    # if scout_actor:     params += list(scout_actor.parameters())
                     if commander_actor: params += list(commander_actor.parameters())
                     nn.utils.clip_grad_norm_(params, max_norm=0.5)
                     optimizer.step()
