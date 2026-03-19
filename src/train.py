@@ -51,9 +51,9 @@ def train():
 
     # Learning rates — training from scratch, all networks use full LR.
     # (Use a smaller lr_scout when loading a pre-trained scout for fine-tuning.)
-    lr_commander = 3e-5
+    lr_scout     = 0
+    lr_commander = 1e-4
     lr_critic    = 3e-4
-    lr_scout     = 1e-6
 
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS
@@ -94,7 +94,7 @@ def train():
     # ScoutActor — processes local map, own state, neighbour states via CNN+LSTM
     if N_QUADS > 0:
         scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_ep4200.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_ep10200.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained scout model from {path_to_old_model}")
             scout_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -106,7 +106,7 @@ def train():
     # CommanderActor — processes own state + scout messages (attention) via LSTM
     if N_FIXED > 0:
         commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep4200.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep10200.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained commander model from {path_to_old_model}")
             commander_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -121,11 +121,11 @@ def train():
     # Adam optimiser with per-network learning rates
     # (using parameter groups so we can fine-tune scout at a lower LR)
     optim_groups = [{"params": critic.parameters(), "lr": lr_critic}]
-    if scout_actor:     optim_groups.append({"params": scout_actor.parameters(),     "lr": lr_scout})
+    # if scout_actor:     optim_groups.append({"params": scout_actor.parameters(),     "lr": lr_scout})
     if commander_actor: optim_groups.append({"params": commander_actor.parameters(), "lr": lr_commander})
     optimizer = optim.Adam(optim_groups)
     num_batches = num_episodes // episodes_per_batch
-    scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.05, total_iters=num_batches)
+    scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.1, total_iters=500)
 
     # ==========================================================================
     # 4. TRAINING HISTORY  (for plotting)
@@ -522,7 +522,7 @@ def train():
                         pg2_c   = -mb_adv * torch.clamp(ratio_c, 1 - clip_coef, 1 + clip_coef)
                         policy_loss_c = torch.max(pg1_c, pg2_c).mean()
                         
-                        loss += policy_loss_c
+                        loss += policy_loss_c - 0.005 * dist.entropy().sum(1).mean()
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # 3. CRITIC VALUE LOSS

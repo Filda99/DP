@@ -605,7 +605,7 @@ class DroneFireEnv(ParallelEnv):
         # else:
         start_x = random.uniform(-safe_zone, safe_zone)
         start_y = random.uniform(-safe_zone, safe_zone)
-        start_z = random.uniform(10.0, 70.0)
+        start_z = random.uniform(30.0, 70.0)
 
         # --- 4. Spawn every agent at its starting position ---
         for agent in self.agents:
@@ -790,8 +790,12 @@ class DroneFireEnv(ParallelEnv):
                 # if time_is_up:
                 #     rewards[agent] += 10.0
                 
-                rewards[agent] *= 0.1  # scale down rewards to keep them in a reasonable range
+                # rewards[agent] *= 0.1  # scale down rewards to keep them in a reasonable range
                 # rewards[agent] = np.clip(rewards[agent], -10.0, 10.0)
+                if "fixed" in agent:
+                    rewards[agent] *= 0.3  # commander dostane 3× silnější signal
+                else:
+                    rewards[agent] *= 0.1
             
                 # If alive: store observation and keep the agent in the active list.
             # If dead: PettingZoo requires us to still return a final observation
@@ -837,7 +841,7 @@ class DroneFireEnv(ParallelEnv):
 
             if eff > 0.0:
                 # Extinguish bonus: proportional to how much fire was put out
-                fire_bonus = eff * 0.2
+                fire_bonus = eff * 10
                 rewards[f_agent] += fire_bonus
 
                 print(f"[{self.current_step}] 🔥 ZÁSAH OHNĚ! Efektivita: {eff:.2f} | Bonus: +{fire_bonus:.2f}")
@@ -864,7 +868,7 @@ class DroneFireEnv(ParallelEnv):
                             print(f"[{self.current_step}] 💧 Autopilot sype vodu! Výška: {f_pos[2]:.1f}m | Vzdálenost: {dist_to_fire:.1f}m")
                     else:
                         # Waste penalty: vypouští vodu naslepo nebo moc vysoko
-                        # rewards[f_agent] += -0.05
+                        rewards[f_agent] += -0.05
                         pass
 
         for agent in rewards:
@@ -916,7 +920,7 @@ class DroneFireEnv(ParallelEnv):
             # OMEZENÍ: Trest nebude nikdy horší než -0.5 za jeden krok
             reward -= min(alt_penalty, 0.5)
         elif pos[2] < min_alt:
-            reward -= 0.1
+            reward -= 0.02
        
 
         return reward
@@ -1102,13 +1106,31 @@ class DroneFireEnv(ParallelEnv):
 
         # --- State 1: MISSION — orbit the fire and drop water ---
         if max_seen_intensity > 0.1:
-            return self._calculate_orbital_reward(pos, vel, best_fire_pos, ideal_radius=150.0)
+            # return self._calculate_orbital_reward(pos, vel, best_fire_pos, ideal_radius=150.0)
+            # todo comments
+            orbital = self._calculate_orbital_reward(pos, vel, best_fire_pos, ideal_radius=150.0)
+    
+            # Přímý bonus za to že vůbec aktivuje water trigger když je nad ohněm
+            dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
+            is_dropping = (self.last_actions.get(agent, np.zeros(4))[3] > 0)  # smooth action
+            if is_dropping and dist_to_fire < 200.0 and pos[2] < 120.0:
+                orbital += 0.5  # výrazný bonus za aktivaci triggeru na správném místě
+            
+            return orbital
 
         # --- State 2: REFILL — return to base when empty  ---
         elif water_lvl < 0.1:
-            if self.sim.environment.refill_zone:
-                target = self.sim.environment.refill_zone['position'][:2]
-                return self._calculate_orbital_reward(pos, vel, target, ideal_radius=80.0)
+            # if self.sim.environment.refill_zone:
+            #     return self._calculate_orbital_reward(pos, vel, target, ideal_radius=80.0)
+
+            # todo comments
+            target = self.sim.environment.refill_zone['position'][:2]
+            orbital = self._calculate_orbital_reward(pos, vel, target, ideal_radius=80.0)
+            # Bonus za to že se opravdu přiblíží k refill zóně
+            dist_to_refill = np.linalg.norm(pos[:2] - target)
+            if dist_to_refill < 100.0:
+                orbital += 0.3
+            return orbital
 
         # --- State 3: PATROL — loiter near the map centre while waiting ---
         else:
