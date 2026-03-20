@@ -77,8 +77,8 @@ class FixedWing(BaseDrone):
         
         # 1. Map Inputs to Control Commands (c superscripts in equations)
         roll_input = inputs[0]
-        throttle_input = inputs[1]
-        pitch_input = inputs[2]
+        pitch_input = inputs[1]
+        throttle_input = inputs[2]
         water_input = inputs[3] if len(inputs) > 3 else 0
 
         # Command: Roll (Phi_c)

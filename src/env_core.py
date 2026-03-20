@@ -762,7 +762,7 @@ class DroneFireEnv(ParallelEnv):
             dead, crash_reward = self._check_death(agent)
 
             rewards[agent] = 0
-            
+
             if dead:
                 terminations[agent] = True
                 # rewards[agent] += crash_reward
@@ -913,20 +913,16 @@ class DroneFireEnv(ParallelEnv):
             if dist_to_edge < threshold * 0.5:
                 reward -= 0.5
 
+            ideal_alt = 80.0  # cílová výška pro fixed-wing
+            alt_error = abs(pos[2] - ideal_alt)
+            reward -= 0.002 * alt_error  # -0.0 při 80m, -0.54 při 350m
+
         # --- Altitude limit penalty ---
         max_alt = 200.0 if "fixed" in agent else 150.0
         min_alt = 15.0 if "fixed" in agent else 20.0
         if pos[2] > max_alt:
             # Vypočítáme lineární trest podle výšky
-            alt_penalty = 0.1 * ((pos[2] - max_alt) / 10.0)
-            # OMEZENÍ: Trest nebude nikdy horší než -0.5 za jeden krok
-            reward -= alt_penalty
-        # elif pos[2] < min_alt:
-        #     reward -= 0.02
-        ideal_alt = 80.0  # cílová výška pro fixed-wing
-        alt_error = abs(pos[2] - ideal_alt)
-        reward -= 0.002 * alt_error  # -0.0 při 80m, -0.54 při 350m
-       
+            reward -= 0.1 * ((pos[2] - max_alt) / 10.0)
 
         return reward
 
