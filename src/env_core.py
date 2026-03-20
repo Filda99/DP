@@ -921,8 +921,11 @@ class DroneFireEnv(ParallelEnv):
             alt_penalty = 0.1 * ((pos[2] - max_alt) / 10.0)
             # OMEZENÍ: Trest nebude nikdy horší než -0.5 za jeden krok
             reward -= min(alt_penalty, 0.5)
-        elif pos[2] < min_alt:
-            reward -= 0.02
+        # elif pos[2] < min_alt:
+        #     reward -= 0.02
+        ideal_alt = 80.0  # cílová výška pro fixed-wing
+        alt_error = abs(pos[2] - ideal_alt)
+        reward -= 0.002 * alt_error  # -0.0 při 80m, -0.54 při 350m
        
 
         return reward
@@ -1163,18 +1166,22 @@ class DroneFireEnv(ParallelEnv):
              map_bounds.  The drone is explicitly destroyed to keep the
              simulation consistent, then True is returned.
         """
+
         if agent not in self.sim.drones:
             # Drone was removed by the physics engine (crash)
+            print(f"[DEATH-CRASH] {agent} physics crash")
             return True, -50
 
         pos = self.sim.drones[agent].get_position()
         if abs(pos[0]) > self.map_bounds or abs(pos[1]) > self.map_bounds:
             # Drone flew out of the allowed area — destroy it and penalise
+            print(f"[DEATH-BOUNDARY] {agent} pos=({pos[0]:.0f},{pos[1]:.0f})")
             self.sim._destroy_drone(agent)
             return True, -50
 
-        max_ceiling = 350.0 if "fixed" in agent else 200.0
+        max_ceiling = 400.0 if "fixed" in agent else 200.0
         if pos[2] > max_ceiling:
+            print(f"[DEATH-CEILING] {agent} výška={pos[2]:.1f}m")
             return True, -50.0
 
         return False, 0.0

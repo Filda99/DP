@@ -58,7 +58,7 @@ def train():
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS
     # ==========================================================================
-    N_QUADS = 1   # number of quadrotor scouts
+    N_QUADS = 0   # number of quadrotor scouts
     N_FIXED = 1   # 0 = train scout only first; set to 1 once scout converges
 
     # Spin up a temporary environment just to read observation/state space sizes.
@@ -106,7 +106,7 @@ def train():
     # CommanderActor — processes own state + scout messages (attention) via LSTM
     if N_FIXED > 0:
         commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep10200.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingFixed/02_50kSteps_stillTooManyCrashesAroundStep300/commander_ep49800.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained commander model from {path_to_old_model}")
             commander_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -371,7 +371,7 @@ def train():
             # Reshape advantages: [episodes, max_steps, num_agents]
             cr_adv_seq = cr_adv.view(episodes, max_steps, num_agents)
             s_adv_seq  = cr_adv_seq[:, :, 0]
-            c_adv_seq  = cr_adv_seq[:, :, 1] if num_agents > 1 else None
+            c_adv_seq  = cr_adv_seq[:, :, 1] if num_agents > 1 else cr_adv_seq[:, :, 0]
 
             # Reshape Scout tensors (if scouts exist)
             if scout_actor is not None:
