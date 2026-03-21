@@ -53,7 +53,7 @@ def train():
     # (Use a smaller lr_scout when loading a pre-trained scout for fine-tuning.)
     lr_scout     = 0
     lr_commander = 3e-5
-    lr_critic    = 1e-4
+    lr_critic    = 3e-5
 
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS
@@ -154,7 +154,8 @@ def train():
             # Dynamic calculation of entropy_coef
             # Start higher (0.01) for starting searching and go lineary down to almost zero 
             progress = min(1.0, (batch_idx / (num_batches * 0.5))) 
-            current_entropy_coef = 0.01 - (0.01 - 0.0001) * progress
+            # current_entropy_coef = 0.01 - (0.01 - 0.0001) * progress
+            current_entropy_coef = 0.001
 
             # --------------------------------------------------------------
             # 5a. Reset per-batch aggregation buffers

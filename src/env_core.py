@@ -28,6 +28,7 @@ import gymnasium as gym
 from pettingzoo.utils.env import ParallelEnv
 from src.simulation import Simulation
 import random
+from reward_config import QUAD, FIXED, SHARED
 
 class DroneFireEnv(ParallelEnv):
     # PettingZoo requires a metadata dict on every ParallelEnv subclass.
@@ -938,302 +939,237 @@ class DroneFireEnv(ParallelEnv):
     # =========================================================================
     # Private reward helper methods
     # =========================================================================
-
+    
     def _apply_physics_shaping(self, agent):
-        """Common physics-based shaping rewards applied to both agent types.
+        """Fyzikální shaping — společný pro oba agenty.
 
-        Returns a small scalar reward value combining:
-          - A survival bonus (tiny positive reward every step alive).
-          - A boundary proximity penalty (quadratic, activates near map edges).
-          - An altitude violation penalty (linear, for flying too high or low).
+        Obsahuje:
+          - Survival bonus za přežití kroku
+          - Boundary penalty (quadratická) za přiblížení k hranici mapy
+          - Altitude penalty za létání mimo ideální rozsah výšky
+            (spojitá penalizace, ne cliff — agent má čas reagovat)
         """
         drone = self.sim.drones[agent]
         pos = drone.get_position()
-        reward = 0.01  # small per-step survival bonus
+        reward = SHARED["survival_bonus"]
 
-        # --- Boundary proximity penalty ---
-        # As the agent approaches any map edge the penalty grows quadratically.
-        # Threshold is 25% of map_bounds/2 for fixed-wing (they need more room
-        # to turn) and 10% for quads (more manoeuvrable).
+        # --- Boundary penalty ---
         dist_boundaries = self._get_boundary_measurements(pos)
         dist_to_edge = min(dist_boundaries)
-        threshold = self.map_bounds / 2 * 0.25 if "fixed" in agent else self.map_bounds / 2 * 0.1
-        if dist_to_edge < threshold:
-            # (1 - d/T)^2 gives 0 at the threshold and 1 at d=0 (wall contact)
-            reward -= 0.3 * (1.0 - dist_to_edge / threshold)**2
 
-        # Stricter extra penalty for fixed-wing when very close to the edge
-        # (< 50% of threshold).  Fixed-wing needs a larger safety margin
-        # because it cannot stop or turn on the spot.
         if "fixed" in agent:
-            if dist_to_edge < threshold * 0.5:
-                reward -= 0.5
+            threshold = self.map_bounds / 2 * FIXED["boundary_threshold_frac"]
+        else:
+            threshold = self.map_bounds / 2 * QUAD["boundary_threshold_frac"]
 
-            # ideal_alt = 80.0  # cílová výška pro fixed-wing
-            # alt_error = abs(pos[2] - ideal_alt)
-            # reward -= 0.002 * alt_error  # -0.0 při 80m, -0.54 při 350m
+        if dist_to_edge < threshold:
+            reward -= SHARED["boundary_penalty"] * (1.0 - dist_to_edge / threshold) ** 2
 
-        # --- Altitude limit penalty ---
-        # max_alt = 200.0 if "fixed" in agent else 150.0
-        # min_alt = 15.0 if "fixed" in agent else 20.0
-        # if pos[2] > max_alt:
-        #     # Vypočítáme lineární trest podle výšky
-        #     reward -= 0.1 * ((pos[2] - max_alt) / 10.0)
+        if "fixed" in agent and dist_to_edge < threshold * FIXED["boundary_extra_frac"]:
+            reward -= SHARED["boundary_extra"]
+
+        # --- Altitude penalty (spojitá, bez capu) ---
+        if "fixed" in agent:
+            alt_min = FIXED["alt_ideal_min"]
+            alt_max = FIXED["alt_ideal_max"]
+            k       = FIXED["alt_penalty_k"]
+        else:
+            alt_min = QUAD["alt_ideal_min"]
+            alt_max = QUAD["alt_ideal_max"]
+            k       = QUAD["alt_penalty_k"]
+
+        if pos[2] > alt_max:
+            # Lineární penalizace nad ideálním stropem — bez capu!
+            reward -= k * (pos[2] - alt_max) / 10.0
+        elif pos[2] < alt_min:
+            # Penalizace pod ideálním minimem (updraft zóna / příliš nízko)
+            reward -= k * (alt_min - pos[2]) / 10.0
 
         return reward
 
     def _get_quad_reward(self, agent):
-        """Compute the mission reward for a quadrotor scout.
+        """Mission reward pro scouta — hover nad ohněm ve správné výšce.
 
-        The scout is rewarded for hovering over fire: the more intense the
-        fire beneath the drone (as seen in its local fire map), the higher
-        the reward.  A speed penalty discourages fast fly-overs and encourages
-        the drone to slow down and loiter above the fire so its observations
-        are more useful to the commander.
+        Scout dostává bonus za:
+          - Detekci ohně pod sebou (flat + proporcionální k intenzitě)
+          - Pomalý pohyb nad ohněm (lepší pozorování)
+
+        Scout je penalizován za:
+          - Létání pod alt_ideal_min (termální updraft zóna — nebezpečné)
+          - Létání nad alt_ideal_max (příliš daleko, snímek je méně přesný)
+          Tato altitude penalizace se aplikuje JEN při misi (nad ohněm),
+          aby nedošlo ke konfliktu s _apply_physics_shaping.
         """
         drone = self.sim.drones[agent]
         pos = drone.get_position()
-        reward = 0
+        reward = 0.0
 
-        # Use the same altitude-adaptive view as the sensor to compute reward
         reward_zone = self._extract_local_fire_map(pos)
         avg_fire_intensity = np.mean(reward_zone)
 
         if avg_fire_intensity > 0.001:
-            reward += 1                              # flat bonus for being above fire
-            reward += (avg_fire_intensity * 10)     # proportional intensity bonus
-            # Speed penalty: slow down over fire for better observation
+            reward += QUAD["fire_flat_bonus"]
+            reward += avg_fire_intensity * QUAD["fire_intensity_k"]
+
             speed = np.linalg.norm(drone.get_velocity())
-            reward -= speed * 0.05
+            reward -= speed * QUAD["fire_speed_pen"]
+
+            # Altitude shaping uvnitř mise — sweet spot 40-120m
+            alt_min = QUAD["alt_ideal_min"]
+            alt_max = QUAD["alt_ideal_max"]
+            k       = QUAD["alt_penalty_k"]
+            if pos[2] > alt_max:
+                reward -= k * (pos[2] - alt_max) / alt_max
+            elif pos[2] < alt_min:
+                reward -= k * (alt_min - pos[2]) / alt_min
 
         return reward
 
     def _get_fixed_reward_survival(self, agent):
-        """Compute the survival/flight-quality reward for a fixed-wing commander.
+        """Survival reward pro commandera — udržet se v bezpečné oblasti.
 
-        This reward function replaces the mission-specific reward during the
-        early curriculum phase (episodes < 500) to teach the aircraft to fly
-        stably before it learns the fire-fighting mission.
-
-        It has two components:
-          1. "Donut" bonus — a flat bonus for staying within 500 m of the map
-             centre.  Beyond that the bonus decays linearly to zero at the
-             map boundary, punishing extended excursions to the edge.
-          2. "Rubber band" (approach speed) — when the aircraft is outside
-             500 m, it receives a reward proportional to how fast it is flying
-             *toward* the centre.  This is computed via the dot product between
-             the velocity vector and the unit vector pointing to the centre:
-               approach_speed = v . (centre - pos) / |centre - pos|
-             Positive values mean the aircraft is heading inward (rewarded);
-             negative values mean it is heading outward (penalised).  This
-             reliably forces the policy to initiate a turn toward the centre
-             once it crosses the 500 m ring, which is otherwise hard to learn
-             purely from the boundary proximity penalty.
+        Dva komponenty:
+          1. Donut bonus — flat odměna za létání do 500m od středu mapy
+          2. Rubber band — tah zpět do středu když je agent venku
         """
         drone = self.sim.drones[agent]
         pos = drone.get_position()
         vel = drone.get_velocity()
-        reward = 0.1  # base per-step survival bonus
+        reward = FIXED["survival_base"]
 
         dist_from_center = np.linalg.norm(pos[:2])
 
-        # --- Component 1: Donut bonus ---
-        if dist_from_center < 500.0:
-            # Inside the safe ring: flat bonus regardless of exact position
-            reward += 0.15
+        if dist_from_center < FIXED["donut_radius"]:
+            reward += FIXED["donut_bonus"]
         else:
-            # Outside the safe ring: linearly decaying area bonus
-            reward += max(0.0, 0.15 * (1.0 - ((dist_from_center - 500.0) / (self.map_bounds - 500.0))))
+            # Lineárně klesající bonus mimo donut
+            decay = (dist_from_center - FIXED["donut_radius"]) / (self.map_bounds - FIXED["donut_radius"])
+            reward += max(0.0, FIXED["donut_bonus"] * (1.0 - decay))
 
-            # --- Component 2: Rubber-band approach reward ---
-            # Unit vector pointing from the aircraft toward the map centre [0, 0]
+            # Rubber band — odměna za letění zpět do středu
             vec_to_center = -pos[:2]
             dir_to_center = vec_to_center / dist_from_center
-            # Dot product: positive = aircraft velocity has a component toward centre
-            # Large positive approach_speed -> aircraft is actively flying back in
             approach_speed = np.dot(vel[:2], dir_to_center)
-            reward += approach_speed * 0.02
+            reward += approach_speed * FIXED["rubber_band_k"]
 
         return reward
 
-
     def _calculate_orbital_reward(self, pos, vel, target_pos, ideal_radius=150.0):
-        """Calculate reward for loitering / orbiting around a target point.
+        """Reward za kroužení kolem cíle — tři zóny.
 
-        The reward function divides the space around the target into three
-        concentric zones based on distance:
-
-        Zone 1 — Too close  (dist < 0.6 * ideal_radius)
-            The aircraft is inside the minimum turn radius.  For a fixed-wing
-            aircraft this means it cannot maintain a stable orbit and risks
-            flying directly over / into the target.  Penalised.
-
-        Zone 2 — Sweet spot  (0.6 * IR <= dist <= 1.5 * ideal_radius)
-            Ideal loiter ring.  The aircraft receives a base bonus (0.2) plus
-            a tangential-velocity bonus that encourages circular flight:
-              tangential_bonus = (1 - |radial_speed| / max_speed) * 0.05
-            When all velocity is tangential (radial_speed = 0), the tangential
-            bonus is maximised.  When the aircraft is flying directly toward or
-            away from the target (radial_speed = max_speed), the bonus is zero.
-
-        Zone 3 — Too far  (dist > 1.5 * ideal_radius)
-            The aircraft needs to navigate toward the target.  It is rewarded
-            proportional to its approach speed (dot product of velocity with the
-            unit vector toward the target) and a small proximity bonus.
-
-        Parameters
-        ----------
-        pos        : position of the aircraft (uses only x,y)
-        vel        : velocity of the aircraft (uses only x,y)
-        target_pos : 2-D (x, y) world-coordinate target
-        ideal_radius : desired loiter radius in metres
+        Zóna 1 (příliš blízko, dist < 0.6 × R): penalizace
+        Zóna 2 (sweet spot, 0.6R–1.5R):          bonus za tangenciální let
+        Zóna 3 (příliš daleko, dist > 1.5R):     reward za přibližování
         """
         vec_to_target = target_pos - pos[:2]
         dist = np.linalg.norm(vec_to_target)
 
         if dist < ideal_radius * 0.6:
-            # Zone 1: too close — inside minimum turn radius
             return -0.05
-        elif ideal_radius * 0.6 <= dist <= ideal_radius * 1.5:
-            # Zone 2: sweet spot — reward circular (tangential) flight
+
+        elif dist <= ideal_radius * 1.5:
             dir_to_target = vec_to_target / (dist + 1e-6)
-            radial_speed = np.dot(vel[:2], dir_to_target)  # positive = moving toward target
-            return 0.2 + (1.0 - abs(radial_speed / 20.0)) * 0.05
+            radial_speed = np.dot(vel[:2], dir_to_target)
+            tangential_bonus = (1.0 - abs(radial_speed) / 20.0) * 0.05
+            return 0.2 + tangential_bonus
+
         else:
-            # Zone 3: too far — reward approach toward target
             dir_to_target = vec_to_target / (dist + 1e-6)
             approach_speed = np.dot(vel[:2], dir_to_target)
-            return approach_speed * 0.05 + (1.0 - dist / self.grid_size_m) * 0.01
+            proximity_bonus = (1.0 - dist / self.grid_size_m) * 0.01
+            return approach_speed * 0.05 + proximity_bonus
 
     def _get_fixed_reward(self, agent):
-        """Compute the mission reward for a fixed-wing commander (3-state machine).
+        """Mission reward pro commandera — stavový automat (3 stavy).
 
-        The commander's mission reward is driven by a priority-ordered state
-        machine with three possible states:
-
-        State 1 — MISSION (highest priority)
-            A scout can currently see fire (max_seen_intensity > 0.1).
-            The commander should fly to the fire and orbit it so it can drop
-            water.  Reward: orbital reward around the best known fire position.
-
-        State 2 — REFILL
-            No scout can see fire AND water level is below 10%.
-            The commander must return to the refill zone to restock.
-            Reward: orbital reward around the refill zone position.
-
-        State 3 — PATROL (lowest priority / fallback)
-            No fire visible AND water level is adequate.
-            The commander patrols the map centre, staying ready for when a
-            scout discovers the fire.
-            Reward: orbital reward around the map centre [0, 0].
-
-        Note on ground-truth vs messages:
-            During training, the fire-seen signal is read *directly* from the
-            scout observations (ground truth).  In deployment the scouts' 3-
-            float messages would be used instead.  The policy must learn the
-            correct correlation between messages and fire location during
-            training, so that it can respond to messages in deployment.
+        Stav 1 MISSION:  Scout vidí oheň → kroužit kolem ohně a hasit
+        Stav 2 REFILL:   Žádný oheň + voda < 10 % → letět na refill
+        Stav 3 PATROL:   Čekat ve středu mapy
         """
         drone = self.sim.drones[agent]
         pos = drone.get_position()
         vel = drone.get_velocity()
         water_lvl = drone.current_water / drone.water_capacity if drone.water_capacity > 0 else 0.0
 
-        # --- Find the best fire signal reported by any scout ---
-        # We scan all quads and take the one with the highest dynamic intensity
-        # (self_state[14]) as the most authoritative fire report.
+        # --- Najdi nejlepší fire signal od scoutů ---
         max_seen_intensity = 0.0
         best_fire_pos = None
 
         for q_name in self.quad_agents:
             if q_name in self.sim.drones:
                 q_obs = self._get_quad_obs(q_name)
-                q_intensity = q_obs["self_state"][14]  # dynamic intensity index
+                q_intensity = q_obs["self_state"][14]
                 if q_intensity > max_seen_intensity:
                     max_seen_intensity = q_intensity
-                    # Reconstruct approximate world coordinates of the fire
-                    # centroid from the scout's normalised local-map centroid.
                     rel_x = q_obs["self_state"][12]
                     rel_y = q_obs["self_state"][13]
                     q_pos = self.sim.drones[q_name].get_position()
                     fov_size = max(10.0, q_pos[2] * 1.5)
-                    target_x = q_pos[0] + (rel_x * (fov_size / 2.0))
-                    target_y = q_pos[1] + (rel_y * (fov_size / 2.0))
-                    best_fire_pos = np.array([target_x, target_y])
+                    best_fire_pos = np.array([
+                        q_pos[0] + rel_x * (fov_size / 2.0),
+                        q_pos[1] + rel_y * (fov_size / 2.0)
+                    ])
 
-        # --- State 1: MISSION — orbit the fire and drop water ---
+        # --- Stav 1: MISSION ---
         if max_seen_intensity > 0.1:
-            # return self._calculate_orbital_reward(pos, vel, best_fire_pos, ideal_radius=150.0)
-            # todo comments
-            orbital = self._calculate_orbital_reward(pos, vel, best_fire_pos, ideal_radius=150.0)
-    
-            # Přímý bonus za to že vůbec aktivuje water trigger když je nad ohněm
+            orbital = self._calculate_orbital_reward(
+                pos, vel, best_fire_pos,
+                ideal_radius=FIXED["orbital_radius_fire"]
+            )
+            # Bonus za water trigger na správném místě a výšce
             dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
-            is_dropping = (self.last_actions.get(agent, np.zeros(4))[3] > 0.0)  # smooth action
-            if is_dropping and dist_to_fire < 300.0 and pos[2] < 150.0:
-                orbital += 0.8  # výrazný bonus za aktivaci triggeru na správném místě
-            
+            is_dropping = self.last_actions.get(agent, np.zeros(4))[3] > FIXED["water_trigger_thresh"]
+            if (is_dropping
+                    and dist_to_fire < FIXED["water_trigger_dist"]
+                    and pos[2] < FIXED["water_trigger_alt"]):
+                orbital += FIXED["water_trigger_bonus"]
             return orbital
 
-        # --- State 2: REFILL — return to base when empty  ---
+        # --- Stav 2: REFILL ---
         elif water_lvl < 0.1:
-            # if self.sim.environment.refill_zone:
-            #     return self._calculate_orbital_reward(pos, vel, target, ideal_radius=80.0)
+            if self.sim.environment.refill_zone:
+                target = np.array(self.sim.environment.refill_zone['position'][:2])
+                orbital = self._calculate_orbital_reward(
+                    pos, vel, target,
+                    ideal_radius=FIXED["orbital_radius_refill"]
+                )
+                dist_to_refill = np.linalg.norm(pos[:2] - target)
+                if dist_to_refill < FIXED["refill_proximity_dist"]:
+                    orbital += FIXED["refill_proximity_bonus"]
+                return orbital
 
-            # todo comments
-            target = self.sim.environment.refill_zone['position'][:2]
-            orbital = self._calculate_orbital_reward(pos, vel, target, ideal_radius=80.0)
-            # Bonus za to že se opravdu přiblíží k refill zóně
-            dist_to_refill = np.linalg.norm(pos[:2] - target)
-            if dist_to_refill < 100.0:
-                orbital += 0.3
-            return orbital
-
-        # --- State 3: PATROL — loiter near the map centre while waiting ---
-        else:
-            return self._calculate_orbital_reward(pos, vel, np.array([0.0, 0.0]), ideal_radius=300.0)
-
-        return 0.0
-
-
-    # =========================================================================
-    # Death detection
-    # =========================================================================
+        # --- Stav 3: PATROL ---
+        return self._calculate_orbital_reward(
+            pos, vel, np.array([0.0, 0.0]),
+            ideal_radius=FIXED["orbital_radius_patrol"]
+        )
 
     def _check_death(self, agent):
-        """Check whether an agent has crashed or left the map boundary.
+        """Detekce pádu agenta.
 
-        Returns
-        -------
-        dead : bool
-            True if the agent should be removed from the simulation.
-        penalty : float
-            A large negative reward applied at the moment of termination.
+        Tři příčiny:
+          1. Physics crash (PyBullet odstranil drone)
+          2. Boundary violation (vyletěl z mapy)
+          3. Ceiling violation (příliš vysoko)
 
-        Two termination conditions are checked:
-          1. Physics crash: the agent's drone is no longer in self.sim.drones.
-             This happens when the PyBullet physics backend detects a hard
-             collision and removes the drone object.
-          2. Map boundary violation: the agent's (x, y) position exceeds
-             map_bounds.  The drone is explicitly destroyed to keep the
-             simulation consistent, then True is returned.
+        Ceiling je nastaven výrazně nad ideální výškou aby agent měl
+        prostor reagovat — penalizace v _apply_physics_shaping ho tlačí
+        dolů dřív než dosáhne ceilingu.
         """
-
         if agent not in self.sim.drones:
-            # Drone was removed by the physics engine (crash)
-            # print(f"[DEATH-CRASH] {agent} physics crash")
-            return True, -50
+            print(f"[DEATH-CRASH] {agent} physics crash")
+            return True, SHARED["crash_penalty"]
 
         pos = self.sim.drones[agent].get_position()
-        if abs(pos[0]) > self.map_bounds or abs(pos[1]) > self.map_bounds:
-            # Drone flew out of the allowed area — destroy it and penalise
-            # print(f"[DEATH-BOUNDARY] {agent} pos=({pos[0]:.0f},{pos[1]:.0f})")
-            self.sim._destroy_drone(agent)
-            return True, -50
 
-        max_ceiling = 400.0 if "fixed" in agent else 200.0
+        if abs(pos[0]) > self.map_bounds or abs(pos[1]) > self.map_bounds:
+            print(f"[DEATH-BOUNDARY] {agent} pos=({pos[0]:.0f},{pos[1]:.0f})")
+            self.sim._destroy_drone(agent)
+            return True, SHARED["crash_penalty"]
+
+        max_ceiling = FIXED["alt_ceiling"] if "fixed" in agent else QUAD["alt_ceiling"]
         if pos[2] > max_ceiling:
-            # print(f"[DEATH-CEILING] {agent} výška={pos[2]:.1f}m")
-            return True, -50.0
+            print(f"[DEATH-CEILING] {agent} výška={pos[2]:.1f}m")
+            return True, SHARED["crash_penalty"]
 
         return False, 0.0
