@@ -94,7 +94,7 @@ def train():
     # ScoutActor — processes local map, own state, neighbour states via CNN+LSTM
     if N_QUADS > 0:
         scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_ep10200.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingQuad/08_QuadTrainedWithDemo/scout_ep24600.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained scout model from {path_to_old_model}")
             scout_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
