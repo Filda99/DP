@@ -522,7 +522,7 @@ def train():
                         pg2_c   = -mb_adv * torch.clamp(ratio_c, 1 - clip_coef, 1 + clip_coef)
                         policy_loss_c = torch.max(pg1_c, pg2_c).mean()
                         
-                        loss += policy_loss_c# - 0.02 * dist.entropy().sum(1).mean()
+                        loss += policy_loss_c - current_entropy_coef * dist.entropy().sum(1).mean()
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # 3. CRITIC VALUE LOSS
@@ -548,7 +548,7 @@ def train():
                     
                     # COMBINED LOSS (standard MAPPO objective)
                     # L = L_policy + 0.5 * L_value - <0.01; 0.0001> * H
-                    loss += 0.5 * value_loss - 0 * entropy_sum
+                    loss += 0.5 * value_loss
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # 4. BACKPROPAGATION

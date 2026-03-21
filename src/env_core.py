@@ -1169,7 +1169,7 @@ class DroneFireEnv(ParallelEnv):
     
             # Přímý bonus za to že vůbec aktivuje water trigger když je nad ohněm
             dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
-            is_dropping = (self.last_actions.get(agent, np.zeros(4))[3] > -0.5)  # smooth action
+            is_dropping = (self.last_actions.get(agent, np.zeros(4))[3] > 0.0)  # smooth action
             if is_dropping and dist_to_fire < 300.0 and pos[2] < 150.0:
                 orbital += 0.8  # výrazný bonus za aktivaci triggeru na správném místě
             
