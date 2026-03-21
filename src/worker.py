@@ -365,7 +365,7 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
                         # # === TVŮJ AUTOPILOT (ACTION FORCING) ===
                         # # Zjistíme, kde letadlo je vůči ohni
                         epizode_number = batch_start_idx + ep_offset
-                        if epizode_number < 3000:  # jen pro prvních 3000 epizod
+                        if epizode_number < 5000:
                             f_pos = local_env.sim.drones[f].get_position()
                             dist_to_fire = np.linalg.norm([f_pos[0] - local_env.fire_x, 
                                                             f_pos[1] - local_env.fire_y])

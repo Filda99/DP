@@ -53,7 +53,7 @@ def train():
     # (Use a smaller lr_scout when loading a pre-trained scout for fine-tuning.)
     lr_scout     = 0
     lr_commander = 3e-5
-    lr_critic    = 3e-5
+    lr_critic    = 1e-5
 
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS

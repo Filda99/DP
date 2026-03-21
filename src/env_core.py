@@ -791,7 +791,8 @@ class DroneFireEnv(ParallelEnv):
                     #     blend = (ep - 500) / 1500.0  # linearly 0.0 -> 1.0
                     #     rewards[agent] += survival * (1.0 - blend * 0.7) + mission * (blend * 0.7)
                     # else:
-                    rewards[agent] += survival * 0.3 + mission * 0.7
+                    rewards[agent] += survival * FIXED["survival_weight"] + mission * FIXED["mission_weight"]
+
                 else:
                     rewards[agent] += self._get_quad_reward(agent)
                 
