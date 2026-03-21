@@ -757,165 +757,64 @@ class DroneFireEnv(ParallelEnv):
         # MISSION, pak odkomentuj, tbd, todo
         #########################################
 
-        # for agent in self.agents:
-        #     # Default to alive / not truncated
-        #     terminations[agent] = False
-        #     truncations[agent] = time_is_up
-        #     infos[agent] = {}
-            
-        #     # Check whether the agent has crashed or left the map
-        #     dead, crash_reward = self._check_death(agent)
-
-        #     rewards[agent] = 0
-
-        #     if dead:
-        #         terminations[agent] = True
-        #         # rewards[agent] += crash_reward
-        #         scaled_penalty = crash_reward * (0.3 if "fixed" in agent else 0.1)
-        #         rewards[agent] += scaled_penalty  # = -15 nebo -5, ne -50
-                    
-        #     else:
-        #         rewards[agent] += self._apply_physics_shaping(agent)
-        #         rewards[agent] -= jerk_penalties.get(agent, 0.0)
-
-        #         # Agent-type-specific mission reward
-        #         if "fixed" in agent:
-        #             survival = self._get_fixed_reward_survival(agent)
-        #             mission = self._get_fixed_reward(agent)
-        #             # Curriculum blending: linearly increase mission weight with episode count
-        #             # ep = getattr(self, 'current_episode', 0)
-        #             # if ep < 500:
-        #             #     rewards[agent] += survival
-        #             # elif ep < 2000:
-        #             #     blend = (ep - 500) / 1500.0  # linearly 0.0 -> 1.0
-        #             #     rewards[agent] += survival * (1.0 - blend * 0.7) + mission * (blend * 0.7)
-        #             # else:
-        #             rewards[agent] += survival * 0.3 + mission * 0.7
-        #         else:
-        #             rewards[agent] += self._get_quad_reward(agent)
-                
-        #         # if time_is_up:
-        #         #     rewards[agent] += 10.0
-                
-        #         # rewards[agent] *= 0.1  # scale down rewards to keep them in a reasonable range
-        #         # rewards[agent] = np.clip(rewards[agent], -10.0, 10.0)
-        #         if "fixed" in agent:
-        #             rewards[agent] *= 0.3  # commander dostane 3× silnější signal
-        #         else:
-        #             rewards[agent] *= 0.1
-            
-        #         # If alive: store observation and keep the agent in the active list.
-        #     # If dead: PettingZoo requires us to still return a final observation
-        #     # for the terminated agent (the "terminal observation" convention).
-        #     if not terminations[agent]:
-        #         observations[agent] = self._get_obs(agent)
-        #         agents_to_keep.append(agent)
-        #     else:
-        #         # Terminal observation for a dead agent: all zeros.
-        #         # The policy will never act on this observation, but the API
-        #         # requires it so that train.py can safely access observations[agent]
-        #         # after step() returns without a KeyError.
-        #         if "fixed" in agent:
-        #             observations[agent] = {"self_state": np.zeros(self.fixed_self_dim, dtype=np.float32)}
-        #         else:
-        #             observations[agent] = {
-        #                 "local_map": np.zeros((1, 32, 32), dtype=np.float32),
-        #                 "self_state": np.zeros(self.quad_self_dim, dtype=np.float32),
-        #                 "neighbor_states": np.zeros((self.max_neighbors, 3), dtype=np.float32),
-        #                 "neighbor_mask": np.ones((self.max_neighbors,), dtype=bool)
-        #             }
-
-        # # --- 5. Update the alive-agents list ---
-        # self.agents = agents_to_keep
-
-        # # --- 6. Team reward: commander extinguishing -> bonus for everyone ---
-        # # When the commander successfully drops water on fire (eff > 0), both
-        # # the commander AND all scouts receive the bonus.  This is the key
-        # # credit-assignment mechanism: scouts only observe fire and generate
-        # # messages; they cannot extinguish directly.  By giving them a share of
-        # # the extinguish bonus we provide them with a training signal that their
-        # # messages (which guided the commander) were useful.
-        # for f_agent in self.fixed_agents:
-        #     # Safety check: skip agents that were terminated this step or
-        #     # never received an action (would cause KeyError otherwise).
-        #     if f_agent not in drone_controls or f_agent not in rewards:
-        #         continue
-
-        #     eff = self.sim.drone_extinguish_stats.get(f_agent, 0.0)
-
-        #     # Check if the commander is currently dropping water (trigger > 0.5)
-        #     is_dropping = drone_controls[f_agent][3] > 0.5
-
-        #     if eff > 0.0:
-        #         # Extinguish bonus: proportional to how much fire was put out
-        #         fire_bonus = eff * 10 * 0.3
-        #         rewards[f_agent] += fire_bonus
-
-        #         print(f"[{self.current_step}] 🔥 ZÁSAH OHNĚ! Efektivita: {eff:.2f} | Bonus: +{fire_bonus:.2f}")
-
-        #         # Scouts get 100% of the same bonus — they guided the commander
-        #         for q_agent in [a for a in self.quad_agents if a in rewards]:
-        #             rewards[q_agent] += fire_bonus * 0.1
-
-        #     elif is_dropping:
-        #         # Waste penalty: aircraft is spraying but hitting nothing.
-        #         # This discourages random water release when not on target.
-        #         # rewards[f_agent] += -0.05
-
-        #         # todo: prepsat komentare
-        #         if f_agent in self.sim.drones:
-        #             f_pos = self.sim.drones[f_agent].get_position()
-        #             dist_to_fire = np.linalg.norm([f_pos[0] - self.fire_x, f_pos[1] - self.fire_y])
-                    
-        #             # Pokud letadlo vypouští vodu do 150m od ohně a je níž než 100m:
-        #             if dist_to_fire < 150.0 and f_pos[2] < 100.0:
-        #                 rewards[f_agent] += 0.5  # Pochvala za snahu (správné místo a výška!)
-
-        #                 if random.random() < 0.01: 
-        #                     print(f"[{self.current_step}] 💧 Autopilot sype vodu! Výška: {f_pos[2]:.1f}m | Vzdálenost: {dist_to_fire:.1f}m")
-        #             else:
-        #                 # Waste penalty: vypouští vodu naslepo nebo moc vysoko
-        #                 rewards[f_agent] += -0.05
-        #                 pass
-
-        # for agent in rewards:
-        #     rewards[agent] = np.clip(rewards[agent], -15.0, 50.0)
-
-        # return observations, rewards, terminations, truncations, infos
-
-
-
-
         for agent in self.agents:
+            # Default to alive / not truncated
             terminations[agent] = False
             truncations[agent] = time_is_up
             infos[agent] = {}
             
+            # Check whether the agent has crashed or left the map
             dead, crash_reward = self._check_death(agent)
+
             rewards[agent] = 0
-            
+
             if dead:
                 terminations[agent] = True
+                # rewards[agent] += crash_reward
                 scaled_penalty = crash_reward * (0.3 if "fixed" in agent else 0.1)
-                rewards[agent] += scaled_penalty
+                rewards[agent] += scaled_penalty  # = -15 nebo -5, ne -50
+                    
             else:
                 rewards[agent] += self._apply_physics_shaping(agent)
                 rewards[agent] -= jerk_penalties.get(agent, 0.0)
-                
+
+                # Agent-type-specific mission reward
                 if "fixed" in agent:
-                    rewards[agent] += self._get_fixed_reward_survival(agent)
-                    rewards[agent] *= 0.3
+                    survival = self._get_fixed_reward_survival(agent)
+                    mission = self._get_fixed_reward(agent)
+                    # Curriculum blending: linearly increase mission weight with episode count
+                    # ep = getattr(self, 'current_episode', 0)
+                    # if ep < 500:
+                    #     rewards[agent] += survival
+                    # elif ep < 2000:
+                    #     blend = (ep - 500) / 1500.0  # linearly 0.0 -> 1.0
+                    #     rewards[agent] += survival * (1.0 - blend * 0.7) + mission * (blend * 0.7)
+                    # else:
+                    rewards[agent] += survival * 0.3 + mission * 0.7
                 else:
                     rewards[agent] += self._get_quad_reward(agent)
+                
+                # if time_is_up:
+                #     rewards[agent] += 10.0
+                
+                # rewards[agent] *= 0.1  # scale down rewards to keep them in a reasonable range
+                # rewards[agent] = np.clip(rewards[agent], -10.0, 10.0)
+                if "fixed" in agent:
+                    rewards[agent] *= 0.3  # commander dostane 3× silnější signal
+                else:
                     rewards[agent] *= 0.1
-
-            if time_is_up:
-                rewards[agent] += 10.0
-
+            
+                # If alive: store observation and keep the agent in the active list.
+            # If dead: PettingZoo requires us to still return a final observation
+            # for the terminated agent (the "terminal observation" convention).
             if not terminations[agent]:
                 observations[agent] = self._get_obs(agent)
                 agents_to_keep.append(agent)
             else:
+                # Terminal observation for a dead agent: all zeros.
+                # The policy will never act on this observation, but the API
+                # requires it so that train.py can safely access observations[agent]
+                # after step() returns without a KeyError.
                 if "fixed" in agent:
                     observations[agent] = {"self_state": np.zeros(self.fixed_self_dim, dtype=np.float32)}
                 else:
@@ -926,13 +825,114 @@ class DroneFireEnv(ParallelEnv):
                         "neighbor_mask": np.ones((self.max_neighbors,), dtype=bool)
                     }
 
+        # --- 5. Update the alive-agents list ---
         self.agents = agents_to_keep
 
-        # Team reward — přeskočíme úplně, žádný scout ani oheň
+        # --- 6. Team reward: commander extinguishing -> bonus for everyone ---
+        # When the commander successfully drops water on fire (eff > 0), both
+        # the commander AND all scouts receive the bonus.  This is the key
+        # credit-assignment mechanism: scouts only observe fire and generate
+        # messages; they cannot extinguish directly.  By giving them a share of
+        # the extinguish bonus we provide them with a training signal that their
+        # messages (which guided the commander) were useful.
+        for f_agent in self.fixed_agents:
+            # Safety check: skip agents that were terminated this step or
+            # never received an action (would cause KeyError otherwise).
+            if f_agent not in drone_controls or f_agent not in rewards:
+                continue
+
+            eff = self.sim.drone_extinguish_stats.get(f_agent, 0.0)
+
+            # Check if the commander is currently dropping water (trigger > 0.5)
+            is_dropping = drone_controls[f_agent][3] > 0.5
+
+            if eff > 0.0:
+                # Extinguish bonus: proportional to how much fire was put out
+                fire_bonus = eff * 10 * 0.3
+                rewards[f_agent] += fire_bonus
+
+                print(f"[{self.current_step}] 🔥 ZÁSAH OHNĚ! Efektivita: {eff:.2f} | Bonus: +{fire_bonus:.2f}")
+
+                # Scouts get 100% of the same bonus — they guided the commander
+                for q_agent in [a for a in self.quad_agents if a in rewards]:
+                    rewards[q_agent] += fire_bonus * 0.1
+
+            elif is_dropping:
+                # Waste penalty: aircraft is spraying but hitting nothing.
+                # This discourages random water release when not on target.
+                # rewards[f_agent] += -0.05
+
+                # todo: prepsat komentare
+                if f_agent in self.sim.drones:
+                    f_pos = self.sim.drones[f_agent].get_position()
+                    dist_to_fire = np.linalg.norm([f_pos[0] - self.fire_x, f_pos[1] - self.fire_y])
+                    
+                    # Pokud letadlo vypouští vodu do 150m od ohně a je níž než 100m:
+                    if dist_to_fire < 150.0 and f_pos[2] < 100.0:
+                        rewards[f_agent] += 0.5  # Pochvala za snahu (správné místo a výška!)
+
+                        if random.random() < 0.01: 
+                            print(f"[{self.current_step}] 💧 Autopilot sype vodu! Výška: {f_pos[2]:.1f}m | Vzdálenost: {dist_to_fire:.1f}m")
+                    else:
+                        # Waste penalty: vypouští vodu naslepo nebo moc vysoko
+                        rewards[f_agent] += -0.05
+                        pass
+
         for agent in rewards:
             rewards[agent] = np.clip(rewards[agent], -15.0, 50.0)
 
         return observations, rewards, terminations, truncations, infos
+
+
+
+
+        # for agent in self.agents:
+        #     terminations[agent] = False
+        #     truncations[agent] = time_is_up
+        #     infos[agent] = {}
+            
+        #     dead, crash_reward = self._check_death(agent)
+        #     rewards[agent] = 0
+            
+        #     if dead:
+        #         terminations[agent] = True
+        #         scaled_penalty = crash_reward * (0.3 if "fixed" in agent else 0.1)
+        #         rewards[agent] += scaled_penalty
+        #     else:
+        #         rewards[agent] += self._apply_physics_shaping(agent)
+        #         rewards[agent] -= jerk_penalties.get(agent, 0.0)
+                
+        #         if "fixed" in agent:
+        #             rewards[agent] += self._get_fixed_reward_survival(agent)
+        #             rewards[agent] *= 0.3
+        #         else:
+        #             rewards[agent] += self._get_quad_reward(agent)
+        #             rewards[agent] *= 0.1
+
+        #     if time_is_up:
+        #         rewards[agent] += 10.0
+
+        #     if not terminations[agent]:
+        #         observations[agent] = self._get_obs(agent)
+        #         agents_to_keep.append(agent)
+        #     else:
+        #         if "fixed" in agent:
+        #             observations[agent] = {"self_state": np.zeros(self.fixed_self_dim, dtype=np.float32)}
+        #         else:
+        #             observations[agent] = {
+        #                 "local_map": np.zeros((1, 32, 32), dtype=np.float32),
+        #                 "self_state": np.zeros(self.quad_self_dim, dtype=np.float32),
+        #                 "neighbor_states": np.zeros((self.max_neighbors, 3), dtype=np.float32),
+        #                 "neighbor_mask": np.ones((self.max_neighbors,), dtype=bool)
+        #             }
+
+        # self.agents = agents_to_keep
+
+        # # Team reward — přeskočíme úplně, žádný scout ani oheň
+        # for agent in rewards:
+        #     rewards[agent] = np.clip(rewards[agent], -15.0, 50.0)
+
+        # return observations, rewards, terminations, truncations, infos
     
 
     # =========================================================================
