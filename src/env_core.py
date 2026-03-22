@@ -802,9 +802,9 @@ class DroneFireEnv(ParallelEnv):
                 # rewards[agent] *= 0.1  # scale down rewards to keep them in a reasonable range
                 # rewards[agent] = np.clip(rewards[agent], -10.0, 10.0)
                 if "fixed" in agent:
-                    rewards[agent] *= 0.3  # commander dostane 3× silnější signal
+                    rewards[agent] *= FIXED["reward_scale"]  # commander dostane 3× silnější signal
                 else:
-                    rewards[agent] *= 0.1
+                    rewards[agent] *= QUAD["reward_scale"]
             
                 # If alive: store observation and keep the agent in the active list.
             # If dead: PettingZoo requires us to still return a final observation
@@ -881,7 +881,7 @@ class DroneFireEnv(ParallelEnv):
                         pass
 
         for agent in rewards:
-            rewards[agent] = np.clip(rewards[agent], -15.0, 50.0)
+            rewards[agent] = np.clip(rewards[agent], SHARED["reward_clip_min"], SHARED["reward_clip_max"])
 
         return observations, rewards, terminations, truncations, infos
 
@@ -974,17 +974,13 @@ class DroneFireEnv(ParallelEnv):
             alt_min = FIXED["alt_ideal_min"]
             alt_max = FIXED["alt_ideal_max"]
             k       = FIXED["alt_penalty_k"]
-        else:
-            alt_min = QUAD["alt_ideal_min"]
-            alt_max = QUAD["alt_ideal_max"]
-            k       = QUAD["alt_penalty_k"]
 
-        if pos[2] > alt_max:
-            # Lineární penalizace nad ideálním stropem — bez capu!
-            reward -= k * (pos[2] - alt_max) / 10.0
-        elif pos[2] < alt_min:
-            # Penalizace pod ideálním minimem (updraft zóna / příliš nízko)
-            reward -= k * (alt_min - pos[2]) / 10.0
+            if pos[2] > alt_max:
+                # Lineární penalizace nad ideálním stropem — bez capu!
+                reward -= k * (pos[2] - alt_max) / 10.0
+            elif pos[2] < alt_min:
+                # Penalizace pod ideálním minimem (updraft zóna / příliš nízko)
+                reward -= k * (alt_min - pos[2]) / 10.0
 
         return reward
 
@@ -1158,19 +1154,19 @@ class DroneFireEnv(ParallelEnv):
         dolů dřív než dosáhne ceilingu.
         """
         if agent not in self.sim.drones:
-            print(f"[DEATH-CRASH] {agent} physics crash")
+            # print(f"[DEATH-CRASH] {agent} physics crash")
             return True, SHARED["crash_penalty"]
 
         pos = self.sim.drones[agent].get_position()
 
         if abs(pos[0]) > self.map_bounds or abs(pos[1]) > self.map_bounds:
-            print(f"[DEATH-BOUNDARY] {agent} pos=({pos[0]:.0f},{pos[1]:.0f})")
+            # print(f"[DEATH-BOUNDARY] {agent} pos=({pos[0]:.0f},{pos[1]:.0f})")
             self.sim._destroy_drone(agent)
             return True, SHARED["crash_penalty"]
 
         max_ceiling = FIXED["alt_ceiling"] if "fixed" in agent else QUAD["alt_ceiling"]
         if pos[2] > max_ceiling:
-            print(f"[DEATH-CEILING] {agent} výška={pos[2]:.1f}m")
+            # print(f"[DEATH-CEILING] {agent} výška={pos[2]:.1f}m")
             return True, SHARED["crash_penalty"]
 
         return False, 0.0

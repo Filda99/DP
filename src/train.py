@@ -53,12 +53,12 @@ def train():
     # (Use a smaller lr_scout when loading a pre-trained scout for fine-tuning.)
     lr_scout     = 0
     lr_commander = 3e-5
-    lr_critic    = 1e-5
+    lr_critic    = 1e-4
 
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS
     # ==========================================================================
-    N_QUADS = 1   # number of quadrotor scouts
+    N_QUADS = 0   # number of quadrotor scouts
     N_FIXED = 1   # 0 = train scout only first; set to 1 once scout converges
 
     # Spin up a temporary environment just to read observation/state space sizes.
@@ -106,7 +106,7 @@ def train():
     # CommanderActor — processes own state + scout messages (attention) via LSTM
     if N_FIXED > 0:
         commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingFixed/03_reward120_seemsOK/commander_ep28800.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingFixed/03_reward120_seemsOK/commander_ep28800aa.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained commander model from {path_to_old_model}")
             commander_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -461,7 +461,7 @@ def train():
                         
                         flat_acts = mb_acts.view(-1, mb_acts.size(-1))
                         new_lp_s  = dist.log_prob(flat_acts).sum(1)
-                        entropy_sum += dist.entropy().sum(1).mean()
+                        # entropy_sum += dist.entropy().sum(1).mean()
                         
                         # IMPORTANCE SAMPLING RATIO: ratio = π_new(a|s) / π_old(a|s)
                         ratio_s = torch.exp(new_lp_s - mb_old_lp)
