@@ -1073,8 +1073,8 @@ class DroneFireEnv(ParallelEnv):
         else:
             dir_to_target = vec_to_target / (dist + 1e-6)
             approach_speed = np.dot(vel[:2], dir_to_target)
-            proximity_bonus = (1.0 - dist / self.grid_size_m) * 0.01
-            return approach_speed * 0.05 + proximity_bonus
+            proximity_bonus = (1.0 - dist / self.grid_size_m) * 0.05
+            return approach_speed * 0.15 + proximity_bonus
 
     def _get_fixed_reward(self, agent):
         """Mission reward pro commandera — stavový automat (3 stavy).

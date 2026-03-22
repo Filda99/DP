@@ -44,14 +44,14 @@ FIXED = {
     "alt_ideal_min":    40.0,   # pod touto výškou je nebezpečí srážky s terénem
     "alt_ideal_max":   150.0,   # nad touto výškou voda nedopadne přesně
     "alt_ceiling":     450.0,   # tvrdá smrt (zvýšeno z 400 — víc prostoru pro recovery)
-    "alt_penalty_k":     0.2,   # per 10m nad ideal_max (jemná penalizace)
+    "alt_penalty_k":     0.05,   # per 10m nad ideal_max (jemná penalizace)
     "alt_ideal_target":  80.0,  # středová cílová výška (pro tah)
     "alt_ideal_k":       0.002, # síla tahu k ideální výšce — zakomentováno, ale připraveno
 
     # Survival donut
     "donut_radius":    500.0,   # uvnitř = flat bonus
-    "donut_bonus":       0.2,  # bonus uvnitř donutu
-    "survival_base":     0.7,   # base survival bonus (navíc k SHARED)
+    "donut_bonus":       0.05,  # bonus uvnitř donutu
+    "survival_base":     0.3,   # base survival bonus (navíc k SHARED)
     "rubber_band_k":     0.02,  # síla tahu zpět do středu
 
     # Mise — orbital reward
@@ -70,8 +70,8 @@ FIXED = {
     "refill_proximity_bonus":   0.3,
 
     # Blending survival vs mission
-    "survival_weight":  0.4,    # bylo 0.3 — dáme commanderovi víc survival signálu
-    "mission_weight":   0.6,    # bylo 0.7
+    "survival_weight":  0.2,    # bylo 0.3 — dáme commanderovi víc survival signálu
+    "mission_weight":   0.8,    # bylo 0.7
 
     # Scale
     "reward_scale":     0.3,
