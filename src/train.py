@@ -94,7 +94,7 @@ def train():
     # ScoutActor — processes local map, own state, neighbour states via CNN+LSTM
     if N_QUADS > 0:
         scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_ep7200.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/06_fixedCyclingInTheMiddle/scout_ep7200.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained scout model from {path_to_old_model}")
             scout_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
@@ -106,7 +106,7 @@ def train():
     # CommanderActor — processes own state + scout messages (attention) via LSTM
     if N_FIXED > 0:
         commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep7200.pt"
+        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/06_fixedCyclingInTheMiddle/commander_ep7200.pt"
         if os.path.exists(path_to_old_model):
             print(f"📥 Loading pre-trained commander model from {path_to_old_model}")
             commander_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
