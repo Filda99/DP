@@ -353,6 +353,23 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
             msgs_t = torch.stack(scout_msgs_list, dim=1) if scout_msgs_list else d_msgs  # [1, N, msg_dim]
             msgs_m = torch.tensor(scout_mask_list).unsqueeze(0) if scout_mask_list else d_msg_m  # [1, N]
 
+
+            q_fire_pos = None  # inicializace — vždy definovaná
+            for q in local_env.quad_agents:
+                if q in local_env.agents and q in local_env.sim.drones:
+                    q_obs_raw = local_env._get_quad_obs(q)
+                    q_intensity = q_obs_raw["self_state"][14]
+                    if q_intensity > 0.1:
+                        rel_x = q_obs_raw["self_state"][12]
+                        rel_y = q_obs_raw["self_state"][13]
+                        q_pos_raw = local_env.sim.drones[q].get_position()
+                        fov = max(10.0, q_pos_raw[2] * 1.5)
+                        q_fire_pos = np.array([
+                            q_pos_raw[0] + rel_x * (fov / 2.0),
+                            q_pos_raw[1] + rel_y * (fov / 2.0)
+                        ])
+                        break  # stačí první scout který vidí oheň
+
             for f in local_env.fixed_agents:
                 if f in local_env.agents:                   # commander is alive
                     with torch.no_grad():
@@ -363,7 +380,6 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
 
                         # # todo
                         # # === TVŮJ AUTOPILOT (ACTION FORCING) ===
-                        # # Zjistíme, kde letadlo je vůči ohni
                         epizode_number = batch_start_idx + ep_offset
                         if epizode_number < 5000:
                             f_pos = local_env.sim.drones[f].get_position()
@@ -373,6 +389,22 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
                                 # 70% šance vynutit trigger — policy si musí pamatovat co udělal
                                 if np.random.random() < 0.7:
                                     act[0, 3] = torch.tensor(1.0)
+
+                        if epizode_number < 8000:
+                            if q_fire_pos is not None:
+                                f_pos = local_env.sim.drones[f].get_position()
+                                
+                                vec = np.array([q_fire_pos[0] - f_pos[0],
+                                                q_fire_pos[1] - f_pos[1]])
+                                dist_to_fire_ap = np.linalg.norm(vec)  # ← přejmenuj na dist_to_fire_ap
+                                
+                                if dist_to_fire_ap > 150.0:
+                                    if np.random.random() < 0.6:
+                                        angle = np.arctan2(vec[1], vec[0])
+                                        act[0, 0] = float(np.clip(angle / np.pi, -1, 1))
+                                else:
+                                    if np.random.random() < 0.7:
+                                        act[0, 3] = torch.tensor(1.0)
                         # =======================================
                     step_results[f] = {
                         "type": "commander",

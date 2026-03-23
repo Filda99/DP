@@ -67,7 +67,7 @@ FIXED = {
     "water_trigger_thresh":   0.0,   # threshold last_action[3] pro "is_dropping"
 
     # Refill bonus
-    "refill_state_bonus":  1.0,
+    "refill_state_bonus":  0.2,
     "refill_proximity_dist":  100.0,
     "refill_proximity_bonus":   0.3,
 

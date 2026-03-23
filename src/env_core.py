@@ -651,7 +651,6 @@ class DroneFireEnv(ParallelEnv):
                 drone = self.sim.drones[agent]
                 drone.state_va = 15.0
 
-
             else:
                 # Quads spawn at a lower altitude — they hover in place so
                 # altitude at start doesn't matter much.
@@ -800,6 +799,25 @@ class DroneFireEnv(ParallelEnv):
                     else:
                         # PATROL/SURVIVAL: pouze survival, žádná mise
                         rewards[agent] += self._get_fixed_reward_survival(agent)
+
+                    # todo smaz potom
+                    # phys = self._apply_physics_shaping(agent)
+    
+                    # if max_seen_intensity > 0.1:
+                    #     mode_r = self._get_fixed_reward(agent)
+                    #     mode = "MISSION"
+                    # elif water_lvl < 0.1:
+                    #     mode_r = self._get_fixed_reward(agent)
+                    #     mode = "REFILL"
+                    # else:
+                    #     mode_r = self._get_fixed_reward_survival(agent)
+                    #     mode = "PATROL"
+                    
+                    # total = (phys + mode_r) * FIXED["reward_scale"]
+                    
+                    # if self.current_step % 100 == 0:
+                    #     print(f"[{self.current_step}] {mode}: phys={phys:.3f} mode_r={mode_r:.3f} total={total:.3f}")
+                    # az sem
                 else:
                     rewards[agent] += self._get_quad_reward(agent)
                 
@@ -860,7 +878,7 @@ class DroneFireEnv(ParallelEnv):
                 fire_bonus = eff * 10 * 0.3
                 rewards[f_agent] += fire_bonus
 
-                print(f"[{self.current_step}] 🔥 ZÁSAH OHNĚ! Efektivita: {eff:.2f} | Bonus: +{fire_bonus:.2f}")
+                # print(f"[{self.current_step}] 🔥 ZÁSAH OHNĚ! Efektivita: {eff:.2f} | Bonus: +{fire_bonus:.2f}")
 
                 # Scouts get 100% of the same bonus — they guided the commander
                 for q_agent in [a for a in self.quad_agents if a in rewards]:
@@ -876,16 +894,15 @@ class DroneFireEnv(ParallelEnv):
                     f_pos = self.sim.drones[f_agent].get_position()
                     dist_to_fire = np.linalg.norm([f_pos[0] - self.fire_x, f_pos[1] - self.fire_y])
                     
-                    # Pokud letadlo vypouští vodu do 150m od ohně a je níž než 100m:
                     if dist_to_fire < 150.0 and f_pos[2] < 100.0:
-                        rewards[f_agent] += 0.5  # Pochvala za snahu (správné místo a výška!)
-
-                        if random.random() < 0.01: 
-                            print(f"[{self.current_step}] 💧 Autopilot sype vodu! Výška: {f_pos[2]:.1f}m | Vzdálenost: {dist_to_fire:.1f}m")
+                        rewards[f_agent] += 0.5  # správné místo
                     else:
-                        # Waste penalty: vypouští vodu naslepo nebo moc vysoko
-                        rewards[f_agent] += -0.05
-                        pass
+                        # Penalizace = kolik vody vyplýtval × konstanta
+                        drone = self.sim.drones[f_agent]
+                        WATER_FLOW_PER_STEP = 5.0 * (1.0/30.0) * 5  # = 0.833L
+                        water_wasted_frac = WATER_FLOW_PER_STEP / drone.water_capacity
+                        rewards[f_agent] -= water_wasted_frac * FIXED["refill_proximity_bonus"]
+                        # → stejná váha jako refill bonus ale záporná
 
         for agent in rewards:
             rewards[agent] = np.clip(rewards[agent], SHARED["reward_clip_min"], SHARED["reward_clip_max"])

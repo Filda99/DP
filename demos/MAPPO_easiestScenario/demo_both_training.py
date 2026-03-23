@@ -32,8 +32,8 @@ from src.models import ScoutActor, CommanderActor
 # ============================================================
 # KONFIGURACE  — uprav cesty k modelům
 # ============================================================
-MODEL_SCOUT     = os.path.join(project_root, "saved_models", "scout_ep6000.pt")
-MODEL_COMMANDER = os.path.join(project_root, "saved_models", "commander_ep6000.pt")
+MODEL_SCOUT     = os.path.join(project_root, "saved_models", "scout_ep12600.pt")
+MODEL_COMMANDER = os.path.join(project_root, "saved_models", "commander_ep12600.pt")
 
 N_QUADS    = 1
 N_FIXED    = 1
