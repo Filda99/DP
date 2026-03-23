@@ -51,10 +51,11 @@ FIXED = {
     # Survival donut
     "donut_radius":    500.0,   # uvnitř = flat bonus
     "donut_bonus":       0.05,  # bonus uvnitř donutu
-    "survival_base":     0.3,   # base survival bonus (navíc k SHARED)
+    "survival_base":     0.1,   # base survival bonus (navíc k SHARED)
     "rubber_band_k":     0.02,  # síla tahu zpět do středu
 
     # Mise — orbital reward
+    "mission_state_bonus": 1.5,
     "orbital_radius_fire":    80.0,   # ideální kroužení kolem ohně (bylo 150)
     "orbital_radius_refill":  80.0,   # ideální kroužení u refill zóny
     "orbital_radius_patrol": 300.0,   # patrol orbit kolem středu
@@ -66,6 +67,7 @@ FIXED = {
     "water_trigger_thresh":   0.0,   # threshold last_action[3] pro "is_dropping"
 
     # Refill bonus
+    "refill_state_bonus":  1.0,
     "refill_proximity_dist":  100.0,
     "refill_proximity_bonus":   0.3,
 

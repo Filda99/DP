@@ -781,18 +781,25 @@ class DroneFireEnv(ParallelEnv):
 
                 # Agent-type-specific mission reward
                 if "fixed" in agent:
-                    survival = self._get_fixed_reward_survival(agent)
-                    mission = self._get_fixed_reward(agent)
-                    # Curriculum blending: linearly increase mission weight with episode count
-                    # ep = getattr(self, 'current_episode', 0)
-                    # if ep < 500:
-                    #     rewards[agent] += survival
-                    # elif ep < 2000:
-                    #     blend = (ep - 500) / 1500.0  # linearly 0.0 -> 1.0
-                    #     rewards[agent] += survival * (1.0 - blend * 0.7) + mission * (blend * 0.7)
-                    # else:
-                    rewards[agent] += survival * FIXED["survival_weight"] + mission * FIXED["mission_weight"]
+                    # Zjisti stav — stejná logika jako v _get_fixed_reward
+                    max_seen_intensity = 0.0
+                    for q_name in self.quad_agents:
+                        if q_name in self.sim.drones:
+                            q_obs = self._get_quad_obs(q_name)
+                            if q_obs["self_state"][14] > max_seen_intensity:
+                                max_seen_intensity = q_obs["self_state"][14]
+                    
+                    water_lvl = self.sim.drones[agent].current_water / self.sim.drones[agent].water_capacity
 
+                    if max_seen_intensity > 0.1:
+                        # MISSION: pouze mission reward, žádný survival
+                        rewards[agent] += self._get_fixed_reward(agent)
+                    elif water_lvl < 0.1:
+                        # REFILL: pouze mission reward (refill stav)
+                        rewards[agent] += self._get_fixed_reward(agent)
+                    else:
+                        # PATROL/SURVIVAL: pouze survival, žádná mise
+                        rewards[agent] += self._get_fixed_reward_survival(agent)
                 else:
                     rewards[agent] += self._get_quad_reward(agent)
                 
@@ -1113,6 +1120,7 @@ class DroneFireEnv(ParallelEnv):
                 pos, vel, best_fire_pos,
                 ideal_radius=FIXED["orbital_radius_fire"]
             )
+            orbital += FIXED["mission_state_bonus"] 
             # Bonus za water trigger na správném místě a výšce
             dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
             is_dropping = self.last_actions.get(agent, np.zeros(4))[3] > FIXED["water_trigger_thresh"]
@@ -1130,6 +1138,7 @@ class DroneFireEnv(ParallelEnv):
                     pos, vel, target,
                     ideal_radius=FIXED["orbital_radius_refill"]
                 )
+                orbital += FIXED["refill_state_bonus"]
                 dist_to_refill = np.linalg.norm(pos[:2] - target)
                 if dist_to_refill < FIXED["refill_proximity_dist"]:
                     orbital += FIXED["refill_proximity_bonus"]
