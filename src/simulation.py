@@ -76,7 +76,7 @@ class Simulation:
         self.drone_extinguish_stats = {} 
         
         # Setup file logging
-        self._setup_logging(log_file)
+        # self._setup_logging(log_file)
     
     def _setup_logging(self, log_file):
         """Setup file logging for simulation events."""
@@ -105,7 +105,7 @@ class Simulation:
         if self.physics_client is not None:
             p.disconnect()
             self.physics_client = None
-        self._save_log()
+        # self._save_log()
         # print("✅ Simulation stopped")
     
     def _log_event(self, event_type, data):
@@ -485,8 +485,9 @@ class Simulation:
                     d_pos = drone.get_position()
                     z_pos = zone['position']
                     
-                    # Quick calculation of squared distance
-                    dist_sq = (d_pos[0]-z_pos[0])**2 + (d_pos[1]-z_pos[1])**2 + (d_pos[2]-z_pos[2])**2
+                    # 2D (XY) distance only — zone is at z=0 but FW flies at 40–150 m,
+                    # so including the z-component would make the radius impossible to hit.
+                    dist_sq = (d_pos[0]-z_pos[0])**2 + (d_pos[1]-z_pos[1])**2
                     
                     if dist_sq < zone['radius_sq']:
                         drone.refill_tank()

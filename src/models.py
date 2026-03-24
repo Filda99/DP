@@ -438,7 +438,8 @@ class CommanderActor(nn.Module):
         # gradient flow regardless of the raw parameter value.
         # Scaling context_vector by this gate lets the network learn whether
         # listening to scouts is beneficial for this particular task.
-        gate     = torch.sigmoid(self.comm_alpha)
+        # gate     = torch.sigmoid(self.comm_alpha)
+        gate = 1.0
         combined = torch.cat([self_feat, gate * context_vector], dim=1)  # (B*S, 128)
         combined = self.layer_norm(combined)
 

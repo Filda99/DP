@@ -575,14 +575,14 @@ class DroneFireEnv(ParallelEnv):
         # added difficulty of searching a large arena.
         # After episode 2000 the fire spawns at a random position inside a
         # 60%-of-half-map radius, forcing generalisation across scenarios.
-        # if epizode_number < 1500:
-        #     safe_zone = self.map_bounds * 0.1
-        #     self.fire_x = 0.0
-        #     self.fire_y = 0.0
-        # else:
-        safe_zone = self.map_bounds * 0.6
-        self.fire_x = random.uniform(-safe_zone, safe_zone)
-        self.fire_y = random.uniform(-safe_zone, safe_zone)
+        if epizode_number < 1500:
+            safe_zone = self.map_bounds * 0.1
+            self.fire_x = 0.0
+            self.fire_y = 0.0
+        else:
+            safe_zone = self.map_bounds * 0.6
+            self.fire_x = random.uniform(-safe_zone, safe_zone)
+            self.fire_y = random.uniform(-safe_zone, safe_zone)
 
         self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
         self.current_episode = epizode_number
@@ -790,11 +790,11 @@ class DroneFireEnv(ParallelEnv):
                     
                     water_lvl = self.sim.drones[agent].current_water / self.sim.drones[agent].water_capacity
 
-                    if max_seen_intensity > 0.1:
-                        # MISSION: pouze mission reward, žádný survival
-                        rewards[agent] += self._get_fixed_reward(agent)
-                    elif water_lvl < 0.1:
+                    if water_lvl < 0.1:
                         # REFILL: pouze mission reward (refill stav)
+                        rewards[agent] += self._get_fixed_reward(agent)
+                    elif max_seen_intensity > 0.1:
+                        # MISSION: pouze mission reward, žádný survival
                         rewards[agent] += self._get_fixed_reward(agent)
                     else:
                         # PATROL/SURVIVAL: pouze survival, žádná mise
@@ -875,7 +875,7 @@ class DroneFireEnv(ParallelEnv):
 
             if eff > 0.0:
                 # Extinguish bonus: proportional to how much fire was put out
-                fire_bonus = eff * 10 * 0.3
+                fire_bonus = eff * 100 * 0.3
                 rewards[f_agent] += fire_bonus
 
                 # print(f"[{self.current_step}] 🔥 ZÁSAH OHNĚ! Efektivita: {eff:.2f} | Bonus: +{fire_bonus:.2f}")
@@ -897,12 +897,15 @@ class DroneFireEnv(ParallelEnv):
                     if dist_to_fire < 150.0 and f_pos[2] < 100.0:
                         rewards[f_agent] += 0.5  # správné místo
                     else:
-                        # Penalizace = kolik vody vyplýtval × konstanta
                         drone = self.sim.drones[f_agent]
-                        WATER_FLOW_PER_STEP = 5.0 * (1.0/30.0) * 5  # = 0.833L
+                        WATER_FLOW_PER_STEP = 5.0 * (1.0/30.0) * 5  # cca 0.833L
                         water_wasted_frac = WATER_FLOW_PER_STEP / drone.water_capacity
-                        rewards[f_agent] -= water_wasted_frac * FIXED["refill_proximity_bonus"]
-                        # → stejná váha jako refill bonus ale záporná
+                        
+                        # Penalizace se násobí vzdáleností: čím dál od ohně sypeš, tím víc to bolí
+                        dist_factor = max(1.0, dist_to_fire / 200.0)
+                        penalty = water_wasted_frac * FIXED["water_waste_penalty"] * dist_factor
+                        
+                        rewards[f_agent] -= penalty
 
         for agent in rewards:
             rewards[agent] = np.clip(rewards[agent], SHARED["reward_clip_min"], SHARED["reward_clip_max"])
@@ -1133,18 +1136,37 @@ class DroneFireEnv(ParallelEnv):
 
         # --- Stav 1: MISSION ---
         if max_seen_intensity > 0.1:
-            orbital = self._calculate_orbital_reward(
-                pos, vel, best_fire_pos,
-                ideal_radius=FIXED["orbital_radius_fire"]
-            )
-            orbital += FIXED["mission_state_bonus"] 
-            # Bonus za water trigger na správném místě a výšce
+            # orbital = self._calculate_orbital_reward(
+            #     pos, vel, best_fire_pos,
+            #     ideal_radius=FIXED["orbital_radius_fire"]
+            # )
+
+            # # orbital += FIXED["mission_state_bonus"] 
+            # dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
+            # proximity_bonus = max(0, 1.0 - dist_to_fire / 500.0) * FIXED["mission_state_bonus"]
+            # orbital += proximity_bonus
+
+            # # Bonus za water trigger na správném místě a výšce
+            # dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
+            # is_dropping = self.last_actions.get(agent, np.zeros(4))[3] > FIXED["water_trigger_thresh"]
+            # if (is_dropping
+            #         and dist_to_fire < FIXED["water_trigger_dist"]
+            #         and pos[2] < FIXED["water_trigger_alt"]):
+            #     orbital += FIXED["water_trigger_bonus"]
+            # return orbital
             dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
-            is_dropping = self.last_actions.get(agent, np.zeros(4))[3] > FIXED["water_trigger_thresh"]
-            if (is_dropping
-                    and dist_to_fire < FIXED["water_trigger_dist"]
-                    and pos[2] < FIXED["water_trigger_alt"]):
-                orbital += FIXED["water_trigger_bonus"]
+    
+            # Bonus za stav úplně zrušíme nebo drasticky zmenšíme
+            # Místo toho dáme "přibližovací" bonus, který zmizí, jakmile je u ohně
+            if dist_to_fire > 200:
+                # Čím blíž letí, tím víc dostává, ale max 0.5 (místo 1.5)
+                mission_bonus = 0.5 * (1.0 - dist_to_fire / 1000.0)
+            else:
+                # Jakmile je blíž než 200m, nedostává za "přítomnost" NIC.
+                # Teď musí začít hasit, aby dostal body.
+                mission_bonus = 0.0
+
+            orbital = mission_bonus
             return orbital
 
         # --- Stav 2: REFILL ---

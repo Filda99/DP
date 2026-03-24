@@ -121,7 +121,7 @@ class BaseDrone(ABC):
         """Refills the water tank to maximum capacity."""
         if self.current_water < self.water_capacity:
             self.current_water = self.water_capacity
-            print(f"{self.drone_id}: Tank refilled to {self.water_capacity}L")
+            # print(f"{self.drone_id}: Tank refilled to {self.water_capacity}L")
             return True
         return False
 

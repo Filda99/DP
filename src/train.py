@@ -51,9 +51,15 @@ def train():
 
     # Learning rates — training from scratch, all networks use full LR.
     # (Use a smaller lr_scout when loading a pre-trained scout for fine-tuning.)
-    lr_scout     = 0
+    lr_scout     = 1e-5
     lr_commander = 3e-5
     lr_critic    = 1e-4
+
+    path_to_critic = "saved_models/critic_ep4500.pt"   # nebo konkrétní ep checkpoint
+    path_to_scout = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_ep4500.pt"
+    path_to_commander = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep4500.pt"
+
+    episodes_played = 3000
 
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS
@@ -94,10 +100,9 @@ def train():
     # ScoutActor — processes local map, own state, neighbour states via CNN+LSTM
     if N_QUADS > 0:
         scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingQuad/08_QuadTrainedWithDemo/scout_ep24600.pt"
-        if os.path.exists(path_to_old_model):
-            print(f"📥 Loading pre-trained scout model from {path_to_old_model}")
-            scout_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
+        if os.path.exists(path_to_scout):
+            print(f"📥 Loading pre-trained scout model from {path_to_scout}")
+            scout_actor.load_state_dict(torch.load(path_to_scout, map_location=device), strict=False)
         else:
             print(f"⚠️  No pre-trained scout model found — training from scratch.")
     else:
@@ -106,10 +111,9 @@ def train():
     # CommanderActor — processes own state + scout messages (attention) via LSTM
     if N_FIXED > 0:
         commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
-        path_to_old_model = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingFixed/04_FW_50k_wDemo/commander_ep45000.pt"
-        if os.path.exists(path_to_old_model):
-            print(f"📥 Loading pre-trained commander model from {path_to_old_model}")
-            commander_actor.load_state_dict(torch.load(path_to_old_model, map_location=device), strict=False)
+        if os.path.exists(path_to_commander):
+            print(f"📥 Loading pre-trained commander model from {path_to_commander}")
+            commander_actor.load_state_dict(torch.load(path_to_commander, map_location=device), strict=False)
         else:
             print(f"⚠️  No pre-trained commander model found — training from scratch.")
     else:
@@ -117,11 +121,14 @@ def train():
 
     # MAPPOCritic — shared value network, takes global state as input
     critic = MAPPOCritic(global_state_dim).to(device)
+    if os.path.exists(path_to_critic):
+        critic.load_state_dict(torch.load(path_to_critic, map_location=device))
+        print(f"📥 Loading critic from {path_to_critic}")
 
     # Adam optimiser with per-network learning rates
     # (using parameter groups so we can fine-tune scout at a lower LR)
     optim_groups = [{"params": critic.parameters(), "lr": lr_critic}]
-    # if scout_actor:     optim_groups.append({"params": scout_actor.parameters(),     "lr": lr_scout})
+    if scout_actor:     optim_groups.append({"params": scout_actor.parameters(),     "lr": lr_scout})
     if commander_actor: optim_groups.append({"params": commander_actor.parameters(), "lr": lr_commander})
     optimizer = optim.Adam(optim_groups)
     num_batches = num_episodes // episodes_per_batch
@@ -139,7 +146,6 @@ def train():
 
     os.makedirs("saved_models", exist_ok=True)
     best_avg_reward = -1000.0
-    episodes_played = 0
 
     # ==========================================================================
     # 5. MAIN PARALLEL TRAINING LOOP
@@ -224,6 +230,7 @@ def train():
                     torch.save(scout_actor.state_dict(), "saved_models/scout_best.pt")
                 if commander_actor:
                     torch.save(commander_actor.state_dict(), "saved_models/commander_best.pt")
+                torch.save(critic.state_dict(), "saved_models/critic_best.pt")
                 print(f"{datetime.datetime.now()} | ⭐ New best model saved! (Rolling avg: {best_avg_reward:.2f})")
 
             # ==============================================================
@@ -443,7 +450,7 @@ def train():
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # 1. SCOUT POLICY LOSS (PPO-clip objective)
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                    if scout_actor is not None and False: # todo
+                    if scout_actor is not None:
                         # Slice out this minibatch's sequences
                         mb_maps    = s_maps_seq[mb_inds]
                         mb_self    = s_self_seq[mb_inds]
@@ -562,7 +569,7 @@ def train():
                     optimizer.zero_grad()
                     loss.backward()
                     params = list(critic.parameters())
-                    # if scout_actor:     params += list(scout_actor.parameters())
+                    if scout_actor:     params += list(scout_actor.parameters())
                     if commander_actor: params += list(commander_actor.parameters())
                     nn.utils.clip_grad_norm_(params, max_norm=0.5)
                     optimizer.step()
@@ -608,6 +615,7 @@ def train():
                     torch.save(scout_actor.state_dict(),     f"saved_models/scout_ep{episodes_played}.pt")
                 if commander_actor:
                     torch.save(commander_actor.state_dict(), f"saved_models/commander_ep{episodes_played}.pt")
+                torch.save(critic.state_dict(),              f"saved_models/critic_ep{episodes_played}.pt")
 
                 # --- 4-panel training dashboard ---
                 plt.figure(figsize=(20, 5))
