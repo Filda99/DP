@@ -32,16 +32,16 @@ from src.models import ScoutActor, CommanderActor
 # ============================================================
 # KONFIGURACE
 # ============================================================
-MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_ep4500.pt"
-MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep4500.pt"
+MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_ep3000.pt"
+MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep3000.pt"
 
 N_QUADS    = 1
 N_FIXED    = 1
-MAX_STEPS  = 1000
-GRID_SIZE  = 1000.0
+MAX_STEPS  = 2000
+GRID_SIZE  = 2000.0
 GIF_EVERY  = 3
 GIF_FPS    = 15
-EPISODE_SEED = 10
+EPISODE_SEED = 50 #10
 # ============================================================
 
 def _load_models(device):
@@ -156,7 +156,7 @@ def run_demo():
     scout_actor, commander_actor, _, _ = _load_models(device)
 
     env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=GRID_SIZE, max_steps=MAX_STEPS)
-    obs, _ = env.reset(seed=EPISODE_SEED, epizode_number=1000)
+    obs, _ = env.reset(seed=EPISODE_SEED, epizode_number=10000)
     
     refill_info = env.sim.environment.refill_zone
     refill_pos = refill_info['position'] if refill_info else None

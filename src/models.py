@@ -195,13 +195,19 @@ class ScoutActor(nn.Module):
         # ------------------------------------------------------------------
         # Output head 2 -- Outbound message (communication)
         # ------------------------------------------------------------------
-        # Produces a msg_dim-dimensional message vector that gets broadcast
-        # to the CommanderActor via the environment's communication channel.
-        # Tanh squashes values to [-1, 1], providing a bounded signal that
-        # is easy for the commander's message encoder to process.
+        # Zpráva má dvě části:
+        #   [0] norm. pozice drona X   (self_state[0]) — přímá obs hodnota
+        #   [1] norm. pozice drona Y   (self_state[1]) — přímá obs hodnota
+        #   [2] intenzita ohně         (self_state[14]) — přímá obs hodnota
+        #   [3] naučená zpráva 1       (z msg_head)     — volná latentní dim
+        #   [4] naučená zpráva 2       (z msg_head)     — volná latentní dim
+        #
+        # Commander tak VŽDY ví kde scout je (dim 0-1) a co vidí (dim 2),
+        # nemusí to od nuly odpozorovat z gradientů. Dimenze 3-4 zůstávají
+        # volné pro cokoli dalšího co se scout naučí sdělovat.
         self.msg_head = nn.Sequential(
-            nn.Linear(hidden_dim, msg_dim),
-            nn.Tanh()  # messages bounded to [-1, 1]
+            nn.Linear(hidden_dim, msg_dim - 3),  # pouze 2 naučené dimy
+            nn.Tanh()
         )
 
     def forward(self, local_map, self_state, neighbor_states, neighbor_mask, hidden_state):
@@ -288,8 +294,12 @@ class ScoutActor(nn.Module):
         log_std     = self.action_logstd.clamp(-3.0, 0.5)   # std in [e^-3≈0.05, e^0.5≈1.65]
         dist        = Normal(action_mean, torch.exp(log_std))
 
-        # Outbound message for the commander.
-        message = self.msg_head(features)  # (B*S, msg_dim), values in [-1, 1]
+        # Outbound message for the commander:
+        #   dims 0-2: strukturovaná část — přímo z observace (vždy interpretovatelná)
+        #   dims 3-4: naučená část — latentní kontext
+        explicit_msg = self_state[:, [0, 1, 14]]           # (B*S, 3) — norm_pos_x, norm_pos_y, intenzita
+        learned_msg  = self.msg_head(features)              # (B*S, 2)
+        message = torch.cat([explicit_msg, learned_msg], dim=1)  # (B*S, 5)
 
         return dist, message, new_hidden
 

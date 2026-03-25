@@ -31,6 +31,10 @@ from worker import collect_episodes_per_worker
 def train():
     print("Starting MAPPO Training...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Bez GPU: PyTorch během PPO update používá vlákna pro maticové operace.
+    # Workeři užívají 20 jader — PPO update necháme na 4 jádrech aby si s workery nekradli.
+    if device.type == "cpu":
+        torch.set_num_threads(4)
     profiling = False  # Set to True to profile the PPO update (runs only for the first batch)
 
     # ==========================================================================
@@ -44,22 +48,22 @@ def train():
                                #   0.9   = cares mostly about near-future rewards
     clip_coef     = 0.1        # PPO clipping range — prevents the new policy from
                                # deviating too far from the old one in a single update
-    update_epochs = 4          # how many gradient passes over each collected batch
+    update_epochs = 2          # how many gradient passes over each collected batch
     num_workers   = 20         # parallel CPU workers for data collection
-    eps_per_worker = 3         # episodes collected by each worker per batch
-    episodes_per_batch = num_workers * eps_per_worker   # = 60 episodes per batch
+    eps_per_worker = 2         # episodes collected by each worker per batch
+    episodes_per_batch = num_workers * eps_per_worker   # = 40 episodes per batch
 
     # Learning rates — training from scratch, all networks use full LR.
     # (Use a smaller lr_scout when loading a pre-trained scout for fine-tuning.)
-    lr_scout     = 1e-5
+    lr_scout     = 2e-5   # zvýšeno z 5e-6 — scout potřebuje rychleji vstřebat nové silnější altitude penalty
     lr_commander = 3e-5
     lr_critic    = 1e-4
 
-    path_to_critic = "saved_models/critic_ep4500.pt"   # nebo konkrétní ep checkpoint
-    path_to_scout = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_ep4500.pt"
-    path_to_commander = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep4500.pt"
+    path_to_critic = "a.pt"
+    path_to_scout = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingQuad/08_QuadTrainedWithDemo/scout_best.pt"
+    path_to_commander = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingFixed/04_FW_50k_wDemo/commander_ep45000.pt"
 
-    episodes_played = 3000
+    episodes_played = 0
 
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS
@@ -102,7 +106,13 @@ def train():
         scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim).to(device)
         if os.path.exists(path_to_scout):
             print(f"📥 Loading pre-trained scout model from {path_to_scout}")
-            scout_actor.load_state_dict(torch.load(path_to_scout, map_location=device), strict=False)
+            ckpt = torch.load(path_to_scout, map_location=device)
+            model_shapes = {k: v.shape for k, v in scout_actor.state_dict().items()}
+            filtered = {k: v for k, v in ckpt.items() if k in model_shapes and v.shape == model_shapes[k]}
+            skipped  = [k for k in ckpt if k not in filtered]
+            scout_actor.load_state_dict(filtered, strict=False)
+            if skipped:
+                print(f"   ↳ Přeskočeno (nekompatibilní tvar): {skipped}")
         else:
             print(f"⚠️  No pre-trained scout model found — training from scratch.")
     else:
@@ -113,7 +123,18 @@ def train():
         commander_actor = CommanderActor(self_state_dim=fixed_self_dim, msg_input_dim=scout_msg_dim).to(device)
         if os.path.exists(path_to_commander):
             print(f"📥 Loading pre-trained commander model from {path_to_commander}")
-            commander_actor.load_state_dict(torch.load(path_to_commander, map_location=device), strict=False)
+            ckpt = torch.load(path_to_commander, map_location=device)
+            model_shapes = {k: v.shape for k, v in commander_actor.state_dict().items()}
+            filtered = {k: v for k, v in ckpt.items() if k in model_shapes and v.shape == model_shapes[k]}
+            skipped  = [k for k in ckpt if k not in filtered]
+            commander_actor.load_state_dict(filtered, strict=False)
+            if skipped:
+                print(f"   ↳ Přeskočeno (nekompatibilní tvar): {skipped}")
+            # msg_embed načetl staré váhy (tvar se nezměnil, ale sémantika ano) — reinicializuj
+            for layer in commander_actor.msg_embed:
+                if hasattr(layer, 'reset_parameters'):
+                    layer.reset_parameters()
+            print(f"   ↳ msg_embed reinicializován (nový protokol: pos_x, pos_y, intensity + 2 learned)")
         else:
             print(f"⚠️  No pre-trained commander model found — training from scratch.")
     else:
@@ -157,11 +178,9 @@ def train():
             batch_start = time.time()
             rollout_start = time.time()
 
-            # Dynamic calculation of entropy_coef
-            # Start higher (0.01) for starting searching and go lineary down to almost zero 
-            progress = min(1.0, (batch_idx / (num_batches * 0.5))) 
-            # current_entropy_coef = 0.01 - (0.01 - 0.0001) * progress
-            current_entropy_coef = 0.001
+            # Entropy koef = 0: máme pre-trained modely, PPO clip sám hlídá konvergenci.
+            # Konstantní entropy tlak způsoboval že policy_entropy stále rostla místo klesala.
+            current_entropy_coef = 0.0
 
             # --------------------------------------------------------------
             # 5a. Reset per-batch aggregation buffers
@@ -373,7 +392,7 @@ def train():
             # This way, when we select a minibatch of indices, we grab whole, 
             # unbroken episodes (trajectories) that the GRU can process correctly.
             
-            num_minibatches = 4
+            num_minibatches = 2   # zkráceno z 4 — méně minibatchů = méně GRU průchodů na CPU
             mb_size = episodes // num_minibatches
             
             # Reshape advantages: [episodes, max_steps, num_agents]
@@ -468,7 +487,7 @@ def train():
                         
                         flat_acts = mb_acts.view(-1, mb_acts.size(-1))
                         new_lp_s  = dist.log_prob(flat_acts).sum(1)
-                        # entropy_sum += dist.entropy().sum(1).mean()
+                        entropy_sum += dist.entropy().sum(1).mean()
                         
                         # IMPORTANCE SAMPLING RATIO: ratio = π_new(a|s) / π_old(a|s)
                         ratio_s = torch.exp(new_lp_s - mb_old_lp)
@@ -483,29 +502,7 @@ def train():
                         policy_loss_s = torch.max(pg1_s, pg2_s).mean()
                         
                         loss += policy_loss_s
-                        
-                        # COMMUNICATION AUXILIARY LOSS (protocol grounding)
-                        # OPTIMIZATION: We reuse s_msgs from the forward pass above!
-                        # There is no need to run the actor a second time.
-                        # target_protocol = mb_self.view(-1, mb_self.size(-1))[:, 12:15]
-                        # generated_protocol = s_msgs.reshape(-1, s_msgs.size(-1))[:, 0:3]
-                        # comm_aux_loss = nn.MSELoss()(generated_protocol, target_protocol)
-
-                        # todo: prepsat komentare
-                        # COMMUNICATION AUXILIARY LOSS (protocol grounding)
-                        # ZMĚNA: Učíme skauta vysílat svou GPS pozici (indexy 0, 1) a intenzitu (14)
-                        mb_self_flat = mb_self.view(-1, mb_self.size(-1))
-                        # Poskládáme nový cíl: [norm_pos_x, norm_pos_y, dyn_intensity]
-                        target_protocol = torch.stack([
-                            mb_self_flat[:, 0],   # Skautovo X (kde jsem)
-                            mb_self_flat[:, 1],   # Skautovo Y (kde jsem)
-                            mb_self_flat[:, 14]   # Intenzita (jak moc to tu hoří)
-                        ], dim=1)
-                        
-                        generated_protocol = s_msgs.reshape(-1, s_msgs.size(-1))[:, 0:3]
-                        comm_aux_loss = nn.MSELoss()(generated_protocol, target_protocol)
-                        
-                        loss += 0.5 * comm_aux_loss
+                        entropy_sum += dist.entropy().sum(1).mean()
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # 2. COMMANDER POLICY LOSS (identical PPO-clip logic)
@@ -530,7 +527,10 @@ def train():
                         pg2_c   = -mb_adv * torch.clamp(ratio_c, 1 - clip_coef, 1 + clip_coef)
                         policy_loss_c = torch.max(pg1_c, pg2_c).mean()
                         
-                        loss += policy_loss_c - current_entropy_coef * dist.entropy().sum(1).mean()
+                        loss += policy_loss_c
+
+                    # Entropy regularizace — odečteme jednou za oba agenty
+                    loss -= current_entropy_coef * entropy_sum
 
                     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                     # 3. CRITIC VALUE LOSS

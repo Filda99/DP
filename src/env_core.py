@@ -661,6 +661,13 @@ class DroneFireEnv(ParallelEnv):
         self.fire_discovered = False
         self.current_step = 0
 
+        # Potential-based shaping: track previous distance to fire per scout
+        self._prev_fire_dists = {}
+        for q in self.quad_agents:
+            if q in self.sim.drones:
+                pos = self.sim.drones[q].get_position()
+                self._prev_fire_dists[q] = np.sqrt((pos[0] - self.fire_x)**2 + (pos[1] - self.fire_y)**2)
+
         # --- 6. Build and return initial observations (PettingZoo requirement) ---
         observations = {agent: self._get_obs(agent) for agent in self.agents}
         infos = {agent: {} for agent in self.agents}
@@ -885,17 +892,21 @@ class DroneFireEnv(ParallelEnv):
                     rewards[q_agent] += fire_bonus * 0.1
 
             elif is_dropping:
-                # Waste penalty: aircraft is spraying but hitting nothing.
-                # This discourages random water release when not on target.
-                # rewards[f_agent] += -0.05
-
-                # todo: prepsat komentare
                 if f_agent in self.sim.drones:
                     f_pos = self.sim.drones[f_agent].get_position()
                     dist_to_fire = np.linalg.norm([f_pos[0] - self.fire_x, f_pos[1] - self.fire_y])
-                    
-                    if dist_to_fire < 150.0 and f_pos[2] < 100.0:
-                        rewards[f_agent] += 0.5  # správné místo
+
+                    # Bonus za dropping na správném místě — POUZE pokud scout vidí oheň
+                    # (jinak commander hned na začátku vyleje vodu slepě)
+                    max_scout_intensity = 0.0
+                    for q_name in self.quad_agents:
+                        if q_name in self.sim.drones:
+                            q_obs = self._get_quad_obs(q_name)
+                            if q_obs["self_state"][14] > max_scout_intensity:
+                                max_scout_intensity = q_obs["self_state"][14]
+
+                    if dist_to_fire < 150.0 and f_pos[2] < 100.0 and max_scout_intensity > 0.1:
+                        rewards[f_agent] += 0.5  # správné místo A scout vidí oheň
                     else:
                         drone = self.sim.drones[f_agent]
                         WATER_FLOW_PER_STEP = 5.0 * (1.0/30.0) * 5  # cca 0.833L
@@ -1003,11 +1014,23 @@ class DroneFireEnv(ParallelEnv):
             k       = FIXED["alt_penalty_k"]
 
             if pos[2] > alt_max:
-                # Lineární penalizace nad ideálním stropem — bez capu!
+                # Lineární penalizace nad ideálním stropem
                 reward -= k * (pos[2] - alt_max) / 10.0
             elif pos[2] < alt_min:
-                # Penalizace pod ideálním minimem (updraft zóna / příliš nízko)
+                # Penalizace pod ideálním minimem
                 reward -= k * (alt_min - pos[2]) / 10.0
+        else:
+            # Scout: altitude shaping VŽDY aktivní (ne jen nad ohněm)
+            # Bez tohoto scoutu nic nebrání klesat dolů celou epizodu.
+            alt_min = QUAD["alt_ideal_min"]
+            alt_max = QUAD["alt_ideal_max"]
+            k       = QUAD["alt_penalty_k"]
+
+            if pos[2] > alt_max:
+                reward -= k * (pos[2] - alt_max) / alt_max
+            elif pos[2] < alt_min:
+                # Silnější penalizace směrem k zemi — nesmí klesat
+                reward -= k * (alt_min - pos[2]) / alt_min
 
         return reward
 
@@ -1038,7 +1061,7 @@ class DroneFireEnv(ParallelEnv):
             speed = np.linalg.norm(drone.get_velocity())
             reward -= speed * QUAD["fire_speed_pen"]
 
-            # Altitude shaping uvnitř mise — sweet spot 40-120m
+            # Altitude shaping uvnitř mise — sweet spot 40-120m (navíc k physics shapingu)
             alt_min = QUAD["alt_ideal_min"]
             alt_max = QUAD["alt_ideal_max"]
             k       = QUAD["alt_penalty_k"]
@@ -1046,6 +1069,17 @@ class DroneFireEnv(ParallelEnv):
                 reward -= k * (pos[2] - alt_max) / alt_max
             elif pos[2] < alt_min:
                 reward -= k * (alt_min - pos[2]) / alt_min
+
+            # Aktualizuj předchozí vzdálenost (scout je nad ohněm → dist blízká 0)
+            self._prev_fire_dists[agent] = 0.0
+
+        else:
+            # Oheň není vidět → potential-based shaping: bonus za přibližování k ohni
+            dist_now = np.sqrt((pos[0] - self.fire_x)**2 + (pos[1] - self.fire_y)**2)
+            prev_dist = self._prev_fire_dists.get(agent, dist_now)
+            approach_progress = (prev_dist - dist_now) / self.map_bounds  # > 0 = přibližuje se
+            reward += approach_progress * QUAD["fire_approach_k"]
+            self._prev_fire_dists[agent] = dist_now
 
         return reward
 
@@ -1067,7 +1101,9 @@ class DroneFireEnv(ParallelEnv):
             reward += FIXED["donut_bonus"]
         else:
             # Lineárně klesající bonus mimo donut
-            decay = (dist_from_center - FIXED["donut_radius"]) / (self.map_bounds - FIXED["donut_radius"])
+            # Guard: pokud je donut_radius >= map_bounds (malá mapa v demu), decay = 1.0
+            denom = self.map_bounds - FIXED["donut_radius"]
+            decay = (dist_from_center - FIXED["donut_radius"]) / denom if denom > 0 else 1.0
             reward += max(0.0, FIXED["donut_bonus"] * (1.0 - decay))
 
             # Rubber band — odměna za letění zpět do středu

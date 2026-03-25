@@ -7,8 +7,8 @@
 # ─── Sdílené parametry ───────────────────────────────────────────────────────
 SHARED = {
     "survival_bonus":       0.01,   # per-krok bonus za přežití (oba agenti)
-    "boundary_penalty":     0.3,    # max penalizace při nárazu do hranice
-    "boundary_extra":       0.5,    # extra penalizace pro fixed-wing blízko hranice
+    "boundary_penalty":     2.0,    # max penalizace při nárazu do hranice (bylo 0.3 — příliš slabé)
+    "boundary_extra":       3.0,    # extra penalizace pro fixed-wing blízko hranice (bylo 0.5)
     "crash_penalty":        -50,    # penalizace za smrt (před scale)
     "reward_clip_min":      -15.0,
     "reward_clip_max":       50.0,
@@ -23,12 +23,13 @@ QUAD = {
     "alt_ideal_min":    40.0,   # pod touto výškou je silný updraft → penalizace
     "alt_ideal_max":   120.0,   # nad touto výškou je příliš daleko od ohně → penalizace
     "alt_ceiling":     250.0,   # tvrdá smrt (zvýšeno z 200 — dáme víc prostoru)
-    "alt_penalty_k":     0.8,   # síla penalizace za výšku mimo rozsah
+    "alt_penalty_k":     4.0,   # síla penalizace za výšku mimo rozsah (bylo 0.8 — přebíjel ho fire bonus)
 
     # Mise — hover nad ohněm
     "fire_flat_bonus":   1.0,   # flat bonus za detekci ohně
     "fire_intensity_k": 10.0,   # násobitel intenzity
     "fire_speed_pen":    0.05,  # penalizace za rychlost nad ohněm
+    "fire_approach_k":   3.0,   # bonus za přibližování k ohni (potential-based shaping)
 
     # Scale
     "reward_scale":      0.1,
@@ -37,14 +38,14 @@ QUAD = {
 # ─── Fixed-wing (Commander) ──────────────────────────────────────────────────
 FIXED = {
     # Hranice mapy
-    "boundary_threshold_frac":  0.25,   # 25 % map_bounds/2
-    "boundary_extra_frac":      0.50,   # extra penalizace pod 50 % prahu
+    "boundary_threshold_frac":  0.60,   # 60 % map_bounds/2 = 300m od okraje (bylo 0.25=125m → příliš pozdě pro fw)
+    "boundary_extra_frac":      0.35,   # extra penalizace pod 35 % prahu = 105m od okraje
 
     # Výška — sweet spot pro hašení
     "alt_ideal_min":    40.0,   # pod touto výškou je nebezpečí srážky s terénem
     "alt_ideal_max":   150.0,   # nad touto výškou voda nedopadne přesně
     "alt_ceiling":     450.0,   # tvrdá smrt (zvýšeno z 400 — víc prostoru pro recovery)
-    "alt_penalty_k":     0.05,   # per 10m nad ideal_max (jemná penalizace)
+    "alt_penalty_k":     0.15,   # per 10m nad ideal_max (silnější penalizace)
     "alt_ideal_target":  80.0,  # středová cílová výška (pro tah)
     "alt_ideal_k":       0.002, # síla tahu k ideální výšce — zakomentováno, ale připraveno
 
@@ -65,7 +66,7 @@ FIXED = {
     "water_trigger_alt":    150.0,   # max výška pro bonus
     "water_trigger_bonus":    1.5,   # bonus za aktivaci triggeru
     "water_trigger_thresh":   0.0,   # threshold last_action[3] pro "is_dropping"
-    "water_waste_penalty": 20.0, # Postih za vypouštění mimo cíl (při 500m = 0.208/krok → net záporné)
+    "water_waste_penalty": 25.0,  # Postih za vypouštění mimo cíl — zvýšeno z 5 → plýtvání musí bolet
 
     # Refill bonus
     "refill_state_bonus":  0.2,
