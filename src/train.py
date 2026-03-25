@@ -55,13 +55,13 @@ def train():
 
     # Learning rates — training from scratch, all networks use full LR.
     # (Use a smaller lr_scout when loading a pre-trained scout for fine-tuning.)
-    lr_scout     = 2e-5   # zvýšeno z 5e-6 — scout potřebuje rychleji vstřebat nové silnější altitude penalty
+    lr_scout     = 1e-5
     lr_commander = 3e-5
     lr_critic    = 1e-4
 
-    path_to_critic = "a.pt"
+    path_to_critic = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/critic_best.pt"
     path_to_scout = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingQuad/08_QuadTrainedWithDemo/scout_best.pt"
-    path_to_commander = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingFixed/04_FW_50k_wDemo/commander_ep45000.pt"
+    path_to_commander = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_best.pt"
 
     episodes_played = 0
 
@@ -180,7 +180,7 @@ def train():
 
             # Entropy koef = 0: máme pre-trained modely, PPO clip sám hlídá konvergenci.
             # Konstantní entropy tlak způsoboval že policy_entropy stále rostla místo klesala.
-            current_entropy_coef = 0.0
+            current_entropy_coef = 0.001
 
             # --------------------------------------------------------------
             # 5a. Reset per-batch aggregation buffers

@@ -592,7 +592,7 @@ class DroneFireEnv(ParallelEnv):
         # A small random offset prevents the policy from memorising a fixed landmark.
         refill_x = float(np.clip(-self.fire_x + random.uniform(-20, 20), -self.map_bounds * 0.8, self.map_bounds * 0.8))
         refill_y = float(np.clip(-self.fire_y + random.uniform(-20, 20), -self.map_bounds * 0.8, self.map_bounds * 0.8))
-        self.sim.environment.create_refill_zone(center_pos=[refill_x, refill_y, 0.0], size=20.0)
+        self.sim.environment.create_refill_zone(center_pos=[refill_x, refill_y, 0.0])
 
         # --- Drone spawn positions: curriculum learning ---
         # For the first 300 episodes all drones start very close to the map
@@ -778,7 +778,7 @@ class DroneFireEnv(ParallelEnv):
             if dead:
                 terminations[agent] = True
                 # rewards[agent] += crash_reward
-                scaled_penalty = crash_reward * (0.3 if "fixed" in agent else 0.1)
+                scaled_penalty = crash_reward * (0.3 if "fixed" in agent else 0.5)
                 rewards[agent] += scaled_penalty  # = -15 nebo -5, ne -50
                     
             else:
@@ -797,34 +797,10 @@ class DroneFireEnv(ParallelEnv):
                     
                     water_lvl = self.sim.drones[agent].current_water / self.sim.drones[agent].water_capacity
 
-                    if water_lvl < 0.1:
-                        # REFILL: pouze mission reward (refill stav)
-                        rewards[agent] += self._get_fixed_reward(agent)
-                    elif max_seen_intensity > 0.1:
-                        # MISSION: pouze mission reward, žádný survival
-                        rewards[agent] += self._get_fixed_reward(agent)
+                    if max_seen_intensity > 0.1:
+                        rewards[agent] += self._get_fixed_reward(agent)           # MISSION
                     else:
-                        # PATROL/SURVIVAL: pouze survival, žádná mise
-                        rewards[agent] += self._get_fixed_reward_survival(agent)
-
-                    # todo smaz potom
-                    # phys = self._apply_physics_shaping(agent)
-    
-                    # if max_seen_intensity > 0.1:
-                    #     mode_r = self._get_fixed_reward(agent)
-                    #     mode = "MISSION"
-                    # elif water_lvl < 0.1:
-                    #     mode_r = self._get_fixed_reward(agent)
-                    #     mode = "REFILL"
-                    # else:
-                    #     mode_r = self._get_fixed_reward_survival(agent)
-                    #     mode = "PATROL"
-                    
-                    # total = (phys + mode_r) * FIXED["reward_scale"]
-                    
-                    # if self.current_step % 100 == 0:
-                    #     print(f"[{self.current_step}] {mode}: phys={phys:.3f} mode_r={mode_r:.3f} total={total:.3f}")
-                    # az sem
+                        rewards[agent] += self._get_fixed_reward_survival(agent)  # PATROL
                 else:
                     rewards[agent] += self._get_quad_reward(agent)
                 
@@ -882,7 +858,7 @@ class DroneFireEnv(ParallelEnv):
 
             if eff > 0.0:
                 # Extinguish bonus: proportional to how much fire was put out
-                fire_bonus = eff * 100 * 0.3
+                fire_bonus = eff * 200 * 0.3
                 rewards[f_agent] += fire_bonus
 
                 # print(f"[{self.current_step}] 🔥 ZÁSAH OHNĚ! Efektivita: {eff:.2f} | Bonus: +{fire_bonus:.2f}")
@@ -891,32 +867,32 @@ class DroneFireEnv(ParallelEnv):
                 for q_agent in [a for a in self.quad_agents if a in rewards]:
                     rewards[q_agent] += fire_bonus * 0.1
 
-            elif is_dropping:
-                if f_agent in self.sim.drones:
-                    f_pos = self.sim.drones[f_agent].get_position()
-                    dist_to_fire = np.linalg.norm([f_pos[0] - self.fire_x, f_pos[1] - self.fire_y])
+            # elif is_dropping:
+            #     if f_agent in self.sim.drones:
+            #         f_pos = self.sim.drones[f_agent].get_position()
+            #         dist_to_fire = np.linalg.norm([f_pos[0] - self.fire_x, f_pos[1] - self.fire_y])
 
-                    # Bonus za dropping na správném místě — POUZE pokud scout vidí oheň
-                    # (jinak commander hned na začátku vyleje vodu slepě)
-                    max_scout_intensity = 0.0
-                    for q_name in self.quad_agents:
-                        if q_name in self.sim.drones:
-                            q_obs = self._get_quad_obs(q_name)
-                            if q_obs["self_state"][14] > max_scout_intensity:
-                                max_scout_intensity = q_obs["self_state"][14]
+            #         # Bonus za dropping na správném místě — POUZE pokud scout vidí oheň
+            #         # (jinak commander hned na začátku vyleje vodu slepě)
+            #         max_scout_intensity = 0.0
+            #         for q_name in self.quad_agents:
+            #             if q_name in self.sim.drones:
+            #                 q_obs = self._get_quad_obs(q_name)
+            #                 if q_obs["self_state"][14] > max_scout_intensity:
+            #                     max_scout_intensity = q_obs["self_state"][14]
 
-                    if dist_to_fire < 150.0 and f_pos[2] < 100.0 and max_scout_intensity > 0.1:
-                        rewards[f_agent] += 0.5  # správné místo A scout vidí oheň
-                    else:
-                        drone = self.sim.drones[f_agent]
-                        WATER_FLOW_PER_STEP = 5.0 * (1.0/30.0) * 5  # cca 0.833L
-                        water_wasted_frac = WATER_FLOW_PER_STEP / drone.water_capacity
+            #         if dist_to_fire < 150.0 and f_pos[2] < 100.0 and max_scout_intensity > 0.1:
+            #             rewards[f_agent] += 0.5  # správné místo A scout vidí oheň
+            #         else:
+            #             drone = self.sim.drones[f_agent]
+            #             WATER_FLOW_PER_STEP = 5.0 * (1.0/30.0) * 5  # cca 0.833L
+            #             water_wasted_frac = WATER_FLOW_PER_STEP / drone.water_capacity
                         
-                        # Penalizace se násobí vzdáleností: čím dál od ohně sypeš, tím víc to bolí
-                        dist_factor = max(1.0, dist_to_fire / 200.0)
-                        penalty = water_wasted_frac * FIXED["water_waste_penalty"] * dist_factor
+            #             # Penalizace se násobí vzdáleností: čím dál od ohně sypeš, tím víc to bolí
+            #             dist_factor = max(1.0, dist_to_fire / 200.0)
+            #             penalty = water_wasted_frac * FIXED["water_waste_penalty"] * dist_factor
                         
-                        rewards[f_agent] -= penalty
+            #             rewards[f_agent] -= penalty
 
         for agent in rewards:
             rewards[agent] = np.clip(rewards[agent], SHARED["reward_clip_min"], SHARED["reward_clip_max"])
@@ -1206,18 +1182,18 @@ class DroneFireEnv(ParallelEnv):
             return orbital
 
         # --- Stav 2: REFILL ---
-        elif water_lvl < 0.1:
-            if self.sim.environment.refill_zone:
-                target = np.array(self.sim.environment.refill_zone['position'][:2])
-                orbital = self._calculate_orbital_reward(
-                    pos, vel, target,
-                    ideal_radius=FIXED["orbital_radius_refill"]
-                )
-                orbital += FIXED["refill_state_bonus"]
-                dist_to_refill = np.linalg.norm(pos[:2] - target)
-                if dist_to_refill < FIXED["refill_proximity_dist"]:
-                    orbital += FIXED["refill_proximity_bonus"]
-                return orbital
+        # elif water_lvl < 0.1:
+        #     if self.sim.environment.refill_zone:
+        #         target = np.array(self.sim.environment.refill_zone['position'][:2])
+        #         orbital = self._calculate_orbital_reward(
+        #             pos, vel, target,
+        #             ideal_radius=FIXED["orbital_radius_refill"]
+        #         )
+        #         orbital += FIXED["refill_state_bonus"]
+        #         dist_to_refill = np.linalg.norm(pos[:2] - target)
+        #         if dist_to_refill < FIXED["refill_proximity_dist"]:
+        #             orbital += FIXED["refill_proximity_bonus"]
+        #         return orbital
 
         # --- Stav 3: PATROL ---
         return self._calculate_orbital_reward(

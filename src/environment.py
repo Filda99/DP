@@ -467,7 +467,7 @@ class Environment:
         else:
             print("❌ Cannot save map: FireGrid not initialized")
 
-    def create_refill_zone(self, center_pos=None, size=10.0):
+    def create_refill_zone(self, center_pos=None, size=30.0):
         """
         Creates a visual refill zone.
         If center_pos is None, generates a random position.

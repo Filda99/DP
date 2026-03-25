@@ -23,7 +23,7 @@ QUAD = {
     "alt_ideal_min":    40.0,   # pod touto výškou je silný updraft → penalizace
     "alt_ideal_max":   120.0,   # nad touto výškou je příliš daleko od ohně → penalizace
     "alt_ceiling":     250.0,   # tvrdá smrt (zvýšeno z 200 — dáme víc prostoru)
-    "alt_penalty_k":     4.0,   # síla penalizace za výšku mimo rozsah (bylo 0.8 — přebíjel ho fire bonus)
+    "alt_penalty_k":     1,   # síla penalizace za výšku mimo rozsah (bylo 0.8 — přebíjel ho fire bonus)
 
     # Mise — hover nad ohněm
     "fire_flat_bonus":   1.0,   # flat bonus za detekci ohně
@@ -56,7 +56,7 @@ FIXED = {
     "rubber_band_k":     0.02,  # síla tahu zpět do středu
 
     # Mise — orbital reward
-    "mission_state_bonus": 0.3,
+    "mission_state_bonus": 0.1,
     "orbital_radius_fire":    120.0,   # ideální kroužení kolem ohně (bylo 150)
     "orbital_radius_refill":  80.0,   # ideální kroužení u refill zóny
     "orbital_radius_patrol": 300.0,   # patrol orbit kolem středu
@@ -66,12 +66,12 @@ FIXED = {
     "water_trigger_alt":    150.0,   # max výška pro bonus
     "water_trigger_bonus":    1.5,   # bonus za aktivaci triggeru
     "water_trigger_thresh":   0.0,   # threshold last_action[3] pro "is_dropping"
-    "water_waste_penalty": 25.0,  # Postih za vypouštění mimo cíl — zvýšeno z 5 → plýtvání musí bolet
+    "water_waste_penalty": 8.0,  # Postih za vypouštění mimo cíl — zvýšeno z 5 → plýtvání musí bolet
 
     # Refill bonus
-    "refill_state_bonus":  0.2,
+    "refill_state_bonus":  0.0,
     "refill_proximity_dist":  100.0,
-    "refill_proximity_bonus":   0.3,
+    "refill_proximity_bonus":   0.05,
 
     # Blending survival vs mission
     "survival_weight":  0.2,    # bylo 0.3 — dáme commanderovi víc survival signálu

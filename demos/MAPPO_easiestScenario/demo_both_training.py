@@ -32,8 +32,8 @@ from src.models import ScoutActor, CommanderActor
 # ============================================================
 # KONFIGURACE
 # ============================================================
-MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_ep3000.pt"
-MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep3000.pt"
+MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_ep6800.pt"
+MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep6800.pt"
 
 N_QUADS    = 1
 N_FIXED    = 1
@@ -171,7 +171,7 @@ def run_demo():
     last_local_map = None
 
     print("🚀 Mise začíná...")
-    for step in range(MAX_STEPS):
+    for step in tqdm(range(MAX_STEPS)):
         if not env.agents: break
         actions = {}
 
