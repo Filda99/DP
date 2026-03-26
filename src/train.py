@@ -60,10 +60,10 @@ def train():
     lr_critic    = 1e-4
 
     path_to_critic = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/critic_best.pt"
-    path_to_scout = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingQuad/08_QuadTrainedWithDemo/scout_best.pt"
+    path_to_scout = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_best.pt"
     path_to_commander = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_best.pt"
 
-    episodes_played = 0
+    episodes_played = 15000
 
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS

@@ -587,26 +587,20 @@ class DroneFireEnv(ParallelEnv):
         self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
         self.current_episode = epizode_number
 
-        # --- Refill zone: placed on the opposite side of the map from the fire ---
-        # This placement motivates the commander to shuttle between fire and base.
-        # A small random offset prevents the policy from memorising a fixed landmark.
-        refill_x = float(np.clip(-self.fire_x + random.uniform(-20, 20), -self.map_bounds * 0.8, self.map_bounds * 0.8))
-        refill_y = float(np.clip(-self.fire_y + random.uniform(-20, 20), -self.map_bounds * 0.8, self.map_bounds * 0.8))
-        self.sim.environment.create_refill_zone(center_pos=[refill_x, refill_y, 0.0])
-
-        # --- Drone spawn positions: curriculum learning ---
-        # For the first 300 episodes all drones start very close to the map
-        # centre (within 10 m) so the fire is always visible immediately.
-        # After episode 300 the spawn radius expands to safe_zone, requiring
-        # agents to actively navigate to find the fire.
-        # if epizode_number < 1500:
-        #     start_x = random.uniform(-10, 10)
-        #     start_y = random.uniform(-10, 10)
-        #     start_z = random.uniform(30.0, 70.0)
-        # else:
-        start_x = random.uniform(-safe_zone, safe_zone)
-        start_y = random.uniform(-safe_zone, safe_zone)
+        # --- Drone spawn: blízko ohně ---
+        # Scout spawní do 400m od ohně — agent dostane relevantní epizody
+        # kde se může aktivně naučit hledat oheň, ne jen náhodně bloudit.
+        max_spawn_dist = min(400.0, safe_zone)
+        angle = random.uniform(0, 2 * np.pi)
+        dist  = random.uniform(50.0, max_spawn_dist)
+        start_x = float(np.clip(self.fire_x + np.cos(angle) * dist, -self.map_bounds * 0.8, self.map_bounds * 0.8))
+        start_y = float(np.clip(self.fire_y + np.sin(angle) * dist, -self.map_bounds * 0.8, self.map_bounds * 0.8))
         start_z = random.uniform(30.0, 70.0)
+
+        # --- Refill zone: na opačné straně od ohně ---
+        refill_x = float(np.clip(-self.fire_x + random.uniform(-50, 50), -self.map_bounds * 0.8, self.map_bounds * 0.8))
+        refill_y = float(np.clip(-self.fire_y + random.uniform(-50, 50), -self.map_bounds * 0.8, self.map_bounds * 0.8))
+        self.sim.environment.create_refill_zone(center_pos=[refill_x, refill_y, 0.0])
 
         # --- 4. Spawn every agent at its starting position ---
         for agent in self.agents:
@@ -667,6 +661,12 @@ class DroneFireEnv(ParallelEnv):
             if q in self.sim.drones:
                 pos = self.sim.drones[q].get_position()
                 self._prev_fire_dists[q] = np.sqrt((pos[0] - self.fire_x)**2 + (pos[1] - self.fire_y)**2)
+
+        # Fire spread tracking: how many cells are burning at episode start
+        if self.sim.environment.fire_grid is not None:
+            self._prev_burning_count = int(np.sum(self.sim.environment.fire_grid.B))
+        else:
+            self._prev_burning_count = 0
 
         # --- 6. Build and return initial observations (PettingZoo requirement) ---
         observations = {agent: self._get_obs(agent) for agent in self.agents}
@@ -787,20 +787,30 @@ class DroneFireEnv(ParallelEnv):
 
                 # Agent-type-specific mission reward
                 if "fixed" in agent:
-                    # Zjisti stav — stejná logika jako v _get_fixed_reward
+                    # Najdi oheň skrz zprávy od scoutů
                     max_seen_intensity = 0.0
+                    best_fire_pos = np.array([self.fire_x, self.fire_y])  # fallback
                     for q_name in self.quad_agents:
                         if q_name in self.sim.drones:
                             q_obs = self._get_quad_obs(q_name)
-                            if q_obs["self_state"][14] > max_seen_intensity:
-                                max_seen_intensity = q_obs["self_state"][14]
-                    
-                    water_lvl = self.sim.drones[agent].current_water / self.sim.drones[agent].water_capacity
+                            q_intensity = q_obs["self_state"][14]
+                            if q_intensity > max_seen_intensity:
+                                max_seen_intensity = q_intensity
+                                rel_x = q_obs["self_state"][12]
+                                rel_y = q_obs["self_state"][13]
+                                q_pos = self.sim.drones[q_name].get_position()
+                                fov_size = max(10.0, q_pos[2] * 1.5)
+                                best_fire_pos = np.array([
+                                    q_pos[0] + rel_x * (fov_size / 2.0),
+                                    q_pos[1] + rel_y * (fov_size / 2.0)
+                                ])
 
                     if max_seen_intensity > 0.1:
-                        rewards[agent] += self._get_fixed_reward(agent)           # MISSION
+                        # MISSION: letět k ohni, hasit
+                        rewards[agent] += self._get_fixed_reward(agent, best_fire_pos)
                     else:
-                        rewards[agent] += self._get_fixed_reward_survival(agent)  # PATROL
+                        # PATROL: zůstat blízko středu
+                        rewards[agent] += self._get_fixed_reward_patrol(agent)
                 else:
                     rewards[agent] += self._get_quad_reward(agent)
                 
@@ -893,6 +903,20 @@ class DroneFireEnv(ParallelEnv):
             #             penalty = water_wasted_frac * FIXED["water_waste_penalty"] * dist_factor
                         
             #             rewards[f_agent] -= penalty
+
+        # --- 7. Fire spread penalty — penalizace za šíření ohně (urgence) ---
+        # Každý krok kde se oheň rozšíří o nové buňky, oba agenti dostanou trest.
+        # Tohle dává agentům motivaci jednat rychle — čím déle čekají, tím víc
+        # oheň roste a tím víc bodů ztrácejí. Sdílená penalizace zarovnává
+        # incentivy scoutů a commandera směrem k jedinému cíli.
+        if self.sim.environment.fire_grid is not None:
+            current_burning = int(np.sum(self.sim.environment.fire_grid.B))
+            delta_burned = max(0, current_burning - self._prev_burning_count)
+            if delta_burned > 0:
+                spread_penalty = delta_burned * 0.005  # 0.005 bodů za každou novou hořící buňku
+                for agent in rewards:
+                    rewards[agent] -= spread_penalty
+            self._prev_burning_count = current_burning
 
         for agent in rewards:
             rewards[agent] = np.clip(rewards[agent], SHARED["reward_clip_min"], SHARED["reward_clip_max"])
@@ -1059,147 +1083,30 @@ class DroneFireEnv(ParallelEnv):
 
         return reward
 
-    def _get_fixed_reward_survival(self, agent):
-        """Survival reward pro commandera — udržet se v bezpečné oblasti.
+    def _get_fixed_reward_patrol(self, agent):
+        """Patrol reward — malý tah ke středu mapy když scout nevidí oheň.
 
-        Dva komponenty:
-          1. Donut bonus — flat odměna za létání do 500m od středu mapy
-          2. Rubber band — tah zpět do středu když je agent venku
+        Boundary penalty v _apply_physics_shaping už řeší okraje.
+        Zde jen přidáme mírný gradient ke středu, aby commander nebloudil
+        po mapě bez cíle.
         """
-        drone = self.sim.drones[agent]
-        pos = drone.get_position()
-        vel = drone.get_velocity()
-        reward = FIXED["survival_base"]
-
+        pos = self.sim.drones[agent].get_position()
         dist_from_center = np.linalg.norm(pos[:2])
+        # Lineárně klesá od 0.05 ve středu na 0.0 na hranici mapy
+        return max(0.0, 0.05 * (1.0 - dist_from_center / self.map_bounds))
 
-        if dist_from_center < FIXED["donut_radius"]:
-            reward += FIXED["donut_bonus"]
-        else:
-            # Lineárně klesající bonus mimo donut
-            # Guard: pokud je donut_radius >= map_bounds (malá mapa v demu), decay = 1.0
-            denom = self.map_bounds - FIXED["donut_radius"]
-            decay = (dist_from_center - FIXED["donut_radius"]) / denom if denom > 0 else 1.0
-            reward += max(0.0, FIXED["donut_bonus"] * (1.0 - decay))
+    def _get_fixed_reward(self, agent, best_fire_pos):
+        """Mission reward pro commandera — přibližovací gradient k ohni.
 
-            # Rubber band — odměna za letění zpět do středu
-            vec_to_center = -pos[:2]
-            dir_to_center = vec_to_center / dist_from_center
-            approach_speed = np.dot(vel[:2], dir_to_center)
-            reward += approach_speed * FIXED["rubber_band_k"]
-
-        return reward
-
-    def _calculate_orbital_reward(self, pos, vel, target_pos, ideal_radius=150.0):
-        """Reward za kroužení kolem cíle — tři zóny.
-
-        Zóna 1 (příliš blízko, dist < 0.6 × R): penalizace
-        Zóna 2 (sweet spot, 0.6R–1.5R):          bonus za tangenciální let
-        Zóna 3 (příliš daleko, dist > 1.5R):     reward za přibližování
-        """
-        vec_to_target = target_pos - pos[:2]
-        dist = np.linalg.norm(vec_to_target)
-
-        if dist < ideal_radius * 0.6:
-            return -0.05
-
-        elif dist <= ideal_radius * 1.5:
-            dir_to_target = vec_to_target / (dist + 1e-6)
-            radial_speed = np.dot(vel[:2], dir_to_target)
-            tangential_bonus = (1.0 - abs(radial_speed) / 20.0) * 0.05
-            return 0.2 + tangential_bonus
-
-        else:
-            dir_to_target = vec_to_target / (dist + 1e-6)
-            approach_speed = np.dot(vel[:2], dir_to_target)
-            proximity_bonus = (1.0 - dist / self.grid_size_m) * 0.05
-            return approach_speed * 0.15 + proximity_bonus
-
-    def _get_fixed_reward(self, agent):
-        """Mission reward pro commandera — stavový automat (3 stavy).
-
-        Stav 1 MISSION:  Scout vidí oheň → kroužit kolem ohně a hasit
-        Stav 2 REFILL:   Žádný oheň + voda < 10 % → letět na refill
-        Stav 3 PATROL:   Čekat ve středu mapy
+        Jednoduchý tvar: čím blíž k ohni, tím více bodů. Zmizí jakmile
+        commander naletí do 200 m — od té chvíle musí hasit aby dostal body
+        (extinguish bonus v step() sekci 6).
         """
         drone = self.sim.drones[agent]
         pos = drone.get_position()
-        vel = drone.get_velocity()
-        water_lvl = drone.current_water / drone.water_capacity if drone.water_capacity > 0 else 0.0
-
-        # --- Najdi nejlepší fire signal od scoutů ---
-        max_seen_intensity = 0.0
-        best_fire_pos = None
-
-        for q_name in self.quad_agents:
-            if q_name in self.sim.drones:
-                q_obs = self._get_quad_obs(q_name)
-                q_intensity = q_obs["self_state"][14]
-                if q_intensity > max_seen_intensity:
-                    max_seen_intensity = q_intensity
-                    rel_x = q_obs["self_state"][12]
-                    rel_y = q_obs["self_state"][13]
-                    q_pos = self.sim.drones[q_name].get_position()
-                    fov_size = max(10.0, q_pos[2] * 1.5)
-                    best_fire_pos = np.array([
-                        q_pos[0] + rel_x * (fov_size / 2.0),
-                        q_pos[1] + rel_y * (fov_size / 2.0)
-                    ])
-
-        # --- Stav 1: MISSION ---
-        if max_seen_intensity > 0.1:
-            # orbital = self._calculate_orbital_reward(
-            #     pos, vel, best_fire_pos,
-            #     ideal_radius=FIXED["orbital_radius_fire"]
-            # )
-
-            # # orbital += FIXED["mission_state_bonus"] 
-            # dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
-            # proximity_bonus = max(0, 1.0 - dist_to_fire / 500.0) * FIXED["mission_state_bonus"]
-            # orbital += proximity_bonus
-
-            # # Bonus za water trigger na správném místě a výšce
-            # dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
-            # is_dropping = self.last_actions.get(agent, np.zeros(4))[3] > FIXED["water_trigger_thresh"]
-            # if (is_dropping
-            #         and dist_to_fire < FIXED["water_trigger_dist"]
-            #         and pos[2] < FIXED["water_trigger_alt"]):
-            #     orbital += FIXED["water_trigger_bonus"]
-            # return orbital
-            dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
-    
-            # Bonus za stav úplně zrušíme nebo drasticky zmenšíme
-            # Místo toho dáme "přibližovací" bonus, který zmizí, jakmile je u ohně
-            if dist_to_fire > 200:
-                # Čím blíž letí, tím víc dostává, ale max 0.5 (místo 1.5)
-                mission_bonus = 0.5 * (1.0 - dist_to_fire / 1000.0)
-            else:
-                # Jakmile je blíž než 200m, nedostává za "přítomnost" NIC.
-                # Teď musí začít hasit, aby dostal body.
-                mission_bonus = 0.0
-
-            orbital = mission_bonus
-            return orbital
-
-        # --- Stav 2: REFILL ---
-        # elif water_lvl < 0.1:
-        #     if self.sim.environment.refill_zone:
-        #         target = np.array(self.sim.environment.refill_zone['position'][:2])
-        #         orbital = self._calculate_orbital_reward(
-        #             pos, vel, target,
-        #             ideal_radius=FIXED["orbital_radius_refill"]
-        #         )
-        #         orbital += FIXED["refill_state_bonus"]
-        #         dist_to_refill = np.linalg.norm(pos[:2] - target)
-        #         if dist_to_refill < FIXED["refill_proximity_dist"]:
-        #             orbital += FIXED["refill_proximity_bonus"]
-        #         return orbital
-
-        # --- Stav 3: PATROL ---
-        return self._calculate_orbital_reward(
-            pos, vel, np.array([0.0, 0.0]),
-            ideal_radius=FIXED["orbital_radius_patrol"]
-        )
+        dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
+        # Lineární gradient: 0.5 na hranici dosahu (1000 m), 0.0 do 200 m
+        return max(0.0, 0.5 * (1.0 - dist_to_fire / 1000.0)) if dist_to_fire > 200 else 0.0
 
     def _check_death(self, agent):
         """Detekce pádu agenta.

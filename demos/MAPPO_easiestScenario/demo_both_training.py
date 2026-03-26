@@ -20,7 +20,7 @@ import os, sys
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import imageio
-import io
+import io, tqdm
 from PIL import Image
 
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -32,8 +32,8 @@ from src.models import ScoutActor, CommanderActor
 # ============================================================
 # KONFIGURACE
 # ============================================================
-MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_ep6800.pt"
-MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep6800.pt"
+MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_best.pt"
+MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_best.pt"
 
 N_QUADS    = 1
 N_FIXED    = 1
@@ -90,7 +90,8 @@ def _render_frame(step, fire_map, b,
     # Refill Zóna (Visualizace)
     if refill_pos is not None:
         # Vykreslíme Refill zónu jako azurový kruh (zvětšený pro viditelnost)
-        circle = plt.Circle((refill_pos[0], refill_pos[1]), 50, 
+        circle = plt.Circle((refill_pos[0], refill_pos[1]), 150,  # 150m = skutečný detekční rádius
+
                             color='cyan', fill=False, linestyle='--', linewidth=1.5, alpha=0.6)
         ax_map.add_patch(circle)
         ax_map.text(refill_pos[0], refill_pos[1] + 60, "REFILL", color='cyan', 
@@ -171,7 +172,7 @@ def run_demo():
     last_local_map = None
 
     print("🚀 Mise začíná...")
-    for step in tqdm(range(MAX_STEPS)):
+    for step in tqdm.tqdm(range(MAX_STEPS)):
         if not env.agents: break
         actions = {}
 

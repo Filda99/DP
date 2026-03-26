@@ -496,7 +496,7 @@ class Environment:
             'id': zone_id,
             'position': np.array(center_pos),
             'size': size,
-            'radius_sq': (size/2 + 2.0)**2 # Čtverec poloměru pro rychlou detekci (+ tolerance)
+            'radius_sq': 150.0**2  # 150m detekční rádius — FW letí rychle, musí mít větší zónu
         }
         
         # print(f"💧 Refill Zone created at {center_pos}")
