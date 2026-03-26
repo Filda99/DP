@@ -378,34 +378,29 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
                         val, c_h_out     = local_critic(g_tensor, crit_h[f])
                         act = dist.sample()
 
-                        # # todo
-                        # # === TVŮJ AUTOPILOT (ACTION FORCING) ===
-                        epizode_number = batch_start_idx + ep_offset
-                        if epizode_number < 5000:
+                        # === ADAPTIVE AUTOPILOT (ACTION FORCING) ===
+                        # Enabled by train.py when rolling reward is stuck below
+                        # threshold. Uses the scout-reported fire position
+                        # (q_fire_pos) so the commander relies on scout messages,
+                        # not ground-truth coordinates — consistent with the core
+                        # design goal: commander learns from scout messages only.
+                        if config.get('autopilot_enabled', False):
                             f_pos = local_env.sim.drones[f].get_position()
-                            dist_to_fire = np.linalg.norm([f_pos[0] - local_env.fire_x, 
-                                                            f_pos[1] - local_env.fire_y])
-                            if dist_to_fire < 150.0 and f_pos[2] < 120.0:
-                                # 70% šance vynutit trigger — policy si musí pamatovat co udělal
-                                if np.random.random() < 0.7:
-                                    act[0, 3] = torch.tensor(1.0)
-
-                        if epizode_number < 8000:
                             if q_fire_pos is not None:
-                                f_pos = local_env.sim.drones[f].get_position()
-                                
                                 vec = np.array([q_fire_pos[0] - f_pos[0],
                                                 q_fire_pos[1] - f_pos[1]])
-                                dist_to_fire_ap = np.linalg.norm(vec)  # ← přejmenuj na dist_to_fire_ap
-                                
+                                dist_to_fire_ap = np.linalg.norm(vec)
                                 if dist_to_fire_ap > 150.0:
+                                    # Steer toward scout-reported fire (60% of steps)
                                     if np.random.random() < 0.6:
                                         angle = np.arctan2(vec[1], vec[0])
                                         act[0, 0] = float(np.clip(angle / np.pi, -1, 1))
                                 else:
+                                    # Drop water near fire (70% of steps)
                                     if np.random.random() < 0.7:
                                         act[0, 3] = torch.tensor(1.0)
-                        # =======================================
+                            # If no scout signal, don't force anything — let policy explore
+                        # ===============================================
                     step_results[f] = {
                         "type": "commander",
                         "self": s_st, "msgs": msgs_t, "m_m": msgs_m,

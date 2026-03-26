@@ -32,8 +32,8 @@ from src.models import ScoutActor, CommanderActor
 # ============================================================
 # KONFIGURACE
 # ============================================================
-MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_best.pt"
-MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_best.pt"
+MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_ep16200.pt"
+MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep16200.pt"
 
 N_QUADS    = 1
 N_FIXED    = 1

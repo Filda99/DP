@@ -6,10 +6,10 @@
 
 # ─── Sdílené parametry ───────────────────────────────────────────────────────
 SHARED = {
-    "survival_bonus":       0.01,   # per-krok bonus za přežití (oba agenti)
+    "survival_bonus":       0.05,   # per-krok bonus za přežití (oba agenti)
     "boundary_penalty":     2.0,    # max penalizace při nárazu do hranice (bylo 0.3 — příliš slabé)
     "boundary_extra":       3.0,    # extra penalizace pro fixed-wing blízko hranice (bylo 0.5)
-    "crash_penalty":        -50,    # penalizace za smrt (před scale)
+    "crash_penalty":        -20,    # penalizace za smrt (sníženo z -50 — aby crash-avoidance nedominoval policy)
     "reward_clip_min":      -15.0,
     "reward_clip_max":       50.0,
 }
@@ -32,7 +32,7 @@ QUAD = {
     "fire_approach_k":   3.0,   # bonus za přibližování k ohni (potential-based shaping)
 
     # Scale
-    "reward_scale":      0.1,
+    "reward_scale":      0.3,
 }
 
 # ─── Fixed-wing (Commander) ──────────────────────────────────────────────────
@@ -78,5 +78,5 @@ FIXED = {
     "mission_weight":   0.8,    # bylo 0.7
 
     # Scale
-    "reward_scale":     0.3,
+    "reward_scale":     0.5,
 }

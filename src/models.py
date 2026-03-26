@@ -190,7 +190,7 @@ class ScoutActor(nn.Module):
         # Using nn.Parameter means log_std is optimised directly by the PPO
         # objective alongside all other network weights.
         self.action_mean    = nn.Linear(hidden_dim, action_dim)
-        self.action_logstd  = nn.Parameter(torch.zeros(1, action_dim))
+        self.action_logstd  = nn.Parameter(torch.full((1, action_dim), -2.0))  # std ≈ 0.135 at init
 
         # ------------------------------------------------------------------
         # Output head 2 -- Outbound message (communication)
@@ -291,7 +291,7 @@ class ScoutActor(nn.Module):
         #   Normal(mean, std) supports .rsample() for the reparameterisation
         #   trick needed in PPO, and .log_prob() for the importance-sampling ratio.
         action_mean = torch.tanh(self.action_mean(features))
-        log_std     = self.action_logstd.clamp(-3.0, 0.5)   # std in [e^-3≈0.05, e^0.5≈1.65]
+        log_std     = self.action_logstd.clamp(-4.0, 0.0)   # std in [e^-4≈0.018, e^0≈1.0]
         dist        = Normal(action_mean, torch.exp(log_std))
 
         # Outbound message for the commander:
@@ -396,7 +396,7 @@ class CommanderActor(nn.Module):
         # Output head -- Action distribution
         # ------------------------------------------------------------------
         self.action_mean   = nn.Linear(hidden_dim, action_dim)
-        self.action_logstd = nn.Parameter(torch.zeros(1, action_dim))
+        self.action_logstd = nn.Parameter(torch.full((1, action_dim), -2.0))  # std ≈ 0.135 at init
 
         # ------------------------------------------------------------------
         # Learnable communication gate (comm_alpha)
@@ -471,7 +471,7 @@ class CommanderActor(nn.Module):
         # It is a hard structural guardrail so that even if the loss 
         # pushes in the wrong direction, the network physically 
         # cannot go past those boundaries.
-        log_std     = self.action_logstd.clamp(-3.0, 0.5)   # std in [e^-3≈0.05, e^0.5≈1.65]
+        log_std     = self.action_logstd.clamp(-4.0, 0.0)   # std in [e^-4≈0.018, e^0≈1.0]
         dist        = Normal(action_mean, torch.exp(log_std))
 
         # Second return value is None: the commander does not broadcast messages.

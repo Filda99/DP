@@ -46,9 +46,9 @@ def train():
     gamma         = 0.99       # discount factor — how much future rewards matter
                                #   0.99  = cares a lot about long-term rewards
                                #   0.9   = cares mostly about near-future rewards
-    clip_coef     = 0.1        # PPO clipping range — prevents the new policy from
+    clip_coef     = 0.2        # PPO clipping range — prevents the new policy from
                                # deviating too far from the old one in a single update
-    update_epochs = 2          # how many gradient passes over each collected batch
+    update_epochs = 4          # how many gradient passes over each collected batch
     num_workers   = 20         # parallel CPU workers for data collection
     eps_per_worker = 2         # episodes collected by each worker per batch
     episodes_per_batch = num_workers * eps_per_worker   # = 40 episodes per batch
@@ -113,6 +113,10 @@ def train():
             scout_actor.load_state_dict(filtered, strict=False)
             if skipped:
                 print(f"   ↳ Přeskočeno (nekompatibilní tvar): {skipped}")
+            # Checkpoint may have log_std ≈ 0 or 0.5 (std 1.0–1.65) from the old
+            # broken init — overwrite it so we start with low entropy (std ≈ 0.135).
+            scout_actor.action_logstd.data.fill_(-2.0)
+            print(f"   ↳ action_logstd reset to -2.0 (std ≈ 0.135)")
         else:
             print(f"⚠️  No pre-trained scout model found — training from scratch.")
     else:
@@ -130,6 +134,9 @@ def train():
             commander_actor.load_state_dict(filtered, strict=False)
             if skipped:
                 print(f"   ↳ Přeskočeno (nekompatibilní tvar): {skipped}")
+            # Same log_std reset as for scout — overwrite checkpoint's high-entropy value.
+            commander_actor.action_logstd.data.fill_(-2.0)
+            print(f"   ↳ action_logstd reset to -2.0 (std ≈ 0.135)")
             # msg_embed načetl staré váhy (tvar se nezměnil, ale sémantika ano) — reinicializuj
             for layer in commander_actor.msg_embed:
                 if hasattr(layer, 'reset_parameters'):
@@ -169,6 +176,25 @@ def train():
     best_avg_reward = -1000.0
 
     # ==========================================================================
+    # Adaptive autopilot state machine
+    # ==========================================================================
+    # If the commander's rolling reward stays below AUTOPILOT_REWARD_THRESHOLD
+    # for AUTOPILOT_TRIGGER_BATCHES consecutive batches, the autopilot is
+    # enabled for AUTOPILOT_ON_BATCHES batches (~1000 episodes). Workers then
+    # force the commander toward fire (action forcing) so the policy collects
+    # enough correct demonstrations to start gradient-following.
+    # After the on-period, a cooldown prevents immediate re-triggering.
+    AUTOPILOT_REWARD_THRESHOLD = 80    # rolling reward below this = commander stuck
+    AUTOPILOT_WINDOW           = 50    # number of episodes in the rolling window
+    AUTOPILOT_TRIGGER_BATCHES  = 5     # consecutive bad batches before triggering
+    AUTOPILOT_ON_BATCHES       = 25    # batches to run autopilot  (≈ 1 000 eps)
+    AUTOPILOT_OFF_COOLDOWN     = 10    # cooldown batches after autopilot turns off
+    _ap_active_batches         = 0     # batches remaining in current on-period
+    _ap_cooldown_remaining     = 0     # cooldown batches remaining
+    _ap_low_count              = 0     # consecutive low-reward batches so far
+    worker_config['autopilot_enabled'] = False
+
+    # ==========================================================================
     # 5. MAIN PARALLEL TRAINING LOOP
     # ==========================================================================
     # The ProcessPoolExecutor keeps a persistent pool of worker processes alive
@@ -178,9 +204,40 @@ def train():
             batch_start = time.time()
             rollout_start = time.time()
 
-            # Entropy koef = 0: máme pre-trained modely, PPO clip sám hlídá konvergenci.
-            # Konstantní entropy tlak způsoboval že policy_entropy stále rostla místo klesala.
-            current_entropy_coef = 0.001
+            # Entropy annealing: start at 0.02, decay to 0.005 over 500 batches.
+            # High initial coef encourages early exploration; low final coef lets
+            # the policy converge once it finds useful behaviours.
+            _entropy_anneal_batches = 500
+            current_entropy_coef = max(
+                0.005,
+                0.02 - (0.02 - 0.005) * min(batch_idx - 1, _entropy_anneal_batches) / _entropy_anneal_batches
+            )
+
+            # --------------------------------------------------------------
+            # Adaptive autopilot decision (evaluated before each batch)
+            # --------------------------------------------------------------
+            if _ap_active_batches > 0:
+                worker_config['autopilot_enabled'] = True
+                _ap_active_batches -= 1
+                if _ap_active_batches == 0:
+                    _ap_cooldown_remaining = AUTOPILOT_OFF_COOLDOWN
+                    print(f"🛑 Autopilot OFF — cooling down for {AUTOPILOT_OFF_COOLDOWN} batches")
+            elif _ap_cooldown_remaining > 0:
+                worker_config['autopilot_enabled'] = False
+                _ap_cooldown_remaining -= 1
+            else:
+                worker_config['autopilot_enabled'] = False
+                if len(episode_rewards_history) >= AUTOPILOT_WINDOW:
+                    recent_reward = np.mean(episode_rewards_history[-AUTOPILOT_WINDOW:])
+                    if recent_reward < AUTOPILOT_REWARD_THRESHOLD:
+                        _ap_low_count += 1
+                    else:
+                        _ap_low_count = 0
+                    if _ap_low_count >= AUTOPILOT_TRIGGER_BATCHES:
+                        _ap_active_batches = AUTOPILOT_ON_BATCHES
+                        _ap_low_count = 0
+                        worker_config['autopilot_enabled'] = True
+                        print(f"🚁 Autopilot ON (rolling reward {recent_reward:.1f} < {AUTOPILOT_REWARD_THRESHOLD} for {AUTOPILOT_TRIGGER_BATCHES} batches)")
 
             # --------------------------------------------------------------
             # 5a. Reset per-batch aggregation buffers
@@ -392,7 +449,7 @@ def train():
             # This way, when we select a minibatch of indices, we grab whole, 
             # unbroken episodes (trajectories) that the GRU can process correctly.
             
-            num_minibatches = 2   # zkráceno z 4 — méně minibatchů = méně GRU průchodů na CPU
+            num_minibatches = 4   # 4 minibatches — better gradient estimates per batch
             mb_size = episodes // num_minibatches
             
             # Reshape advantages: [episodes, max_steps, num_agents]
@@ -487,7 +544,6 @@ def train():
                         
                         flat_acts = mb_acts.view(-1, mb_acts.size(-1))
                         new_lp_s  = dist.log_prob(flat_acts).sum(1)
-                        entropy_sum += dist.entropy().sum(1).mean()
                         
                         # IMPORTANCE SAMPLING RATIO: ratio = π_new(a|s) / π_old(a|s)
                         ratio_s = torch.exp(new_lp_s - mb_old_lp)

@@ -588,8 +588,8 @@ class DroneFireEnv(ParallelEnv):
         self.current_episode = epizode_number
 
         # --- Drone spawn: blízko ohně ---
-        # Scout spawní do 400m od ohně — agent dostane relevantní epizody
-        # kde se může aktivně naučit hledat oheň, ne jen náhodně bloudit.
+        # Scout spawní do 150m od ohně — tighter curriculum so agents receive
+        # non-zero mission rewards from the very first steps of each episode.
         max_spawn_dist = min(400.0, safe_zone)
         angle = random.uniform(0, 2 * np.pi)
         dist  = random.uniform(50.0, max_spawn_dist)
@@ -1098,15 +1098,16 @@ class DroneFireEnv(ParallelEnv):
     def _get_fixed_reward(self, agent, best_fire_pos):
         """Mission reward pro commandera — přibližovací gradient k ohni.
 
-        Jednoduchý tvar: čím blíž k ohni, tím více bodů. Zmizí jakmile
-        commander naletí do 200 m — od té chvíle musí hasit aby dostal body
-        (extinguish bonus v step() sekci 6).
+        Lineární tah od 1500 m (0.0) až k 200 m (0.43), pak flat 0.5 uvnitř
+        200 m — žádná dead zone, commander je vždy odměněn za to že je blízko
+        ohni. Extinguish bonus (sekce 6) přidává další odměnu za skutečné hašení.
         """
         drone = self.sim.drones[agent]
         pos = drone.get_position()
         dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
-        # Lineární gradient: 0.5 na hranici dosahu (1000 m), 0.0 do 200 m
-        return max(0.0, 0.5 * (1.0 - dist_to_fire / 1000.0)) if dist_to_fire > 200 else 0.0
+        if dist_to_fire <= 200.0:
+            return 0.5   # flat: být na cíli je vždy dobré
+        return max(0.0, 0.5 * (1.0 - dist_to_fire / 1500.0))
 
     def _check_death(self, agent):
         """Detekce pádu agenta.
