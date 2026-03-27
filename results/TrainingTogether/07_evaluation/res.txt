@@ -1,0 +1,79 @@
+$ python demos/MAPPO_easiestScenario/evaluate.py   --scout saved_models/scout_ep41000.pt   --commander saved_models/commander_ep41000.pt   --episodes 20
+pybullet build time: Mar 10 2026 14:33:15
+
+🔍 Evaluation config:
+   Episodes:  20
+   Seeds:     100 → 119
+   N_QUADS:   1   N_FIXED: 1
+   Device:    cpu
+   Max steps: 2000
+  ✅ Scout:     saved_models/scout_ep41000.pt
+  ✅ Commander: saved_models/commander_ep41000.pt
+
+▶ Running 20 episodes...
+
+  [  1/20] seed= 100 | R_scout=   42.5  R_cmdr=  334.9 | S_life=2000  C_life=2000 | fire_steps=   0  extg=6.417 | C_death=survived
+  [  2/20] seed= 101 | R_scout= 1875.9  R_cmdr= 6608.8 | S_life=2000  C_life=2000 | fire_steps=1355  extg=181.391 | C_death=survived
+  [  3/20] seed= 102 | R_scout=   29.2  R_cmdr=  221.6 | S_life= 257  C_life= 568 | fire_steps=  50  extg=3.527 | C_death=ground
+  [  4/20] seed= 103 | R_scout= 1222.5  R_cmdr=   45.1 | S_life=2000  C_life= 821 | fire_steps=1933  extg=0.000 | C_death=ground
+  [  5/20] seed= 104 | R_scout= 1394.3  R_cmdr=  -41.2 | S_life=2000  C_life= 564 | fire_steps=1528  extg=0.000 | C_death=ground
+  [  6/20] seed= 105 | R_scout= 1048.7  R_cmdr=   33.3 | S_life=2000  C_life= 692 | fire_steps=1831  extg=0.693 | C_death=ground
+  [  7/20] seed= 106 | R_scout= 1388.4  R_cmdr=  459.0 | S_life=2000  C_life=2000 | fire_steps=1573  extg=0.664 | C_death=survived
+  [  8/20] seed= 107 | R_scout=  847.6  R_cmdr=  652.5 | S_life=2000  C_life=2000 | fire_steps=1169  extg=7.593 | C_death=survived
+  [  9/20] seed= 108 | R_scout=   15.3  R_cmdr=  173.8 | S_life=2000  C_life=2000 | fire_steps=   0  extg=2.591 | C_death=survived
+  [ 10/20] seed= 109 | R_scout= 1497.8  R_cmdr=  386.1 | S_life=2000  C_life=2000 | fire_steps=1949  extg=0.000 | C_death=survived
+  [ 11/20] seed= 110 | R_scout= 1497.6  R_cmdr=   16.0 | S_life=2000  C_life= 663 | fire_steps=1920  extg=0.119 | C_death=ground
+  [ 12/20] seed= 111 | R_scout= 1245.3  R_cmdr=  438.1 | S_life=2000  C_life=2000 | fire_steps=1843  extg=0.032 | C_death=survived
+  [ 13/20] seed= 112 | R_scout=   19.3  R_cmdr=  176.0 | S_life=2000  C_life= 481 | fire_steps=   0  extg=3.917 | C_death=ground
+  [ 14/20] seed= 113 | R_scout=   65.0  R_cmdr=  462.2 | S_life=2000  C_life=2000 | fire_steps=   0  extg=10.242 | C_death=survived
+  [ 15/20] seed= 114 | R_scout= 2449.7  R_cmdr= 4767.3 | S_life=2000  C_life=2000 | fire_steps=1692  extg=229.836 | C_death=survived
+  [ 16/20] seed= 115 | R_scout= 1259.0  R_cmdr=  -22.8 | S_life=2000  C_life= 226 | fire_steps=1733  extg=0.000 | C_death=ground
+  [ 17/20] seed= 116 | R_scout= 1167.4  R_cmdr=  129.1 | S_life=2000  C_life=1395 | fire_steps=1878  extg=0.000 | C_death=ground
+  [ 18/20] seed= 117 | R_scout=   39.2  R_cmdr=  291.8 | S_life=2000  C_life=2000 | fire_steps=   0  extg=6.752 | C_death=survived
+  [ 19/20] seed= 118 | R_scout= 1215.3  R_cmdr=  -33.3 | S_life=2000  C_life= 339 | fire_steps=1658  extg=0.013 | C_death=ground
+  [ 20/20] seed= 119 | R_scout= 2704.4  R_cmdr= 8675.3 | S_life=2000  C_life=2000 | fire_steps=1972  extg=256.883 | C_death=survived
+
+════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+  EVALUATION RESULTS
+════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+ Seed    Ep#    R_scout     R_cmdr   S_life   C_life   FireSeen   MaxIntens   Water%      Extg    S_death    C_death
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  100    100      42.46     334.89     2000     2000          0        0.00     0.83      6.42   survived   survived
+  101    101    1875.94    6608.78     2000     2000       1355        0.28     0.07    181.39   survived   survived
+  102    102      29.15     221.59      257      568         50        0.06     1.00      3.53     ground     ground
+  103    103    1222.50      45.14     2000      821       1933        0.29     0.00      0.00   survived     ground
+  104    104    1394.33     -41.16     2000      564       1528        0.27     0.00      0.00   survived     ground
+  105    105    1048.66      33.32     2000      692       1831        0.29     0.00      0.69   survived     ground
+  106    106    1388.40     459.01     2000     2000       1573        0.27     1.00      0.66   survived   survived
+  107    107     847.56     652.53     2000     2000       1169        0.29     0.87      7.59   survived   survived
+  108    108      15.28     173.83     2000     2000          0        0.00     0.51      2.59   survived   survived
+  109    109    1497.83     386.07     2000     2000       1949        0.29     1.00      0.00   survived   survived
+  110    110    1497.56      16.00     2000      663       1920        0.28     0.00      0.12   survived     ground
+  111    111    1245.32     438.06     2000     2000       1843        0.29     1.00      0.03   survived   survived
+  112    112      19.27     176.01     2000      481          0        0.00     0.00      3.92   survived     ground
+  113    113      64.98     462.18     2000     2000          0        0.00     0.40     10.24   survived   survived
+  114    114    2449.70    4767.32     2000     2000       1692        0.28     0.00    229.84   survived   survived
+  115    115    1258.97     -22.79     2000      226       1733        0.29     0.00      0.00   survived     ground
+  116    116    1167.42     129.08     2000     1395       1878        0.29     0.00      0.00   survived     ground
+  117    117      39.21     291.76     2000     2000          0        0.00     0.31      6.75   survived   survived
+  118    118    1215.33     -33.32     2000      339       1658        0.29     0.00      0.01   survived     ground
+  119    119    2704.42    8675.29     2000     2000       1972        0.29     0.14    256.88   survived   survived
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  AGGREGATE (mean ± std):
+    total_reward_scout               1051.21  ±  787.03
+    total_reward_commander           1188.68  ±  2397.15
+    scout_lifespan                   1912.85  ±  379.88
+    commander_lifespan               1387.45  ±  709.80
+    fire_seen_steps                  1204.20  ±  806.65
+    max_fire_intensity                  0.20  ±  0.13
+    water_dropped_pct                   0.36  ±  0.41
+    fire_extinguished                  35.53  ±  79.61
+    scout_death_cause               {'survived': 19, 'ground': 1}
+    commander_death_cause           {'survived': 11, 'ground': 9}
+
+    Scout saw fire in      75% of episodes
+    Commander survived     55% of episodes
+════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+✅ Plot saved → /homes/eva/xj/xjahnf00/tmp/DP/demos/eval_results.png

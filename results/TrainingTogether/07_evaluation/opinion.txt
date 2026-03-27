@@ -1,0 +1,14 @@
+What's working (really working)
+Scout: ✅ Solid. 95% survival, saw fire in 75% of episodes, consistent intensity ~0.29. This is a functioning agent.
+
+The collaboration CAN work. Seeds 101, 114, 119: extg = 181, 229, 256 — when both agents do their job, massive fire suppression happens. This proves the message-passing architecture is functional. These are the result you want consistently.
+-------------------------------------------------------------
+Two distinct failure modes (clearly separated by the data)
+Failure 1 — Commander nose-dive (9/20 = 45%):
+Seeds 103, 104, 105, 110, 115, 116, 118 all share: water_dropped_pct = 0.00, extg = 0, C_death = ground. Commander crashes without ever dropping water. It's dying from pitch loss — probably underthrottling from episode start and auguring into terrain within 200–800 steps.
+
+Failure 2 — Commander drops water in the wrong place (seeds 106, 109, 111):
+C_life = 2000 (survived), water_dropped_pct = 1.00 (used ALL water), but extg ≈ 0. Commander is dropping water continuously but never near fire. It learned "open valve = default" again — the water waste penalty is not strong enough to break this habit.
+-------------------------------------------------------------
+Why MA 20 is declining from ~35k (real)
+Look at the lifespan chart — there are repeated spikes to 0 appearing in the 20k–30k batch range. This means the autopilot is now triggering and misfiring: when it kicks in, it forces the commander toward q_fire_pos, but q_fire_pos is derived from the scout's local map centroid + altitude-scaled FOV. If the scout is flying at 120m altitude, its FOV is 180m wide and the centroid can be wildly off. The autopilot is steering the commander toward a bad estimate of fire position, which goes negative, which re-triggers autopilot — a feedback loop driving reward down.
