@@ -146,7 +146,7 @@ def train():
     optim_groups = [{"params": critic.parameters(), "lr": lr_critic}]
     if scout_actor:     optim_groups.append({"params": scout_actor.parameters(),     "lr": lr_scout})
     if commander_actor: optim_groups.append({"params": commander_actor.parameters(), "lr": lr_commander})
-    optimizer = optim.Adam(optim_groups)
+    optimizer = optim.Adam(optim_groups, weight_decay=1e-4)
 
     # Jednorázový reset Adam state — vymaže momentum z předchozího tréninku.
     # Pokud načítáme checkpoint, optimizer neví nic o předchozích gradientech,
