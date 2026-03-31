@@ -634,12 +634,22 @@ class DroneFireEnv(ParallelEnv):
                     
                 #     self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=yaw_to_fire)
                 # else:
-                # Těžký režim (původní kód): Náhodný spawn dál od ohně
-                fw_start_x = float(np.clip(start_x + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
-                fw_start_y = float(np.clip(start_y + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
-                to_center_vec = -np.array([fw_start_x, fw_start_y])
-                yaw_to_center = np.arctan2(to_center_vec[1], to_center_vec[0])
-                self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=yaw_to_center)
+                # Spawn v 0–40 % map_bounds od středu (= 0–400m), heading ke středu ± 30°
+                # Důvod: random heading ±180° způsoboval, že ~50 % epizod startovalo
+                # čelem ke zdi → okamžitá havárie dříve, než GRU stihlo reagovat.
+                # Toto curriculum zajistí, že každá epizoda začíná letadlem
+                # mířícím dovnitř mapy — síť se učí z epizod kde má šanci přežít.
+                spawn_radius = random.uniform(0.0, self.map_bounds * 0.40)
+                spawn_angle  = random.uniform(0, 2 * np.pi)
+                fw_start_x   = float(spawn_radius * np.cos(spawn_angle))
+                fw_start_y   = float(spawn_radius * np.sin(spawn_angle))
+
+                # Heading ke středu (0,0) ± 30° náhodný jitter
+                to_center_yaw  = np.arctan2(-fw_start_y, -fw_start_x)
+                heading_jitter = random.uniform(-np.radians(30), np.radians(30))
+                fw_yaw         = to_center_yaw + heading_jitter
+
+                self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=fw_yaw)
 
                 # Set a meaningful initial airspeed
                 drone = self.sim.drones[agent]
@@ -727,15 +737,57 @@ class DroneFireEnv(ParallelEnv):
             jerk_penalties[agent_name] = jerk_diff * 0.02  # Weight of penalty
             self.last_raw_actions[agent_name] = np.copy(action)
 
+            # if "fixed" in agent_name:
+            #     # Fixed-wing action mapping:
+            #     #   [0] Roll    : pass through unchanged
+            #     #   [1] Pitch   : pass through unchanged
+            #     #   [2] Throttle: NN output [-1,1] -> physics range [0.4, 1.0]
+            #     #       0.4 is the minimum throttle to avoid stall.
+            #     #   [3] Water   : NN output [-1,1] -> trigger [0.0, 1.0]
+            #     mapped_action = np.copy(smooth_action)
+            #     # mapped_action[2] = 0.55 + (smooth_action[2] + 1.0) * 0.225
+            #     mapped_action[3] = (smooth_action[3] + 1.0) / 2.0
+            #     drone_controls[agent_name] = mapped_action
             if "fixed" in agent_name:
-                # Fixed-wing action mapping:
-                #   [0] Roll    : pass through unchanged
-                #   [1] Pitch   : pass through unchanged
-                #   [2] Throttle: NN output [-1,1] -> physics range [0.4, 1.0]
-                #       0.4 is the minimum throttle to avoid stall.
-                #   [3] Water   : NN output [-1,1] -> trigger [0.0, 1.0]
                 mapped_action = np.copy(smooth_action)
-                mapped_action[2] = 0.4 + (smooth_action[2] + 1.0) * 0.3
+
+                # --- LOW-LEVEL SAFETY CONTROLLER ---
+                drone = self.sim.drones.get(agent_name)
+                if drone is not None:
+                    # pos = drone.get_position()
+                    # vel = drone.get_velocity()
+                    # speed = np.linalg.norm(vel[:2])
+
+                    # # 1. Throttle floor — zabrání stall
+                    # #    NN dostane plnou kontrolu nad [-1,1], ale výsledek
+                    # #    se clipne na minimum 0.45 (pod tím letadlo padá)
+                    # mapped_action[2] = np.clip(smooth_action[2], -0.3, 1.0)
+                    # min_throttle = 0.45
+                    # # Přepočet z [-1,1] na [0,1] a clamp
+                    # throttle_physical = (mapped_action[2] + 1.0) / 2.0
+                    # throttle_physical = max(min_throttle, throttle_physical)
+                    # mapped_action[2] = throttle_physical * 2.0 - 1.0   # zpět do [-1,1]
+
+                    # # 2. Pitch clamp — zabrání nose-dive nebo přetažení
+                    # mapped_action[1] = np.clip(smooth_action[1], -0.4, 0.4)
+
+                    # # 3. Roll clamp — zabrání invertovanému letu
+                    # mapped_action[0] = np.clip(smooth_action[0], -0.6, 0.6)
+
+                    pos = drone.get_position()
+                    vel = drone.get_velocity()
+
+                    # 1. Throttle floor — nezřítí se
+                    throttle_physical = max(0.5, (smooth_action[2] + 1.0) / 2.0)  # zůstane v [0,1]
+                    mapped_action[2] = throttle_physical
+
+                    # 2. Pitch clamp
+                    mapped_action[1] = np.clip(smooth_action[1], -0.3, 0.3)
+
+                    # 3. Roll-cmd ze sítě — bez přebíjení (constraint korumpoval PPO trénink)
+                    mapped_action[0] = smooth_action[0]
+
+                # Water trigger
                 mapped_action[3] = (smooth_action[3] + 1.0) / 2.0
                 drone_controls[agent_name] = mapped_action
             else:
@@ -758,10 +810,9 @@ class DroneFireEnv(ParallelEnv):
 
         # --- 4. Per-agent death check and reward computation ---
         agents_to_keep = []  # agents still alive after this step
-        
 
         #########################################
-        # MISSION, pak odkomentuj, tbd, todo
+        # MISSION
         #########################################
 
         for agent in self.agents:
@@ -777,13 +828,14 @@ class DroneFireEnv(ParallelEnv):
 
             if dead:
                 terminations[agent] = True
-                # rewards[agent] += crash_reward
-                scaled_penalty = crash_reward * (0.3 if "fixed" in agent else 0.5)
-                rewards[agent] += scaled_penalty  # = -15 nebo -5, ne -50
-                    
+                rewards[agent] += crash_reward
             else:
                 rewards[agent] += self._apply_physics_shaping(agent)
-                rewards[agent] -= jerk_penalties.get(agent, 0.0)
+                # Jerk penalty jen pro fixed-wing — penalizuje trhavé akce,
+                # nutí commandera plánovat dopředu a dávat hladké příkazy.
+                # Váha 0.02: klidný let (Δ≈0.1/osa) → -0.008/krok, trhavý (Δ≈1.0) → -0.08/krok.
+                if "fixed" in agent:
+                    rewards[agent] -= jerk_penalties.get(agent, 0.0)
 
                 # Agent-type-specific mission reward
                 if "fixed" in agent:
@@ -805,8 +857,11 @@ class DroneFireEnv(ParallelEnv):
                                     q_pos[1] + rel_y * (fov_size / 2.0)
                                 ])
 
-                    if max_seen_intensity > 0.1:
+                    if max_seen_intensity > 0.005:
                         # MISSION: letět k ohni, hasit
+                        # Threshold 0.005 = oheň zabírá ~1% FOV při intensity 0.5
+                        # (mean 32x32 mapy; 0.1 bylo příliš vysoké — commander byl skoro
+                        # vždy v patrol módu i když scout oheň jasně viděl)
                         rewards[agent] += self._get_fixed_reward(agent, best_fire_pos)
                     else:
                         # PATROL: zůstat blízko středu
@@ -814,15 +869,15 @@ class DroneFireEnv(ParallelEnv):
                 else:
                     rewards[agent] += self._get_quad_reward(agent)
                 
-                # if time_is_up:
-                #     rewards[agent] += 10.0
+                if time_is_up:
+                    rewards[agent] += 50.0
                 
                 # rewards[agent] *= 0.1  # scale down rewards to keep them in a reasonable range
                 # rewards[agent] = np.clip(rewards[agent], -10.0, 10.0)
-                if "fixed" in agent:
-                    rewards[agent] *= FIXED["reward_scale"]  # commander dostane 3× silnější signal
-                else:
-                    rewards[agent] *= QUAD["reward_scale"]
+                # if "fixed" in agent:
+                #     rewards[agent] *= FIXED["reward_scale"]  # commander dostane 3× silnější signal
+                # else:
+                #     rewards[agent] *= QUAD["reward_scale"]
             
                 # If alive: store observation and keep the agent in the active list.
             # If dead: PettingZoo requires us to still return a final observation
@@ -855,68 +910,55 @@ class DroneFireEnv(ParallelEnv):
         # messages; they cannot extinguish directly.  By giving them a share of
         # the extinguish bonus we provide them with a training signal that their
         # messages (which guided the commander) were useful.
-        for f_agent in self.fixed_agents:
-            # Safety check: skip agents that were terminated this step or
-            # never received an action (would cause KeyError otherwise).
-            if f_agent not in drone_controls or f_agent not in rewards:
-                continue
+        # for f_agent in self.fixed_agents:
+        #     # Safety check: skip agents that were terminated this step or
+        #     # never received an action (would cause KeyError otherwise).
+        #     if f_agent not in drone_controls or f_agent not in rewards:
+        #         continue
 
-            eff = self.sim.drone_extinguish_stats.get(f_agent, 0.0)
+        #     eff = self.sim.drone_extinguish_stats.get(f_agent, 0.0)
 
-            # Check if the commander is currently dropping water (trigger > 0.5)
-            is_dropping = drone_controls[f_agent][3] > 0.5
+        #     # Check if the commander is currently dropping water (trigger > 0.5)
+        #     is_dropping = drone_controls[f_agent][3] > 0.5
 
-            if eff > 0.0:
-                # Extinguish bonus: proportional to how much fire was put out
-                fire_bonus = eff * 200 * 0.3
-                rewards[f_agent] += fire_bonus
+        #     if eff > 0.0:
+        #         # Extinguish bonus: zvýšeno z 200*0.3=60 na 500 — musí být dominantní signal
+        #         fire_bonus = eff * 500
+        #         rewards[f_agent] += fire_bonus
+        #         print(f"[{self.current_step}] ZASAH! eff={eff:.3f} bonus=+{fire_bonus:.1f}")
 
-                # print(f"[{self.current_step}] 🔥 ZÁSAH OHNĚ! Efektivita: {eff:.2f} | Bonus: +{fire_bonus:.2f}")
+        #         # Scouts get 10 % of the extinguish bonus — their messages guided commander
+        #         for q_agent in [a for a in self.quad_agents if a in rewards]:
+        #             rewards[q_agent] += fire_bonus * 0.1
 
-                # Scouts get 100% of the same bonus — they guided the commander
-                for q_agent in [a for a in self.quad_agents if a in rewards]:
-                    rewards[q_agent] += fire_bonus * 0.1
-
-            # elif is_dropping:
-            #     if f_agent in self.sim.drones:
-            #         f_pos = self.sim.drones[f_agent].get_position()
-            #         dist_to_fire = np.linalg.norm([f_pos[0] - self.fire_x, f_pos[1] - self.fire_y])
-
-            #         # Bonus za dropping na správném místě — POUZE pokud scout vidí oheň
-            #         # (jinak commander hned na začátku vyleje vodu slepě)
-            #         max_scout_intensity = 0.0
-            #         for q_name in self.quad_agents:
-            #             if q_name in self.sim.drones:
-            #                 q_obs = self._get_quad_obs(q_name)
-            #                 if q_obs["self_state"][14] > max_scout_intensity:
-            #                     max_scout_intensity = q_obs["self_state"][14]
-
-            #         if dist_to_fire < 150.0 and f_pos[2] < 100.0 and max_scout_intensity > 0.1:
-            #             rewards[f_agent] += 0.5  # správné místo A scout vidí oheň
-            #         else:
-            #             drone = self.sim.drones[f_agent]
-            #             WATER_FLOW_PER_STEP = 5.0 * (1.0/30.0) * 5  # cca 0.833L
-            #             water_wasted_frac = WATER_FLOW_PER_STEP / drone.water_capacity
-                        
-            #             # Penalizace se násobí vzdáleností: čím dál od ohně sypeš, tím víc to bolí
-            #             dist_factor = max(1.0, dist_to_fire / 200.0)
-            #             penalty = water_wasted_frac * FIXED["water_waste_penalty"] * dist_factor
-                        
-            #             rewards[f_agent] -= penalty
+        #     elif is_dropping and f_agent in self.sim.drones:
+        #         # Dense reward: dropping water near scout-reported fire.
+        #         # Na rozdíl od extinguish (sparse), tohle je KAŽDÝ krok kde commander
+        #         # správně pouští vodu — klíčový bridge signal pro učení.
+        #         f_pos = self.sim.drones[f_agent].get_position()
+        #         dist_to_fire = np.linalg.norm([f_pos[0] - self.fire_x, f_pos[1] - self.fire_y])
+        #         if dist_to_fire < 200.0:
+        #             # Ověř že scout skutečně vidí oheň (threshold 0.005, ne 0.1!)
+        #             scout_sees_fire = any(
+        #                 np.mean(self._extract_local_fire_map(self.sim.drones[q].get_position())) > 0.005
+        #                 for q in self.quad_agents if q in self.sim.drones
+        #             )
+        #             if scout_sees_fire:
+        #                 rewards[f_agent] += 2.0  # dense: +2/krok za správné hašení
 
         # --- 7. Fire spread penalty — penalizace za šíření ohně (urgence) ---
         # Každý krok kde se oheň rozšíří o nové buňky, oba agenti dostanou trest.
         # Tohle dává agentům motivaci jednat rychle — čím déle čekají, tím víc
         # oheň roste a tím víc bodů ztrácejí. Sdílená penalizace zarovnává
         # incentivy scoutů a commandera směrem k jedinému cíli.
-        if self.sim.environment.fire_grid is not None:
-            current_burning = int(np.sum(self.sim.environment.fire_grid.B))
-            delta_burned = max(0, current_burning - self._prev_burning_count)
-            if delta_burned > 0:
-                spread_penalty = delta_burned * 0.005  # 0.005 bodů za každou novou hořící buňku
-                for agent in rewards:
-                    rewards[agent] -= spread_penalty
-            self._prev_burning_count = current_burning
+        # if self.sim.environment.fire_grid is not None:
+        #     current_burning = int(np.sum(self.sim.environment.fire_grid.B))
+        #     delta_burned = max(0, current_burning - self._prev_burning_count)
+        #     if delta_burned > 0:
+        #         spread_penalty = delta_burned * 0.005  # 0.005 bodů za každou novou hořící buňku
+        #         for agent in rewards:
+        #             rewards[agent] -= spread_penalty
+        #     self._prev_burning_count = current_burning
 
         for agent in rewards:
             rewards[agent] = np.clip(rewards[agent], SHARED["reward_clip_min"], SHARED["reward_clip_max"])
@@ -924,56 +966,6 @@ class DroneFireEnv(ParallelEnv):
         return observations, rewards, terminations, truncations, infos
 
 
-
-
-        # for agent in self.agents:
-        #     terminations[agent] = False
-        #     truncations[agent] = time_is_up
-        #     infos[agent] = {}
-            
-        #     dead, crash_reward = self._check_death(agent)
-        #     rewards[agent] = 0
-            
-        #     if dead:
-        #         terminations[agent] = True
-        #         scaled_penalty = crash_reward * (0.3 if "fixed" in agent else 0.1)
-        #         rewards[agent] += scaled_penalty
-        #     else:
-        #         rewards[agent] += self._apply_physics_shaping(agent)
-        #         rewards[agent] -= jerk_penalties.get(agent, 0.0)
-                
-        #         if "fixed" in agent:
-        #             rewards[agent] += self._get_fixed_reward_survival(agent)
-        #             rewards[agent] *= 0.3
-        #         else:
-        #             rewards[agent] += self._get_quad_reward(agent)
-        #             rewards[agent] *= 0.1
-
-        #     if time_is_up:
-        #         rewards[agent] += 10.0
-
-        #     if not terminations[agent]:
-        #         observations[agent] = self._get_obs(agent)
-        #         agents_to_keep.append(agent)
-        #     else:
-        #         if "fixed" in agent:
-        #             observations[agent] = {"self_state": np.zeros(self.fixed_self_dim, dtype=np.float32)}
-        #         else:
-        #             observations[agent] = {
-        #                 "local_map": np.zeros((1, 32, 32), dtype=np.float32),
-        #                 "self_state": np.zeros(self.quad_self_dim, dtype=np.float32),
-        #                 "neighbor_states": np.zeros((self.max_neighbors, 3), dtype=np.float32),
-        #                 "neighbor_mask": np.ones((self.max_neighbors,), dtype=bool)
-        #             }
-
-        # self.agents = agents_to_keep
-
-        # # Team reward — přeskočíme úplně, žádný scout ani oheň
-        # for agent in rewards:
-        #     rewards[agent] = np.clip(rewards[agent], -15.0, 50.0)
-
-        # return observations, rewards, terminations, truncations, infos
-    
 
     # =========================================================================
     # Private reward helper methods
@@ -1004,8 +996,29 @@ class DroneFireEnv(ParallelEnv):
         if dist_to_edge < threshold:
             reward -= SHARED["boundary_penalty"] * (1.0 - dist_to_edge / threshold) ** 2
 
-        if "fixed" in agent and dist_to_edge < threshold * FIXED["boundary_extra_frac"]:
-            reward -= SHARED["boundary_extra"]
+        # --- Approach velocity penalty (pouze fixed-wing) ---
+        # Penalizuje letěni SMĚREM ke zdi, ne jen blízkost.
+        # Díky tomu dostane síť negativní signal dřív — i 600m od zdi,
+        # pokud letí přímo na ni. Action smoothing (tau≈5 kroků) způsobuje
+        # pozdní reakci; tato penalizace dává signal PŘED dosažením penalty zóny.
+        if "fixed" in agent:
+            vel = drone.get_velocity()
+            # Rychlost přibližování ke každé stěně (+ve = přibližování)
+            vx, vy = vel[0], vel[1]
+            dist_n, dist_s, dist_e, dist_w = dist_boundaries
+            approach_n = max(0.0,  vy)  # kladné vy = jde k severu (+Y stěna)
+            approach_s = max(0.0, -vy)  # záporné vy = jde k jihu  (-Y stěna)
+            approach_e = max(0.0,  vx)  # kladné vx = jde k východu (+X stěna)
+            approach_w = max(0.0, -vx)  # záporné vx = jde k západu (-X stěna)
+            # Váha: čím blíže ke zdi, tím větší penalizace za pohyb k ní
+            # (normalizováno 1/map_bounds ≈ 1/1000 aby bylo ve správném řádu)
+            approach_penalty = (
+                approach_n * (1.0 - dist_n / self.map_bounds) +
+                approach_s * (1.0 - dist_s / self.map_bounds) +
+                approach_e * (1.0 - dist_e / self.map_bounds) +
+                approach_w * (1.0 - dist_w / self.map_bounds)
+            ) * 0.015  # váha: max ~0.4/krok při 25m/s přímo na zeď z kraje threshold zóny
+            reward -= approach_penalty
 
         # --- Altitude penalty (spojitá, bez capu) ---
         if "fixed" in agent:
@@ -1014,11 +1027,10 @@ class DroneFireEnv(ParallelEnv):
             k       = FIXED["alt_penalty_k"]
 
             if pos[2] > alt_max:
-                # Lineární penalizace nad ideálním stropem
                 reward -= k * (pos[2] - alt_max) / 10.0
             elif pos[2] < alt_min:
-                # Penalizace pod ideálním minimem
-                reward -= k * (alt_min - pos[2]) / 10.0
+                # Penalizace za letu příliš nízko — silnější než horní (blíže k zemi = blíže ke smrti)
+                reward -= k * 3.0 * (alt_min - pos[2]) / alt_min
         else:
             # Scout: altitude shaping VŽDY aktivní (ne jen nad ohněm)
             # Bez tohoto scoutu nic nebrání klesat dolů celou epizodu.
@@ -1061,15 +1073,6 @@ class DroneFireEnv(ParallelEnv):
             speed = np.linalg.norm(drone.get_velocity())
             reward -= speed * QUAD["fire_speed_pen"]
 
-            # Altitude shaping uvnitř mise — sweet spot 40-120m (navíc k physics shapingu)
-            alt_min = QUAD["alt_ideal_min"]
-            alt_max = QUAD["alt_ideal_max"]
-            k       = QUAD["alt_penalty_k"]
-            if pos[2] > alt_max:
-                reward -= k * (pos[2] - alt_max) / alt_max
-            elif pos[2] < alt_min:
-                reward -= k * (alt_min - pos[2]) / alt_min
-
             # Aktualizuj předchozí vzdálenost (scout je nad ohněm → dist blízká 0)
             self._prev_fire_dists[agent] = 0.0
 
@@ -1106,7 +1109,10 @@ class DroneFireEnv(ParallelEnv):
         pos = drone.get_position()
         dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
         if dist_to_fire <= 200.0:
-            return 0.5   # flat: být na cíli je vždy dobré
+            # Gradient uvnitř 200m: 0.5 na kraji → 1.0 přímo nad ohněm.
+            # Bez tohoto gradientu se commander naučí kroužit na 200m
+            # (bezpečná vzdálenost) místo jít přímo nad oheň a hasit.
+            return 0.5 + 0.5 * (1.0 - dist_to_fire / 200.0)
         return max(0.0, 0.5 * (1.0 - dist_to_fire / 1500.0))
 
     def _check_death(self, agent):

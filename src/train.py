@@ -40,7 +40,7 @@ def train():
     # ==========================================================================
     # 1. HYPERPARAMETERS
     # ==========================================================================
-    num_episodes = 50000       # total episodes to train for
+    num_episodes = 150000       # total episodes to train for
     max_steps    = 2000         # maximum timesteps per episode
     learning_rate = 3e-4       # base learning rate (Adam)
     gamma         = 0.99       # discount factor — how much future rewards matter
@@ -56,19 +56,19 @@ def train():
     # Learning rates — training from scratch, all networks use full LR.
     # (Use a smaller lr_scout when loading a pre-trained scout for fine-tuning.)
     lr_scout     = 1e-5
-    lr_commander = 3e-5
-    lr_critic    = 1e-4
+    lr_commander = 3e-4   # fresh start — plný LR pro exploraci od nuly
+    lr_critic    = 3e-4
 
-    path_to_critic = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/critic_best.pt"
-    path_to_scout = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_best.pt"
-    path_to_commander = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_best.pt"
+    path_to_critic = ""
+    path_to_scout = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/07_evaluation/models/scout_best.pt"
+    path_to_commander = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep4400.pt"   # od nuly — pre-trained model má zakořeněné špatné chování
 
-    episodes_played = 15000
+    episodes_played = 4400
 
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS
     # ==========================================================================
-    N_QUADS = 1   # number of quadrotor scouts
+    N_QUADS = 0   # number of quadrotor scouts
     N_FIXED = 1   # 0 = train scout only first; set to 1 once scout converges
 
     # Spin up a temporary environment just to read observation/state space sizes.
@@ -113,10 +113,6 @@ def train():
             scout_actor.load_state_dict(filtered, strict=False)
             if skipped:
                 print(f"   ↳ Přeskočeno (nekompatibilní tvar): {skipped}")
-            # Checkpoint may have log_std ≈ 0 or 0.5 (std 1.0–1.65) from the old
-            # broken init — overwrite it so we start with low entropy (std ≈ 0.135).
-            scout_actor.action_logstd.data.fill_(-2.0)
-            print(f"   ↳ action_logstd reset to -2.0 (std ≈ 0.135)")
         else:
             print(f"⚠️  No pre-trained scout model found — training from scratch.")
     else:
@@ -134,14 +130,6 @@ def train():
             commander_actor.load_state_dict(filtered, strict=False)
             if skipped:
                 print(f"   ↳ Přeskočeno (nekompatibilní tvar): {skipped}")
-            # Same log_std reset as for scout — overwrite checkpoint's high-entropy value.
-            commander_actor.action_logstd.data.fill_(-2.0)
-            print(f"   ↳ action_logstd reset to -2.0 (std ≈ 0.135)")
-            # msg_embed načetl staré váhy (tvar se nezměnil, ale sémantika ano) — reinicializuj
-            for layer in commander_actor.msg_embed:
-                if hasattr(layer, 'reset_parameters'):
-                    layer.reset_parameters()
-            print(f"   ↳ msg_embed reinicializován (nový protokol: pos_x, pos_y, intensity + 2 learned)")
         else:
             print(f"⚠️  No pre-trained commander model found — training from scratch.")
     else:
@@ -160,7 +148,12 @@ def train():
     if commander_actor: optim_groups.append({"params": commander_actor.parameters(), "lr": lr_commander})
     optimizer = optim.Adam(optim_groups)
     num_batches = num_episodes // episodes_per_batch
-    scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.1, total_iters=500)
+    # CosineAnnealingWarmRestarts: LR cyklicky klesá a resetuje se každých T_0 batchí.
+    # LinearLR flatlinoval na 3e-5 od batche 500 navždy — policy se přestala učit.
+    # T_0=200: restart každých 200 batchí; T_mult=2: každý restart 2× delší cyklus.
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=200, T_mult=2, eta_min=1e-5
+    )
 
     # ==========================================================================
     # 4. TRAINING HISTORY  (for plotting)
@@ -171,28 +164,35 @@ def train():
     v_loss_history          = []   # critic (value) loss per update epoch
     lifespan_history        = []   # average agent lifespan per episode
     jerk_history            = []   # Track action smoothness
+    cmdr_act_mean_history   = []   # per-batch mean of each commander action dim
+    cmdr_act_std_history    = []   # per-batch std  of each commander action dim
 
     os.makedirs("saved_models", exist_ok=True)
     best_avg_reward = -1000.0
 
     # ==========================================================================
-    # Adaptive autopilot state machine
+    # Autopilot — probability-based demonstration injection
     # ==========================================================================
-    # If the commander's rolling reward stays below AUTOPILOT_REWARD_THRESHOLD
-    # for AUTOPILOT_TRIGGER_BATCHES consecutive batches, the autopilot is
-    # enabled for AUTOPILOT_ON_BATCHES batches (~1000 episodes). Workers then
-    # force the commander toward fire (action forcing) so the policy collects
-    # enough correct demonstrations to start gradient-following.
-    # After the on-period, a cooldown prevents immediate re-triggering.
-    AUTOPILOT_REWARD_THRESHOLD = 80    # rolling reward below this = commander stuck
-    AUTOPILOT_WINDOW           = 50    # number of episodes in the rolling window
-    AUTOPILOT_TRIGGER_BATCHES  = 5     # consecutive bad batches before triggering
-    AUTOPILOT_ON_BATCHES       = 25    # batches to run autopilot  (≈ 1 000 eps)
-    AUTOPILOT_OFF_COOLDOWN     = 10    # cooldown batches after autopilot turns off
-    _ap_active_batches         = 0     # batches remaining in current on-period
-    _ap_cooldown_remaining     = 0     # cooldown batches remaining
-    _ap_low_count              = 0     # consecutive low-reward batches so far
-    worker_config['autopilot_enabled'] = False
+    # Instead of a hard on/off, we send a per-episode probability to workers.
+    # Each episode independently rolls dice — so some episodes are teacher-forced
+    # and some are pure policy, always. This avoids the feedback loop where a
+    # fully-triggered autopilot produces corrupted gradients for 25 batches.
+    #
+    # Two levels:
+    #   BASELINE_PROB  — always active, keeps a trickle of demonstrations
+    #                    so the commander never completely forgets how to fly
+    #   BOOST_PROB     — activates when rolling reward < BOOST_THRESHOLD,
+    #                    temporarily increases demonstration rate
+    AUTOPILOT_BASELINE_PROB  = 0.25   # 1 in 4 episodes is a demonstration (always)
+    AUTOPILOT_BOOST_PROB     = 0.75   # 3 in 4 episodes when policy is struggling
+    AUTOPILOT_BOOST_THRESHOLD = 15000 # rolling reward below this = struggling
+                                       # 5000 bylo příliš nízko — autopilot sám dosáhl 5000+
+                                       # (dense water +2/krok) a po 3 batchích přepnul na 25 %,
+                                       # ačkoli policy se ještě nic nenaučila. 15000 může
+                                       # dosáhnout pouze policy která skutečně umí hasit.
+    AUTOPILOT_WINDOW          = 200   # zvýšeno z 50 — širší okno zabrání přepnutí na základě
+                                       # několika šťastných autopilot epizod
+    worker_config['autopilot_prob'] = AUTOPILOT_BASELINE_PROB
 
     # ==========================================================================
     # 5. MAIN PARALLEL TRAINING LOOP
@@ -204,41 +204,28 @@ def train():
             batch_start = time.time()
             rollout_start = time.time()
 
-            # Entropy annealing: start at 0.02, decay to 0.005 over 500 batches.
-            # High initial coef encourages early exploration; low final coef lets
-            # the policy converge once it finds useful behaviours.
+            # Entropy annealing: start at 0.01, decay to 0.002 over 500 batches.
+            # Sníženo z 0.02 — vyšší hodnota způsobovala, že entropy bonus dominoval
+            # nad policy gradientem → entropie rostla místo klesala.
             _entropy_anneal_batches = 500
             current_entropy_coef = max(
-                0.005,
-                0.02 - (0.02 - 0.005) * min(batch_idx - 1, _entropy_anneal_batches) / _entropy_anneal_batches
+                0.002,
+                0.01 - (0.01 - 0.002) * min(batch_idx - 1, _entropy_anneal_batches) / _entropy_anneal_batches
             )
 
             # --------------------------------------------------------------
             # Adaptive autopilot decision (evaluated before each batch)
             # --------------------------------------------------------------
-            if _ap_active_batches > 0:
-                worker_config['autopilot_enabled'] = True
-                _ap_active_batches -= 1
-                if _ap_active_batches == 0:
-                    _ap_cooldown_remaining = AUTOPILOT_OFF_COOLDOWN
-                    print(f"🛑 Autopilot OFF — cooling down for {AUTOPILOT_OFF_COOLDOWN} batches")
-            elif _ap_cooldown_remaining > 0:
-                worker_config['autopilot_enabled'] = False
-                _ap_cooldown_remaining -= 1
+             # -- Autopilot probability update (evaluated once per batch) ------
+            if len(episode_rewards_history) >= AUTOPILOT_WINDOW:
+                recent_reward = np.mean(episode_rewards_history[-AUTOPILOT_WINDOW:])
+                if recent_reward < AUTOPILOT_BOOST_THRESHOLD:
+                    worker_config['autopilot_prob'] = AUTOPILOT_BOOST_PROB
+                else:
+                    worker_config['autopilot_prob'] = AUTOPILOT_BASELINE_PROB
             else:
-                worker_config['autopilot_enabled'] = False
-                if len(episode_rewards_history) >= AUTOPILOT_WINDOW:
-                    recent_reward = np.mean(episode_rewards_history[-AUTOPILOT_WINDOW:])
-                    if recent_reward < AUTOPILOT_REWARD_THRESHOLD:
-                        _ap_low_count += 1
-                    else:
-                        _ap_low_count = 0
-                    if _ap_low_count >= AUTOPILOT_TRIGGER_BATCHES:
-                        _ap_active_batches = AUTOPILOT_ON_BATCHES
-                        _ap_low_count = 0
-                        worker_config['autopilot_enabled'] = True
-                        print(f"🚁 Autopilot ON (rolling reward {recent_reward:.1f} < {AUTOPILOT_REWARD_THRESHOLD} for {AUTOPILOT_TRIGGER_BATCHES} batches)")
-
+                worker_config['autopilot_prob'] = AUTOPILOT_BOOST_PROB  # early training
+                
             # --------------------------------------------------------------
             # 5a. Reset per-batch aggregation buffers
             # These must be re-created every batch to stay empty.
@@ -292,9 +279,11 @@ def train():
             rollout_time = time.time() - rollout_start
 
             # Progress log (one line per batch instead of per episode)
-            avg_batch  = np.mean(batch_rewards)
-            avg_reward = np.mean(episode_rewards_history[-15:]) if len(episode_rewards_history) >= 15 else np.mean(episode_rewards_history)
-            print(f"{datetime.datetime.now()} | Batch {batch_idx:04d} (Ep {episodes_played:04d}) | Avg Batch Reward: {avg_batch:.2f} | Rolling avg (15): {avg_reward:.2f} | Rollout: {rollout_time:.1f}s")
+            avg_batch    = np.mean(batch_rewards)
+            avg_lifespan = np.mean(w_lifespans) if w_lifespans else 0
+            max_lifespan = np.max(w_lifespans)  if w_lifespans else 0
+            avg_reward   = np.mean(episode_rewards_history[-15:]) if len(episode_rewards_history) >= 15 else np.mean(episode_rewards_history)
+            print(f"{datetime.datetime.now()} | Batch {batch_idx:04d} (Ep {episodes_played:04d}) | Avg Batch Reward: {avg_batch:.2f} | Rolling avg (15): {avg_reward:.2f} | Lifespan avg/max: {avg_lifespan:.0f}/{max_lifespan:.0f} | Rollout: {rollout_time:.1f}s")
 
             # --------------------------------------------------------------
             # 5e. Save best checkpoint
@@ -450,7 +439,7 @@ def train():
             # unbroken episodes (trajectories) that the GRU can process correctly.
             
             num_minibatches = 4   # 4 minibatches — better gradient estimates per batch
-            mb_size = episodes // num_minibatches
+            mb_size = max(1, episodes // num_minibatches)
             
             # Reshape advantages: [episodes, max_steps, num_agents]
             cr_adv_seq = cr_adv.view(episodes, max_steps, num_agents)
@@ -470,17 +459,8 @@ def train():
                 # Transposed so we can slice it easily by episode index.
                 h_scout_seq    = h_scout.transpose(0, 1)  
                 
-                # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                # CALCULATE ACTION JERK (Smoothness Metric)
-                # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                # We measure how much the actions change between consecutive 
-                # timesteps. Lower values = smoother flight.
-                # Computed ONCE before the loop to save time.
-                with torch.no_grad():
-                    s_diff = torch.abs(s_actions_seq[:, 1:] - s_actions_seq[:, :-1])
-                    jerk_history.append(s_diff.mean().item())
             else:
-                jerk_history.append(0.0)
+                pass  # no scouts — jerk will be computed from commander below
 
             # Reshape Commander tensors (if commanders exist)
             if commander_actor is not None:
@@ -490,6 +470,19 @@ def train():
                 c_actions_seq  = c_actions.view(episodes, max_steps, -1)
                 c_logprobs_seq = c_logprobs.view(episodes, max_steps)
                 h_cmdr_seq     = h_cmdr.transpose(0, 1)
+
+                # ----------------------------------------------------------
+                # COMMANDER DIAGNOSTICS (per-batch action stats)
+                # ----------------------------------------------------------
+                # Measure action smoothness (jerk) and per-dim mean/std.
+                # Jerk ≈ 0 means actions barely change → policy may be stuck.
+                # Std ≈ 0 for a dim means network saturated / output collapsed.
+                with torch.no_grad():
+                    acts_flat = c_actions_seq.reshape(-1, c_actions_seq.size(-1))
+                    cmdr_act_mean_history.append(acts_flat.mean(0).cpu().numpy())
+                    cmdr_act_std_history.append(acts_flat.std(0).cpu().numpy())
+                    c_diff = torch.abs(c_actions_seq[:, 1:] - c_actions_seq[:, :-1])
+                    jerk_history.append(c_diff.mean().item())
 
             # Reshape Critic tensors
             # The critic processes all agents. We transpose so the shape is
@@ -535,6 +528,7 @@ def train():
                         mb_acts    = s_actions_seq[mb_inds]
                         mb_old_lp  = s_logprobs_seq[mb_inds].view(-1)
                         mb_adv     = s_adv_seq[mb_inds].reshape(-1)
+                        mb_adv     = (mb_adv - mb_adv.mean()) / (mb_adv.std() + 1e-8)  # normalize
                         
                         # Restore GRU hidden state shape: [1, curr_mb_size, dim]
                         mb_h_s     = h_scout_seq[mb_inds].transpose(0, 1) 
@@ -546,7 +540,10 @@ def train():
                         new_lp_s  = dist.log_prob(flat_acts).sum(1)
                         
                         # IMPORTANCE SAMPLING RATIO: ratio = π_new(a|s) / π_old(a|s)
-                        ratio_s = torch.exp(new_lp_s - mb_old_lp)
+                        # Clamp log-ratio to [-10, 10] before exp to prevent overflow to inf
+                        # (which would cause inf loss → NaN gradients → NaN weights).
+                        log_ratio_s = (new_lp_s - mb_old_lp).clamp(-10.0, 10.0)
+                        ratio_s = torch.exp(log_ratio_s)
                         
                         # PPO CLIPPED OBJECTIVE
                         # Taking max(pg1, pg2) -- the PESSIMISTIC objective --
@@ -570,6 +567,7 @@ def train():
                         mb_acts    = c_actions_seq[mb_inds]
                         mb_old_lp  = c_logprobs_seq[mb_inds].view(-1)
                         mb_adv     = c_adv_seq[mb_inds].reshape(-1)
+                        mb_adv     = (mb_adv - mb_adv.mean()) / (mb_adv.std() + 1e-8)  # normalize
                         mb_h_c     = h_cmdr_seq[mb_inds].transpose(0, 1)
                         
                         dist, _, _ = commander_actor(mb_fixed, mb_msgs, mb_msg_m, mb_h_c)
@@ -578,7 +576,8 @@ def train():
                         new_lp_c  = dist.log_prob(flat_acts).sum(1)
                         entropy_sum += dist.entropy().sum(1).mean()
                         
-                        ratio_c = torch.exp(new_lp_c - mb_old_lp)
+                        log_ratio_c = (new_lp_c - mb_old_lp).clamp(-10.0, 10.0)
+                        ratio_c = torch.exp(log_ratio_c)
                         pg1_c   = -mb_adv * ratio_c
                         pg2_c   = -mb_adv * torch.clamp(ratio_c, 1 - clip_coef, 1 + clip_coef)
                         policy_loss_c = torch.max(pg1_c, pg2_c).mean()
@@ -622,6 +621,10 @@ def train():
                     # 3. clip_grad_norm_(): Prevent "exploding gradients" by
                     #    capping the L2 norm of the gradients at 0.5.
                     # 4. step(): Apply the gradients via the Adam optimiser.
+                    if not torch.isfinite(loss):
+                        print(f"⚠️  Non-finite loss ({loss.item():.4e}) — skipping minibatch to prevent NaN weights")
+                        optimizer.zero_grad()
+                        continue
                     optimizer.zero_grad()
                     loss.backward()
                     params = list(critic.parameters())
@@ -629,6 +632,10 @@ def train():
                     if commander_actor: params += list(commander_actor.parameters())
                     nn.utils.clip_grad_norm_(params, max_norm=0.5)
                     optimizer.step()
+                    # Sanity-check: abort immediately if weights became NaN
+                    if any(torch.isnan(p.data).any() for p in params):
+                        raise RuntimeError("NaN weights after optimizer step — training unstable. "
+                                           "Consider reducing lr or checking reward scale.")
                     
                     # Accumulate metrics for logging
                     epoch_loss += loss.item()
@@ -673,53 +680,82 @@ def train():
                     torch.save(commander_actor.state_dict(), f"saved_models/commander_ep{episodes_played}.pt")
                 torch.save(critic.state_dict(),              f"saved_models/critic_ep{episodes_played}.pt")
 
-                # --- 4-panel training dashboard ---
-                plt.figure(figsize=(20, 5))
+                # --- 2×3 training dashboard ---
+                fig, axes = plt.subplots(2, 3, figsize=(21, 10))
 
-                # Panel 1: Episode rewards over time
-                # Raw rewards are noisy; 20-episode moving average shows the trend.
-                plt.subplot(1, 5, 1)
-                plt.plot(episode_rewards_history, label="Reward", alpha=0.3, color='green')
+                # (0,0) Episode rewards over time
+                ax = axes[0, 0]
+                ax.plot(episode_rewards_history, label="Reward", alpha=0.3, color='green')
                 if len(episode_rewards_history) > 20:
-                    plt.plot(np.convolve(episode_rewards_history, np.ones(20)/20, mode='valid'),
+                    ax.plot(np.convolve(episode_rewards_history, np.ones(20)/20, mode='valid'),
                              label="MA 20", color='darkgreen')
-                plt.title("Reward over episodes")
-                plt.grid(True, alpha=0.3)
-                plt.legend()
+                ax.set_title("Reward over episodes")
+                ax.grid(True, alpha=0.3)
+                ax.legend()
 
-                # Panel 2: Loss curves (log scale because values span many orders)
-                plt.subplot(1, 5, 2)
-                plt.plot(loss_history,   label="Total Loss",         color='red',  alpha=0.5)
-                plt.plot(v_loss_history, label="Value Loss (Critic)", color='blue', alpha=0.5)
-                plt.title("Loss (log scale)")
-                plt.yscale('log')
-                plt.grid(True, alpha=0.3)
-                plt.legend()
+                # (0,1) Loss curves (log scale)
+                ax = axes[0, 1]
+                ax.plot(loss_history,   label="Total Loss",         color='red',  alpha=0.5)
+                ax.plot(v_loss_history, label="Value Loss (Critic)", color='blue', alpha=0.5)
+                ax.set_title("Loss (log scale)")
+                ax.set_yscale('log')
+                ax.grid(True, alpha=0.3)
+                ax.legend()
 
-                # Panel 3: Policy entropy — measures how exploratory the policy is.
-                # Should start high (random) and slowly decrease as policy converges.
-                plt.subplot(1, 5, 3)
+                # (0,2) Policy entropy
+                ax = axes[0, 2]
                 if entropy_history:
-                    plt.plot(entropy_history, color='purple')
-                    plt.title("Policy Entropy (exploration)")
+                    ax.plot(entropy_history, color='purple')
+                    ax.set_title("Policy Entropy (exploration)")
                 else:
-                    plt.text(0.5, 0.5, 'No entropy data yet', ha='center')
-                plt.grid(True, alpha=0.3)
+                    ax.text(0.5, 0.5, 'No entropy data yet', ha='center', transform=ax.transAxes)
+                ax.grid(True, alpha=0.3)
 
-                # Panel 4: Average agent lifespan — how long agents survive per episode.
-                # Increasing lifespan generally means agents are getting better.
-                plt.subplot(1, 5, 4)
-                plt.plot(lifespan_history, color='orange')
-                plt.title("Avg agent lifespan (steps)")
+                # (1,0) Average agent lifespan
+                ax = axes[1, 0]
+                ax.plot(lifespan_history, color='orange', alpha=0.3, linewidth=0.6)
+                if len(lifespan_history) > 20:
+                    ma_life = np.convolve(lifespan_history, np.ones(20)/20, mode='valid')
+                    ax.plot(range(19, len(lifespan_history)), ma_life,
+                             color='darkorange', linewidth=1.5, label="MA 20")
+                    ax.legend(fontsize=8)
+                ax.set_xlabel("Episodes")
+                ax.set_ylabel("Steps")
+                ax.set_title("Avg agent lifespan (steps)")
 
-                # Panel 5: Action Jerk (The new smoothness metric)
-                plt.subplot(1, 5, 5)
+                # (1,1) Commander Action Jerk
+                ax = axes[1, 1]
                 if jerk_history:
-                    plt.plot(jerk_history, color='teal')
-                    plt.title("Action Jerk (Smoothness)")
-                    plt.xlabel("Batches")
-                    plt.ylabel("Avg Δ Action")
-                plt.grid(True, alpha=0.3)
+                    ax.plot(jerk_history, color='teal')
+                    ax.set_title("Cmdr Action Jerk (Δ between steps)")
+                    ax.set_xlabel("Batches")
+                    ax.set_ylabel("Avg |Δ action|")
+                else:
+                    ax.text(0.5, 0.5, 'No jerk data', ha='center', transform=ax.transAxes)
+                ax.grid(True, alpha=0.3)
+
+                # (1,2) Commander action mean per dim  (+/- std as shaded band)
+                ax = axes[1, 2]
+                ACTION_LABELS = ["Roll", "Pitch", "Throttle", "Water"]
+                ACTION_COLORS = ["steelblue", "tomato", "forestgreen", "goldenrod"]
+                if cmdr_act_mean_history:
+                    means = np.array(cmdr_act_mean_history)   # [batches, 4]
+                    stds  = np.array(cmdr_act_std_history)    # [batches, 4]
+                    xs    = np.arange(len(means))
+                    for i, (lbl, col) in enumerate(zip(ACTION_LABELS, ACTION_COLORS)):
+                        ax.plot(xs, means[:, i], label=lbl, color=col)
+                        ax.fill_between(xs,
+                                        means[:, i] - stds[:, i],
+                                        means[:, i] + stds[:, i],
+                                        alpha=0.15, color=col)
+                    ax.axhline(0, color='black', linewidth=0.5, linestyle='--')
+                    ax.set_ylim(-1.2, 1.2)
+                    ax.set_title("Cmdr Action Mean ± Std per Dim")
+                    ax.set_xlabel("Batches")
+                    ax.legend(fontsize=8)
+                else:
+                    ax.text(0.5, 0.5, 'No cmdr action data', ha='center', transform=ax.transAxes)
+                ax.grid(True, alpha=0.3)
 
                 plt.tight_layout()
                 plt.savefig("final_training_plot.png")

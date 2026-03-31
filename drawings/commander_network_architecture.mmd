@@ -1,0 +1,41 @@
+graph TD
+    %% Definice vstupů (Žlutá)
+    SelfState["17-element self_state vector"]
+    ScoutMsgs["N x 5d Scout Messages"]
+
+    %% Definice procesů (Červená)
+    MLPEnc["MLP Encoder"]
+    MsgEmb["Message Embedding (Linear)"]
+    CrossAttn["Cross-Attention Mechanism"]
+    Concat{"Concatenation<br>(128d vector)"}
+    LayerNorm["Layer Normalization"]
+    GRU["Gated Recurrent Unit (GRU)<br>128d Hidden State"]
+    ActHead["Action Head (MLP)"]
+
+    %% Definice mezivýstupů (Modrá)
+    EncState["64d Encoded ego-state"]
+    EmbMsgs["64d Embedded Messages"]
+    Context["64d Attention Context"]
+
+    %% Finální výstupy (Bílá/Zelená)
+    ActDist["Action Distribution<br>N(μ, σ)"]
+    ActionOut["4d Continuous Control<br>(Roll, Pitch, Throttle, Trigger)"]
+
+    %% Propojení - Vlastní stav
+    SelfState --> MLPEnc --> EncState
+
+    %% Propojení - Zprávy
+    ScoutMsgs --> MsgEmb --> EmbMsgs
+
+    %% Cross-Attention logika
+    EncState -->|Query| CrossAttn
+    EmbMsgs -->|Keys / Values| CrossAttn
+    CrossAttn --> Context
+
+    %% Fúze a Paměť (Obojí jde do Concat)
+    EncState --> Concat
+    Context --> Concat
+    Concat --> LayerNorm --> GRU
+
+    %% Výstup
+    GRU --> ActHead --> ActDist --> ActionOut

@@ -67,10 +67,11 @@ class FixedWing(BaseDrone):
         """
         Updates the drone state using the Guidance Model differential equations.
         
-        Inputs: [Roll, Throttle, Pitch, Water_Trigger]
+        Inputs: [Roll, Pitch, Throttle, Water_Trigger]
         - Roll (-1..1): Sets Commanded Roll (phi_c)
-        - Throttle (0..1): Sets Commanded Airspeed (Va_c)
         - Pitch (-1..1): Adjusts Commanded Altitude (h_c)
+        - Throttle (0..1): Sets Commanded Airspeed (Va_c)
+        - Water_Trigger (0 or 1): Opens water valve when > 0.5
         """
 
         # --- 1. Parse Inputs ---

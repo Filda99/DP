@@ -6,12 +6,14 @@
 
 # ─── Sdílené parametry ───────────────────────────────────────────────────────
 SHARED = {
-    "survival_bonus":       0.05,   # per-krok bonus za přežití (oba agenti)
-    "boundary_penalty":     2.0,    # max penalizace při nárazu do hranice (bylo 0.3 — příliš slabé)
-    "boundary_extra":       3.0,    # extra penalizace pro fixed-wing blízko hranice (bylo 0.5)
-    "crash_penalty":        -20,    # penalizace za smrt (sníženo z -50 — aby crash-avoidance nedominoval policy)
+    "survival_bonus":       0.3,   # per-krok bonus za přežití (oba agenti)
+    "boundary_penalty":     5.0,    # max penalizace při nárazu do hranice
+    "boundary_extra":       3.0,    # extra penalizace pro fixed-wing blízko hranice
+    "crash_penalty":        -50,    # sníženo z -150 — break-even byl na 500 krocích (= aktuální avg lifespan)
+                                    # → advantage ≈ 0 → policy gradient ≈ šum → entropie rostla
+                                    # s -50: break-even = 167 kroků, lifespan 500 = +100 advantage → jasný gradient
     "reward_clip_min":      -15.0,
-    "reward_clip_max":       50.0,
+    "reward_clip_max":      150.0,  # zvýšeno z 50 — extinguish bonus (eff*500) může být ~100/krok
 }
 
 # ─── Quadkoptéra (Scout) ─────────────────────────────────────────────────────
@@ -38,7 +40,7 @@ QUAD = {
 # ─── Fixed-wing (Commander) ──────────────────────────────────────────────────
 FIXED = {
     # Hranice mapy
-    "boundary_threshold_frac":  0.60,   # 60 % map_bounds/2 = 300m od okraje (bylo 0.25=125m → příliš pozdě pro fw)
+    "boundary_threshold_frac":  0.75,   # 75 % map_bounds/2 = 375m od okraje — penalizace začíná dřív
     "boundary_extra_frac":      0.35,   # extra penalizace pod 35 % prahu = 105m od okraje
 
     # Výška — sweet spot pro hašení

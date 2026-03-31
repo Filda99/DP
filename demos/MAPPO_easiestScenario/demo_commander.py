@@ -22,7 +22,7 @@ from src.env_core import DroneFireEnv
 from src.models import CommanderActor
 
 # ─── Konfigurace ──────────────────────────────────────────────────────────────
-MODEL_PATH  = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep42600.pt"
+MODEL_PATH  = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep32400.pt"
 MAX_STEPS   = 2000
 GIF_EVERY   = 3          # zapiš každý N-tý krok do GIFu (menší soubor)
 GIF_FPS     = 20

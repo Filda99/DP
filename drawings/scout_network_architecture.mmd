@@ -1,0 +1,46 @@
+graph TD
+    %% Definice vstupů
+    Map["32x32 Grayscale Fire Map"]
+    RelPos["Relative positions [dx, dy, dz]"]
+    Mask["Neighbors Mask"]
+    State["15-element self_state vector"]
+
+    %% Definice procesů
+    CNN["Strided Convolutions (CNN)"]
+    Attn["Multi-Head Attention"]
+    MLP["Linear + ReLU Embedding"]
+
+    %% Definice mezivýstupů
+    VisFeat["128d Visual Feature Vector"]
+    CtxFeat["64d Neighborhood Context"]
+    StateFeat["64d Encoded self_state"]
+
+    %% Agregace a paměť
+    Concat{"Concatenation<br>(256d vector)"}
+    LayerNorm["Layer Normalization"]
+    GRU["Gated Recurrent Unit (GRU)<br>128d Hidden State"]
+
+    %% Výstupní hlavy
+    ActHead["Action Head (MLP)"]
+    MsgHead["Message Head (MLP)"]
+
+    %% Finální výstupy
+    Action["Action Distribution<br>N(μ, σ)"]
+    Message["5d Communication Protocol<br>('3+2' design)"]
+
+    %% Propojení - Vizuální větev
+    Map --> CNN --> VisFeat --> Concat
+
+    %% Propojení - Větev vlastního stavu
+    State --> MLP --> StateFeat --> Concat
+
+    %% Propojení - Attention větev (včetně Query propojení)
+    RelPos -->|Keys / Values| Attn
+    Mask -.->|Masking| Attn
+    StateFeat -->|Query| Attn
+    Attn --> CtxFeat --> Concat
+
+    %% Propojení - Zbytek sítě
+    Concat --> LayerNorm --> GRU
+    GRU --> ActHead --> Action
+    GRU --> MsgHead --> Message

@@ -77,6 +77,10 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
     # not at the top of the file.
     import os
     os.environ["OMP_NUM_THREADS"] = "1"  # Force OpenMP to 1 thread
+    # Worker processes inherit the parent's cwd, but relative paths in PyBullet
+    # (e.g. "../urdf/plane.urdf") break if training is launched from any directory
+    # other than src/. Pin the cwd to src/ so all relative URDF paths resolve.
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
     
     import torch
     torch.set_num_threads(1)
@@ -236,6 +240,13 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
         ep_rollouts     = {a: [] for a in local_env.possible_agents}
         agent_lifespans = {a: config['max_steps'] for a in local_env.possible_agents}
         episode_reward  = 0.0
+        cmdr_pos_log    = []   # [x, y, z] per step for fixed-wing agent
+
+        # Roll autopilot flag ONCE per episode — the whole episode is either
+        # a demonstration or a free-policy episode. Re-rolling per step would
+        # give the GRU an inconsistent mix of forced and free actions within
+        # one sequence, corrupting the hidden-state trajectory.
+        _ap_this_episode = np.random.random() < config.get('autopilot_prob', 0.0)
 
         # -----------------------------------------------------------------------
         # 6b. TIMESTEP LOOP
@@ -353,13 +364,12 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
             msgs_t = torch.stack(scout_msgs_list, dim=1) if scout_msgs_list else d_msgs  # [1, N, msg_dim]
             msgs_m = torch.tensor(scout_mask_list).unsqueeze(0) if scout_mask_list else d_msg_m  # [1, N]
 
-
             q_fire_pos = None  # inicializace — vždy definovaná
             for q in local_env.quad_agents:
                 if q in local_env.agents and q in local_env.sim.drones:
                     q_obs_raw = local_env._get_quad_obs(q)
                     q_intensity = q_obs_raw["self_state"][14]
-                    if q_intensity > 0.1:
+                    if q_intensity > 0.005:   # stejný práh jako v env_core.py; mean 32×32 mapy max ~0.04
                         rel_x = q_obs_raw["self_state"][12]
                         rel_y = q_obs_raw["self_state"][13]
                         q_pos_raw = local_env.sim.drones[q].get_position()
@@ -378,29 +388,54 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
                         val, c_h_out     = local_critic(g_tensor, crit_h[f])
                         act = dist.sample()
 
-                        # === ADAPTIVE AUTOPILOT (ACTION FORCING) ===
-                        # Enabled by train.py when rolling reward is stuck below
-                        # threshold. Uses the scout-reported fire position
-                        # (q_fire_pos) so the commander relies on scout messages,
-                        # not ground-truth coordinates — consistent with the core
-                        # design goal: commander learns from scout messages only.
-                        if config.get('autopilot_enabled', False):
-                            f_pos = local_env.sim.drones[f].get_position()
-                            if q_fire_pos is not None:
-                                vec = np.array([q_fire_pos[0] - f_pos[0],
-                                                q_fire_pos[1] - f_pos[1]])
-                                dist_to_fire_ap = np.linalg.norm(vec)
-                                if dist_to_fire_ap > 150.0:
-                                    # Steer toward scout-reported fire (60% of steps)
-                                    if np.random.random() < 0.6:
-                                        angle = np.arctan2(vec[1], vec[0])
-                                        act[0, 0] = float(np.clip(angle / np.pi, -1, 1))
-                                else:
-                                    # Drop water near fire (70% of steps)
-                                    if np.random.random() < 0.7:
-                                        act[0, 3] = torch.tensor(1.0)
-                            # If no scout signal, don't force anything — let policy explore
-                        # ===============================================
+                        # # === ADAPTIVE AUTOPILOT (ACTION FORCING) ===
+                        # # action[1] (pitch) = γ^c (flight-path angle setpoint) × 45°
+                        # # The model inner loop tracks: γ̇ = 5 × (γ^c − γ)
+                        # # → pitch = 0.0 is EXACT level flight by physics design.
+                        # # We use a PD controller on altitude instead of hardcoded
+                        # # pitch constants, so the autopilot is correct regardless
+                        # # of wind, spawn altitude, or physics constants.
+                        # if _ap_this_episode:
+                        #     f_pos = local_env.sim.drones[f].get_position()
+                        #     f_vel = local_env.sim.drones[f].get_velocity()
+
+                        #     # PD altitude controller (in NN pitch space [-1, 1])
+                        #     # Kp: 10 m error → γ^c ≈ 3° (pitch_nn ≈ 0.07)
+                        #     # Kd: damps vertical oscillation via vertical speed
+                        #     alt_err  = 60.0 - f_pos[2]   # +ve = below target, needs climb
+                        #     vz       = f_vel[2]           # +ve = climbing
+                        #     pitch_pd = float(np.clip(0.007 * alt_err - 0.015 * vz,
+                        #                              -0.25, 0.25))
+
+                        #     if q_fire_pos is not None:
+                        #         vec             = np.array([q_fire_pos[0] - f_pos[0],
+                        #                                     q_fire_pos[1] - f_pos[1]])
+                        #         dist_to_fire_ap = np.linalg.norm(vec)
+                        #         if dist_to_fire_ap > 150.0:
+                        #             # Approach: steer toward fire, PD keeps altitude.
+                        #             # 75 % forced, 25 % free → GRU sees varied states.
+                        #             if np.random.random() < 0.75:
+                        #                 angle = np.arctan2(vec[1], vec[0])
+                        #                 act[0, 0] = float(np.clip(angle / np.pi, -1, 1))
+                        #                 act[0, 1] = pitch_pd   # PD altitude — not hardcoded
+                        #                 act[0, 2] = 0.3        # cruise throttle
+                        #                 act[0, 3] = -1.0       # water OFF — save for fire
+                        #         else:
+                        #             # Over fire: fly straight, drop water, PD altitude.
+                        #             if np.random.random() < 0.75:
+                        #                 act[0, 0] = 0.0
+                        #                 act[0, 1] = pitch_pd   # PD altitude — not hardcoded
+                        #                 act[0, 2] = 0.0        # standard cruise speed
+                        #                 act[0, 3] = 1.0        # water ON
+                        #     else:
+                        #         # No fire signal yet (scout hasn't reached fire).
+                        #         # Lock pitch via PD so commander doesn't crash during
+                        #         # the first ~1000 steps while scout is still searching.
+                        #         # Roll and throttle left to policy for free exploration.
+                        #         if np.random.random() < 0.75:
+                        #             act[0, 1] = pitch_pd
+                        #             act[0, 3] = -1.0           # water OFF — don't waste it
+                        # # ===============================================
                     step_results[f] = {
                         "type": "commander",
                         "self": s_st, "msgs": msgs_t, "m_m": msgs_m,
@@ -412,6 +447,9 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
                     }
                     cmdr_h[f], crit_h[f] = h_out, c_h_out
                     actions[f] = act.squeeze(0).numpy()
+                    # Track position for survivor analysis
+                    if f in local_env.sim.drones:
+                        cmdr_pos_log.append(local_env.sim.drones[f].get_position().copy())
                 else:
                     step_results[f] = {"type": "dead_cmdr", "gs": g_tensor}
 
@@ -589,6 +627,22 @@ def collect_episodes_per_worker(num_eps_to_collect, scout_w, cmdr_w, critic_w, c
 
         worker_total_rewards.append(episode_reward)
         worker_lifespans.append(np.mean(list(agent_lifespans.values())))
+
+        # Save trajectory for full-survival episodes (commander survived all steps)
+        # if (config['N_FIXED'] > 0 and cmdr_pos_log and
+        #         agent_lifespans.get(local_env.fixed_agents[0], 0) == config['max_steps']):
+        #     traj_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+        #                             "..", "output", "survivor_trajectories")
+        #     os.makedirs(traj_dir, exist_ok=True)
+        #     ep_id = batch_start_idx + ep_offset
+        #     traj_path = os.path.join(traj_dir, f"ep_{ep_id:06d}.npz")
+        #     np.savez_compressed(
+        #         traj_path,
+        #         positions=np.array(cmdr_pos_log, dtype=np.float32),
+        #         total_reward=np.float32(episode_reward),
+        #         max_steps=np.int32(config['max_steps']),
+        #     )
+            # print("Mam celou!")
 
     # =========================================================================
     # 9. FINALISE AND RETURN WORKER DATA

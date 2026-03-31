@@ -32,8 +32,8 @@ from src.models import ScoutActor, CommanderActor
 # ============================================================
 # KONFIGURACE
 # ============================================================
-MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_ep16200.pt"
-MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep16200.pt"
+MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_ep22400.pt"
+MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep22400.pt"
 
 N_QUADS    = 1
 N_FIXED    = 1
@@ -41,7 +41,7 @@ MAX_STEPS  = 2000
 GRID_SIZE  = 2000.0
 GIF_EVERY  = 3
 GIF_FPS    = 15
-EPISODE_SEED = 50 #10
+EPISODE_SEED = 101
 # ============================================================
 
 def _load_models(device):
