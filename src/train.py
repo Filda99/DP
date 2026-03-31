@@ -14,6 +14,144 @@ from models import ScoutActor, CommanderActor, MAPPOCritic
 from concurrent.futures import ProcessPoolExecutor
 from worker import collect_episodes_per_worker
 
+
+# =============================================================================
+# PLASTICITY UTILITIES
+# =============================================================================
+
+def weight_perturbation(networks, noise_std=1e-4):
+    """Add tiny Gaussian noise to all parameters of the given networks.
+
+    Purpose: "weight perturbation" from Dohare et al. (2024) — small noise
+    prevents weights from freezing into flat regions around local minima and
+    maintains the network's ability to change (plasticity).  The noise is
+    small enough (~1e-4) that it doesn't meaningfully change the output, but
+    large enough to kick dormant parameters out of zero-gradient regions.
+    """
+    with torch.no_grad():
+        for net in networks:
+            if net is None:
+                continue
+            for p in net.parameters():
+                p.data.add_(torch.randn_like(p.data) * noise_std)
+
+
+def redo_reset_dormant_neurons(network, probe_inputs, dormancy_threshold=0.025):
+    """ReDo: Recycle Dormant neurons (Sokar et al., ICML 2023).
+
+    A neuron is dormant if its average absolute activation across a batch of
+    inputs is less than dormancy_threshold × (mean absolute activation of all
+    neurons in the same layer).  Dormant neurons contribute nothing to the
+    network output — their incoming and outgoing weights no longer receive
+    meaningful gradients.
+
+    For each dormant neuron we:
+      1. Reinitialise its INCOMING weights (Kaiming uniform — the default for ReLU).
+      2. Zero its OUTGOING weights — this preserves the current network output
+         (the neuron starts contributing nothing instead of something wrong),
+         and gradually its output builds up as training continues.
+      3. Zero its bias (if present).
+
+    We target the two ReLU linear layers in CommanderActor:
+      self_embed[0]  : Linear(self_state_dim, 64)
+      msg_embed[0]   : Linear(msg_input_dim,  64)
+
+    GRU internal states are not reset — their recurrent structure makes
+    per-neuron dormancy harder to define and reset safely.
+
+    Parameters
+    ----------
+    network     : nn.Module  — the CommanderActor (or any network with
+                  .self_embed and .msg_embed Sequential layers)
+    probe_inputs : tuple     — (self_state, msgs, msg_mask, h0) tensors on CPU,
+                  a small sample from the last batch used as activation probes.
+    dormancy_threshold : float — fraction of mean activation below which a
+                  neuron is considered dormant (paper uses 0.025).
+
+    Returns
+    -------
+    n_reset : int  — total number of neurons recycled across all layers.
+    """
+    if network is None:
+        return 0
+
+    hooks   = []
+    acts    = {}  # layer_name -> activation tensor
+
+    # Register forward hooks to capture the ReLU output of each target layer.
+    def make_hook(name):
+        def hook(module, inp, out):
+            acts[name] = out.detach()
+        return hook
+
+    # Target: the ReLU output of self_embed and msg_embed
+    # self_embed is nn.Sequential([Linear, ReLU]) so index [1] is ReLU
+    hooks.append(network.self_embed.register_forward_hook(make_hook("self_embed")))
+    hooks.append(network.msg_embed.register_forward_hook(make_hook("msg_embed")))
+
+    # Run a forward pass with probe inputs to collect activations.
+    network.eval()
+    with torch.no_grad():
+        s_st, msgs, mask, h0 = probe_inputs
+        # msg_embed is called inside forward with shape (B, N_scouts, msg_dim).
+        # We call forward() directly so both hooks fire naturally.
+        network(s_st, msgs, mask, h0)
+    network.train()
+
+    for h in hooks:
+        h.remove()
+
+    n_reset = 0
+
+    layer_map = {
+        "self_embed": network.self_embed[0],   # the Linear inside Sequential
+        "msg_embed":  network.msg_embed[0],
+    }
+
+    for name, linear in layer_map.items():
+        if name not in acts:
+            continue
+
+        act = acts[name]  # shape: (B*S, out_features) or (B*S*N, out_features)
+        # Flatten to (samples, neurons)
+        if act.dim() == 3:
+            act = act.reshape(-1, act.size(-1))
+
+        mean_abs = act.abs().mean(0)            # (out_features,)
+        layer_mean = mean_abs.mean().item()     # scalar
+
+        if layer_mean < 1e-8:
+            continue  # entire layer inactive — skip to avoid div by zero
+
+        # Dormancy score: normalised mean activation per neuron
+        score = mean_abs / layer_mean           # (out_features,)
+        dormant_mask = score < dormancy_threshold  # True where dormant
+
+        n_dormant = dormant_mask.sum().item()
+        if n_dormant == 0:
+            continue
+
+        with torch.no_grad():
+            # 1. Reinit incoming weights (rows of weight matrix) with Kaiming uniform
+            nn.init.kaiming_uniform_(linear.weight[dormant_mask], a=0, mode='fan_in', nonlinearity='relu')
+            # 2. Zero outgoing weights — find which downstream layer uses these neurons
+            #    For self_embed → feeds into combined → layer_norm → gru
+            #    We cannot easily zero GRU inputs, so we zero the Linear bias instead
+            #    and zero the rows of layer_norm weight (gamma) for those neurons.
+            if linear.bias is not None:
+                linear.bias[dormant_mask] = 0.0
+            # 3. Layer norm scale for these neurons → reset to 1 (neutral)
+            if name == "self_embed" and hasattr(network, 'layer_norm'):
+                # self_embed output occupies first 64 dims of layer_norm (total 128)
+                network.layer_norm.weight.data[dormant_mask] = 1.0
+                network.layer_norm.bias.data[dormant_mask]   = 0.0
+
+        n_reset += int(n_dormant)
+        print(f"  [ReDo] {name}: {n_dormant}/{linear.out_features} neurons recycled "
+              f"(dormancy<{dormancy_threshold}, layer_mean={layer_mean:.4f})")
+
+    return n_reset
+
 # ============================================================================
 # MAIN TRAINING FUNCTION
 # ============================================================================
@@ -655,6 +793,29 @@ def train():
                 entropy_history.append(epoch_entropy / num_minibatches)
 
             scheduler.step()
+
+            # ==============================================================
+            # PLASTICITY MAINTENANCE (every 50 batches)
+            # ==============================================================
+            # Weight perturbation + ReDo keep the network plastic — able to
+            # learn new behaviours even after many training batches.
+            if batch_idx % 50 == 0:
+                nets = [n for n in [scout_actor, commander_actor, critic] if n is not None]
+                weight_perturbation(nets, noise_std=1e-4)
+                print(f"{datetime.datetime.now()} | 🔧 Weight perturbation applied (batch {batch_idx})")
+
+                if commander_actor is not None:
+                    # Build a minimal probe from the current batch tensors (already on GPU).
+                    # Slice first 64 steps of first episode as the probe — small but representative.
+                    _probe_s   = c_fixed[:64].cpu()
+                    _probe_m   = c_msgs[:64].cpu()
+                    _probe_mm  = c_msg_m[:64].cpu()
+                    _probe_h   = torch.zeros(1, 1, 128)  # fresh hidden state for probe
+                    probe = (_probe_s, _probe_m, _probe_mm, _probe_h)
+                    n_reset = redo_reset_dormant_neurons(commander_actor.cpu(), probe)
+                    commander_actor.to(device)
+                    if n_reset > 0:
+                        print(f"{datetime.datetime.now()} | ♻️  ReDo: {n_reset} dormant neurons recycled in CommanderActor")
             total_time = time.time() - batch_start
             
             # Získáme zprůměrované metriky z poslední epochy pro přesnější logování
