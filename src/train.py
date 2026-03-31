@@ -56,14 +56,14 @@ def train():
     # Learning rates — training from scratch, all networks use full LR.
     # (Use a smaller lr_scout when loading a pre-trained scout for fine-tuning.)
     lr_scout     = 1e-5
-    lr_commander = 3e-4   # fresh start — plný LR pro exploraci od nuly
+    lr_commander = 1e-4
     lr_critic    = 3e-4
 
     path_to_critic = ""
     path_to_scout = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/07_evaluation/models/scout_best.pt"
-    path_to_commander = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep4400.pt"   # od nuly — pre-trained model má zakořeněné špatné chování
+    path_to_commander = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep14800.pt"   # od nuly — pre-trained model má zakořeněné špatné chování
 
-    episodes_played = 4400
+    episodes_played = 14800
 
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS
@@ -147,6 +147,13 @@ def train():
     if scout_actor:     optim_groups.append({"params": scout_actor.parameters(),     "lr": lr_scout})
     if commander_actor: optim_groups.append({"params": commander_actor.parameters(), "lr": lr_commander})
     optimizer = optim.Adam(optim_groups)
+
+    # Jednorázový reset Adam state — vymaže momentum z předchozího tréninku.
+    # Pokud načítáme checkpoint, optimizer neví nic o předchozích gradientech,
+    # ale pokud pokračujeme v té samé session, momentum nese "paměť kroužení".
+    # Reset zachová váhy sítě, pouze vymaže m a v buffery.
+    for state in optimizer.state.values():
+        state.clear()
     num_batches = num_episodes // episodes_per_batch
     # CosineAnnealingWarmRestarts: LR cyklicky klesá a resetuje se každých T_0 batchí.
     # LinearLR flatlinoval na 3e-5 od batche 500 navždy — policy se přestala učit.
@@ -204,13 +211,13 @@ def train():
             batch_start = time.time()
             rollout_start = time.time()
 
-            # Entropy annealing: start at 0.01, decay to 0.002 over 500 batches.
-            # Sníženo z 0.02 — vyšší hodnota způsobovala, že entropy bonus dominoval
-            # nad policy gradientem → entropie rostla místo klesala.
+            # Entropy annealing: start at 0.005, decay to 0.0005 over 500 batches.
+            # Sníženo z 0.01 → 0.002 — lifespan roste reálně, policy exploruje dost,
+            # entropy bonus byl příliš dominantní a způsoboval stoupající logstd.
             _entropy_anneal_batches = 500
             current_entropy_coef = max(
-                0.002,
-                0.01 - (0.01 - 0.002) * min(batch_idx - 1, _entropy_anneal_batches) / _entropy_anneal_batches
+                0.0005,
+                0.005 - (0.005 - 0.0005) * min(batch_idx - 1, _entropy_anneal_batches) / _entropy_anneal_batches
             )
 
             # --------------------------------------------------------------

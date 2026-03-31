@@ -634,20 +634,44 @@ class DroneFireEnv(ParallelEnv):
                     
                 #     self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=yaw_to_fire)
                 # else:
-                # Spawn v 0–40 % map_bounds od středu (= 0–400m), heading ke středu ± 30°
-                # Důvod: random heading ±180° způsoboval, že ~50 % epizod startovalo
-                # čelem ke zdi → okamžitá havárie dříve, než GRU stihlo reagovat.
-                # Toto curriculum zajistí, že každá epizoda začíná letadlem
-                # mířícím dovnitř mapy — síť se učí z epizod kde má šanci přežít.
-                spawn_radius = random.uniform(0.0, self.map_bounds * 0.40)
-                spawn_angle  = random.uniform(0, 2 * np.pi)
-                fw_start_x   = float(spawn_radius * np.cos(spawn_angle))
-                fw_start_y   = float(spawn_radius * np.sin(spawn_angle))
-
-                # Heading ke středu (0,0) ± 30° náhodný jitter
-                to_center_yaw  = np.arctan2(-fw_start_y, -fw_start_x)
-                heading_jitter = random.uniform(-np.radians(30), np.radians(30))
-                fw_yaw         = to_center_yaw + heading_jitter
+                # --- Spawn curriculum (2 režimy) ---
+                #
+                # 80 %: normální spawn — 0–400 m od středu, NÁHODNÝ heading ±180°.
+                #   Dřívější "heading ke středu ±30°" nutilo síť kroužit v centru
+                #   a nikdy necvičit otáčení u zdi. Nyní dostane různorodé scénáře.
+                #   400 m od zdi = 20 s na reakci (20 m/s) → bezpečné.
+                #
+                # 20 %: wall-recovery — spawn 50–150 m od náhodné stěny, heading
+                #   přímo na ni ±30°. Síť MUSÍ naučit otočný manévr, jinak okamžitý
+                #   crash. Tím se gradient pro "vyhýbání zdi" stane dominantním.
+                if random.random() < 0.20:
+                    # Wall-recovery spawn: blízko náhodné stěny, heading k ní
+                    wall = random.choice(['N', 'S', 'E', 'W'])
+                    margin = random.uniform(50.0, 150.0)
+                    if wall == 'N':
+                        fw_start_x = random.uniform(-self.map_bounds * 0.8, self.map_bounds * 0.8)
+                        fw_start_y = self.map_bounds - margin
+                        wall_heading = np.pi / 2          # letí k severu (+Y)
+                    elif wall == 'S':
+                        fw_start_x = random.uniform(-self.map_bounds * 0.8, self.map_bounds * 0.8)
+                        fw_start_y = -self.map_bounds + margin
+                        wall_heading = -np.pi / 2         # letí k jihu (-Y)
+                    elif wall == 'E':
+                        fw_start_x = self.map_bounds - margin
+                        fw_start_y = random.uniform(-self.map_bounds * 0.8, self.map_bounds * 0.8)
+                        wall_heading = 0.0                # letí k východu (+X)
+                    else:  # W
+                        fw_start_x = -self.map_bounds + margin
+                        fw_start_y = random.uniform(-self.map_bounds * 0.8, self.map_bounds * 0.8)
+                        wall_heading = np.pi              # letí k západu (-X)
+                    fw_yaw = wall_heading + random.uniform(-np.radians(30), np.radians(30))
+                else:
+                    # Normální spawn: náhodná pozice v centru, náhodný heading
+                    spawn_radius = random.uniform(0.0, self.map_bounds * 0.40)
+                    spawn_angle  = random.uniform(0, 2 * np.pi)
+                    fw_start_x   = float(spawn_radius * np.cos(spawn_angle))
+                    fw_start_y   = float(spawn_radius * np.sin(spawn_angle))
+                    fw_yaw       = random.uniform(-np.pi, np.pi)
 
                 self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=fw_yaw)
 
@@ -777,8 +801,12 @@ class DroneFireEnv(ParallelEnv):
                     pos = drone.get_position()
                     vel = drone.get_velocity()
 
-                    # 1. Throttle floor — nezřítí se
-                    throttle_physical = max(0.5, (smooth_action[2] + 1.0) / 2.0)  # zůstane v [0,1]
+                    # 1. Throttle: lineární mapování [-1,1] → [0.45, 1.0]
+                    # Předchozí max(0.5, (x+1)/2) způsobovalo dead-zone:
+                    # celá záporná polovina výstupu sítě mapovala na 0.5 (minimum).
+                    # Gradient byl nulový pro 80%+ kroků → síť se throttle nenaučila.
+                    # Nové mapování: network=-1 → 0.45 m/s, network=0 → 0.725, network=1 → 1.0
+                    throttle_physical = 0.45 + (smooth_action[2] + 1.0) / 2.0 * 0.55
                     mapped_action[2] = throttle_physical
 
                     # 2. Pitch clamp
@@ -995,30 +1023,6 @@ class DroneFireEnv(ParallelEnv):
 
         if dist_to_edge < threshold:
             reward -= SHARED["boundary_penalty"] * (1.0 - dist_to_edge / threshold) ** 2
-
-        # --- Approach velocity penalty (pouze fixed-wing) ---
-        # Penalizuje letěni SMĚREM ke zdi, ne jen blízkost.
-        # Díky tomu dostane síť negativní signal dřív — i 600m od zdi,
-        # pokud letí přímo na ni. Action smoothing (tau≈5 kroků) způsobuje
-        # pozdní reakci; tato penalizace dává signal PŘED dosažením penalty zóny.
-        if "fixed" in agent:
-            vel = drone.get_velocity()
-            # Rychlost přibližování ke každé stěně (+ve = přibližování)
-            vx, vy = vel[0], vel[1]
-            dist_n, dist_s, dist_e, dist_w = dist_boundaries
-            approach_n = max(0.0,  vy)  # kladné vy = jde k severu (+Y stěna)
-            approach_s = max(0.0, -vy)  # záporné vy = jde k jihu  (-Y stěna)
-            approach_e = max(0.0,  vx)  # kladné vx = jde k východu (+X stěna)
-            approach_w = max(0.0, -vx)  # záporné vx = jde k západu (-X stěna)
-            # Váha: čím blíže ke zdi, tím větší penalizace za pohyb k ní
-            # (normalizováno 1/map_bounds ≈ 1/1000 aby bylo ve správném řádu)
-            approach_penalty = (
-                approach_n * (1.0 - dist_n / self.map_bounds) +
-                approach_s * (1.0 - dist_s / self.map_bounds) +
-                approach_e * (1.0 - dist_e / self.map_bounds) +
-                approach_w * (1.0 - dist_w / self.map_bounds)
-            ) * 0.015  # váha: max ~0.4/krok při 25m/s přímo na zeď z kraje threshold zóny
-            reward -= approach_penalty
 
         # --- Altitude penalty (spojitá, bez capu) ---
         if "fixed" in agent:
