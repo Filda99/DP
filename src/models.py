@@ -592,8 +592,12 @@ class SimpleFWActor(nn.Module):
         self.gru = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim, batch_first=True)
 
         self.action_mean = nn.Linear(hidden_dim, action_dim)
-        # std ≈ 0.6 at init — enough exploration for PPO to find good actions
-        self.action_logstd = nn.Parameter(torch.full((1, action_dim), -0.5))
+        # Per-dimension std:
+        #   [Roll, Pitch, Throttle, Water]
+        # Pitch needs tighter init: std=0.6 → 27° average pitch → constant
+        # diving/climbing → crashes.  std=0.3 → 13° is explorative but
+        # survivable.  Roll/throttle/water can be wider.
+        self.action_logstd = nn.Parameter(torch.tensor([[-0.5, -1.2, -0.5, -0.5]]))
 
     def forward(self, self_state, incoming_messages=None, message_mask=None, hidden_state=None):
         """

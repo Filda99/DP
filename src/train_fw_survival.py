@@ -247,7 +247,9 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
 
     # ── Hyperparameters ──────────────────────────────────────────────────────
     num_episodes = 30_000
-    max_steps = 2000
+    max_steps = 500       # short episodes: aircraft lives ~400 steps, so 500
+                          # avoids >80% dead padding; increase once survival is
+                          # reliable
     gamma = 0.99
     gae_lambda = 0.95
     clip_coef = 0.2
@@ -260,10 +262,10 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
     lr_critic = 3e-4
     hidden_dim = 64      # SimpleFWActor hidden dim
 
-    # Entropy: start at 0.01 (moderate exploration), anneal to 0.001 over 300 batches
-    entropy_start = 0.01
-    entropy_end = 0.001
-    entropy_anneal_batches = 300
+    # Entropy: start high to prevent premature std collapse
+    entropy_start = 0.02
+    entropy_end = 0.002
+    entropy_anneal_batches = 500
 
     # ── Dims ─────────────────────────────────────────────────────────────────
     temp_env = DroneFireEnv(num_quads=0, num_fixed=1, grid_size_m=2000.0, max_steps=max_steps)
@@ -383,16 +385,20 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         win = min(60, len(reward_history))
         avg_roll = float(np.mean(reward_history[-win:]))
 
-        # Log current std
+        # Log per-dimension std
         with torch.no_grad():
-            cur_std = torch.exp(actor.action_logstd.clamp(-3.0, 0.0)).mean().item()
-        logstd_history.append(cur_std)
+            cur_stds = torch.exp(actor.action_logstd.clamp(-3.0, 0.0)).squeeze()
+            cur_std = cur_stds.mean().item()
+        logstd_history.append(cur_stds.cpu().numpy().copy())
 
+        avg_life = float(np.mean(batch_rewards))  # approx from rewards
+        recent_life = float(np.mean(lifespan_history[-win:])) if lifespan_history else 0
         print(f"{datetime.datetime.now().strftime('%H:%M:%S')} | "
               f"Batch {batch_idx:04d} (Ep {episodes_played:05d}) | "
-              f"Batch: {avg_batch:+7.1f}  Roll{win}: {avg_roll:+7.1f}  "
-              f"std={cur_std:.3f}  ent_c={entropy_coef:.4f}  "
-              f"rollout: {rollout_time:.1f}s")
+              f"R: {avg_batch:+7.1f} ({avg_roll:+7.1f})  "
+              f"Life: {recent_life:.0f}  "
+              f"std=[{cur_stds[0]:.2f},{cur_stds[1]:.2f},{cur_stds[2]:.2f},{cur_stds[3]:.2f}]  "
+              f"ent_c={entropy_coef:.4f}  {rollout_time:.1f}s")
 
         # Save best
         if episodes_played >= 60 and avg_roll > best_avg:
@@ -555,10 +561,18 @@ def _save_plot(rewards, losses, lifespans, logstds, save_dir, batch_idx, use_cri
     ax.set_ylim(0, 2100)
     ax.grid(True, alpha=0.3)
 
-    # Std
+    # Std (per dimension)
     ax = axes[1, 1]
-    ax.plot(logstds, color='purple', linewidth=1)
-    ax.set_title("Action Std (mean across dims)")
+    if len(logstds) > 0 and hasattr(logstds[0], '__len__'):
+        arr = np.array(logstds)
+        labels = ['Roll', 'Pitch', 'Throttle', 'Water']
+        colors = ['blue', 'red', 'green', 'orange']
+        for i, (lbl, col) in enumerate(zip(labels, colors)):
+            ax.plot(arr[:, i], color=col, linewidth=1, label=lbl)
+        ax.legend(fontsize=8)
+    else:
+        ax.plot(logstds, color='purple', linewidth=1)
+    ax.set_title("Action Std per Dimension")
     ax.set_xlabel("Batches")
     ax.grid(True, alpha=0.3)
 
