@@ -592,11 +592,21 @@ class SimpleFWActor(nn.Module):
         self.gru = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim, batch_first=True)
 
         self.action_mean = nn.Linear(hidden_dim, action_dim)
+        # Zero-init weights so initial policy is deterministic bias only.
+        nn.init.zeros_(self.action_mean.weight)
+        # Bias encodes the "default behaviour" before any learning:
+        #   [Roll=0.5, Pitch=0, Throttle=0, Water=-0.5]
+        # Roll=0.5 → continuous gentle turn → the ONLY way to survive.
+        # Straight flight (roll=0) hits the boundary in ~250 steps.
+        # Roll=0.5 → 22.5° bank → orbit radius ~55m → stays in map.
+        # Water=-0.5 → mapped to 0.25 → valve closed (threshold 0.5).
+        with torch.no_grad():
+            self.action_mean.bias.copy_(torch.tensor([0.5, 0.0, 0.0, -0.5]))
+
         # Per-dimension std:
         #   [Roll, Pitch, Throttle, Water]
-        # Pitch needs tighter init: std=0.6 → 27° average pitch → constant
-        # diving/climbing → crashes.  std=0.3 → 13° is explorative but
-        # survivable.  Roll/throttle/water can be wider.
+        # Pitch tighter: std=0.3 → 13° perturbations (survivable).
+        # Roll/throttle/water wider: std=0.6.
         self.action_logstd = nn.Parameter(torch.tensor([[-0.5, -1.2, -0.5, -0.5]]))
 
     def forward(self, self_state, incoming_messages=None, message_mask=None, hidden_state=None):

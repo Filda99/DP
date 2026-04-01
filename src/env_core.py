@@ -644,8 +644,7 @@ class DroneFireEnv(ParallelEnv):
                 # 20 %: wall-recovery — spawn 50–150 m od náhodné stěny, heading
                 #   přímo na ni ±30°. Síť MUSÍ naučit otočný manévr, jinak okamžitý
                 #   crash. Tím se gradient pro "vyhýbání zdi" stane dominantním.
-                if random.random() < 0.20:
-                    # Wall-recovery spawn: blízko náhodné stěny, heading k ní
+                if False:  # Wall-recovery disabled for Phase 1 flight training
                     wall = random.choice(['N', 'S', 'E', 'W'])
                     margin = random.uniform(50.0, 150.0)
                     if wall == 'N':
@@ -755,12 +754,17 @@ class DroneFireEnv(ParallelEnv):
 
         for agent_name, action in actions.items():
             # -----------------------------------------------------------------
-            # Action smoothing: mild EMA (α=0.5) — just enough to prevent
-            # single-step jitter while letting the network meaningfully
-            # control the aircraft.  Previous α=0.2 killed 80% of the
-            # network's output, making exploration and learning impossible.
+            # NO smoothing for fixed-wing during training.
+            # Smoothing breaks PPO credit assignment: PPO compares action A
+            # with reward R, but R was caused by smooth(A) — a different
+            # action.  The guidance model's inner loop (kp_gamma, kp_phi)
+            # already provides physical smoothing of control surfaces.
+            # Quad actions are still smoothed (direct motor control needs it).
             # -----------------------------------------------------------------
-            smooth_action = 0.5 * self.last_actions[agent_name] + 0.5 * action
+            if "fixed" in agent_name:
+                smooth_action = action
+            else:
+                smooth_action = 0.5 * self.last_actions[agent_name] + 0.5 * action
             self.last_actions[agent_name] = smooth_action
 
             jerk_diff = np.sum(np.abs(action - self.last_raw_actions[agent_name]))
@@ -829,13 +833,14 @@ class DroneFireEnv(ParallelEnv):
             infos[agent] = {}
             
             # Check whether the agent has crashed or left the map
-            dead, crash_reward = self._check_death(agent)
+            dead, crash_reward, death_cause = self._check_death(agent)
 
             rewards[agent] = 0
 
             if dead:
                 terminations[agent] = True
                 rewards[agent] += crash_reward
+                infos[agent]["death_cause"] = death_cause
             else:
                 rewards[agent] += self._apply_physics_shaping(agent)
                 # Jerk penalty jen pro fixed-wing — penalizuje trhavé akce,
@@ -1111,19 +1116,16 @@ class DroneFireEnv(ParallelEnv):
         dolů dřív než dosáhne ceilingu.
         """
         if agent not in self.sim.drones:
-            # print(f"[DEATH-CRASH] {agent} physics crash")
-            return True, SHARED["crash_penalty"]
+            return True, SHARED["crash_penalty"], "ground_crash"
 
         pos = self.sim.drones[agent].get_position()
 
         if abs(pos[0]) > self.map_bounds or abs(pos[1]) > self.map_bounds:
-            # print(f"[DEATH-BOUNDARY] {agent} pos=({pos[0]:.0f},{pos[1]:.0f})")
             self.sim._destroy_drone(agent)
-            return True, SHARED["crash_penalty"]
+            return True, SHARED["crash_penalty"], "boundary"
 
         max_ceiling = FIXED["alt_ceiling"] if "fixed" in agent else QUAD["alt_ceiling"]
         if pos[2] > max_ceiling:
-            # print(f"[DEATH-CEILING] {agent} výška={pos[2]:.1f}m")
-            return True, SHARED["crash_penalty"]
+            return True, SHARED["crash_penalty"], "ceiling"
 
-        return False, 0.0
+        return False, 0.0, ""

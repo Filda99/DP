@@ -77,7 +77,7 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
 
     local_critic = None
     if use_critic and critic_w is not None:
-        local_critic = MAPPOCritic(config['global_state_dim'], hidden_dim=128)
+        local_critic = MAPPOCritic(config['fixed_self_dim'], hidden_dim=128)
         local_critic.load_state_dict(critic_w)
         local_critic.eval()
 
@@ -88,13 +88,14 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
     )
 
     # --- Buffers ---
-    actor_buf = {k: [] for k in ["states", "actions", "logprobs", "returns"]}
-    critic_buf = {k: [] for k in ["g_states", "values", "returns"]}
+    actor_buf = {k: [] for k in ["states", "actions", "logprobs", "returns", "alive"]}
+    critic_buf = {k: [] for k in ["g_states", "values", "returns", "alive"]}
 
     actor_h0_list = []
     critic_h0_list = []
     all_rewards = []
     all_lifespans = []
+    all_deaths = []
 
     for ep_off in range(num_eps):
         obs, _ = local_env.reset(epizode_number=batch_start_idx + ep_off)
@@ -119,10 +120,15 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
 
         for step in range(max_steps):
             g_state = local_env.state()
-            g_tensor = torch.FloatTensor(g_state).unsqueeze(0)
+            # For survival training: use only the commander self-state (17-d)
+            # as critic input. The full global_state is 273-d where 256-d
+            # fire map is always zero (fire killed). Feeding 93% zeros to
+            # the critic wastes capacity and makes learning harder.
+            g_tensor = None  # set below from self_state
 
             if f_agent not in local_env.agents:
                 # Agent is dead — pad with zeros
+                g_tensor = torch.zeros(1, config['fixed_self_dim'])
                 ep_data.append({
                     "dead": True, "gs": g_tensor,
                     "val": torch.tensor([[0.0]]), "ret": 0.0, "reward": 0.0,
@@ -131,6 +137,7 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
 
             with torch.no_grad():
                 s_st = torch.FloatTensor(obs[f_agent]["self_state"]).unsqueeze(0)
+                g_tensor = s_st  # critic sees same state as actor
                 dist_out, _, h_out = local_actor(s_st, None, None, actor_h)
                 act = dist_out.sample()
 
@@ -156,12 +163,13 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
 
             actions = {f_agent: act.squeeze(0).numpy()}
             if local_env.agents:
-                obs, rewards_env, terms, _, _ = local_env.step(actions)
+                obs, rewards_env, terms, _, infos_env = local_env.step(actions)
                 r = rewards_env.get(f_agent, 0.0)
                 ep_data[-1]["reward"] = r
                 ep_reward += r
                 if terms.get(f_agent, False) and lifespan == max_steps:
                     lifespan = step
+                    ep_data[-1]["death_cause"] = infos_env.get(f_agent, {}).get("death_cause", "unknown")
 
         # --- GAE ---
         gamma = config.get('gamma', 0.99)
@@ -182,9 +190,11 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
         d_state_zero = torch.zeros(1, config['fixed_self_dim'])
 
         for d in ep_data:
+            alive = 0.0 if d["dead"] else 1.0
             critic_buf["g_states"].append(d["gs"])
             critic_buf["values"].append(d.get("val", z_val))
             critic_buf["returns"].append(d.get("ret", 0.0))
+            critic_buf["alive"].append(alive)
 
             if d["dead"]:
                 actor_buf["states"].append(d_state_zero)
@@ -195,9 +205,18 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
                 actor_buf["actions"].append(d["act"])
                 actor_buf["logprobs"].append(d["lp"])
             actor_buf["returns"].append(d.get("ret", 0.0))
+            actor_buf["alive"].append(alive)
+
+        # Find death cause for this episode
+        death = "survived"
+        for d in ep_data:
+            if "death_cause" in d:
+                death = d["death_cause"]
+                break
 
         all_rewards.append(ep_reward)
         all_lifespans.append(float(lifespan))
+        all_deaths.append(death)
 
     # --- Final cat ---
     def _cat(lst):
@@ -208,18 +227,20 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
         "actions": _cat(actor_buf["actions"]),
         "logprobs": _cat(actor_buf["logprobs"]),
         "returns": torch.tensor(actor_buf["returns"], dtype=torch.float32),
+        "alive": torch.tensor(actor_buf["alive"], dtype=torch.float32),
     }
     out_critic = {
         "g_states": _cat(critic_buf["g_states"]),
         "values": _cat(critic_buf["values"]),
         "returns": torch.tensor(critic_buf["returns"], dtype=torch.float32),
+        "alive": torch.tensor(critic_buf["alive"], dtype=torch.float32),
     }
     out_init_h = {
         "actor": torch.cat(actor_h0_list, dim=0),
         "critic": torch.cat(critic_h0_list, dim=0),
     }
 
-    return out_actor, out_critic, out_init_h, all_rewards, all_lifespans
+    return out_actor, out_critic, out_init_h, all_rewards, all_lifespans, all_deaths
 
 
 # =============================================================================
@@ -275,7 +296,8 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         temp_env.sim.stop_simulation()
 
     print(f"fixed_self_dim   = {fixed_self_dim}")
-    print(f"global_state_dim = {global_state_dim}")
+    print(f"global_state_dim = {global_state_dim} (NOT used by survival critic)")
+    print(f"critic_input_dim = {fixed_self_dim} (self_state only)")
     print(f"hidden_dim       = {hidden_dim}")
     print(f"use_critic       = {use_critic}")
 
@@ -307,7 +329,9 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         actor.load_state_dict(torch.load(resume_actor, map_location=device))
         print(f"  Loaded actor from {resume_actor}")
 
-    critic = MAPPOCritic(global_state_dim, hidden_dim=128).to(device)
+    # Survival critic sees self_state only (17-d), not full 273-d global state
+    critic_input_dim = fixed_self_dim
+    critic = MAPPOCritic(critic_input_dim, hidden_dim=128).to(device)
     if resume_critic and os.path.exists(resume_critic):
         critic.load_state_dict(torch.load(resume_critic, map_location=device))
         print(f"  Loaded critic from {resume_critic}")
@@ -349,11 +373,12 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
 
         # --- Rollout ---
         t0 = time.time()
-        batch_actor = {k: [] for k in ["states", "actions", "logprobs", "returns"]}
-        batch_critic = {k: [] for k in ["g_states", "values", "returns"]}
+        batch_actor = {k: [] for k in ["states", "actions", "logprobs", "returns", "alive"]}
+        batch_critic = {k: [] for k in ["g_states", "values", "returns", "alive"]}
         batch_h_actor = []
         batch_h_critic = []
         batch_rewards = []
+        batch_deaths = []
 
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
             futures = [
@@ -366,8 +391,9 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
                 for i in range(num_workers)
             ]
             for fut in futures:
-                w_actor, w_critic, w_h, w_rew, w_life = fut.result()
+                w_actor, w_critic, w_h, w_rew, w_life, w_deaths = fut.result()
                 batch_rewards.extend(w_rew)
+                batch_deaths.extend(w_deaths)
                 lifespan_history.extend(w_life)
                 reward_history.extend(w_rew)
                 episodes_played += len(w_rew)
@@ -385,11 +411,18 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         win = min(60, len(reward_history))
         avg_roll = float(np.mean(reward_history[-win:]))
 
-        # Log per-dimension std
+        # Log per-dimension std and alive fraction
         with torch.no_grad():
             cur_stds = torch.exp(actor.action_logstd.clamp(-3.0, 0.0)).squeeze()
             cur_std = cur_stds.mean().item()
         logstd_history.append(cur_stds.cpu().numpy().copy())
+
+        alive_frac = torch.cat(batch_actor["alive"]).mean().item()
+
+        # Death cause stats
+        from collections import Counter
+        dc = Counter(batch_deaths)
+        dc_str = " ".join(f"{k}={v}" for k, v in dc.most_common())
 
         avg_life = float(np.mean(batch_rewards))  # approx from rewards
         recent_life = float(np.mean(lifespan_history[-win:])) if lifespan_history else 0
@@ -397,8 +430,10 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
               f"Batch {batch_idx:04d} (Ep {episodes_played:05d}) | "
               f"R: {avg_batch:+7.1f} ({avg_roll:+7.1f})  "
               f"Life: {recent_life:.0f}  "
+              f"alive: {alive_frac:.0%}  "
               f"std=[{cur_stds[0]:.2f},{cur_stds[1]:.2f},{cur_stds[2]:.2f},{cur_stds[3]:.2f}]  "
-              f"ent_c={entropy_coef:.4f}  {rollout_time:.1f}s")
+              f"deaths: [{dc_str}]  "
+              f"{rollout_time:.1f}s")
 
         # Save best
         if episodes_played >= 60 and avg_roll > best_avg:
@@ -416,10 +451,12 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         a_actions = torch.cat(batch_actor["actions"]).to(device)
         a_logprobs = torch.cat(batch_actor["logprobs"]).to(device)
         a_returns = torch.cat(batch_actor["returns"]).to(device)
+        a_alive = torch.cat(batch_actor["alive"]).to(device)
 
         cr_g = torch.cat(batch_critic["g_states"]).to(device)
         cr_vals = torch.cat(batch_critic["values"]).to(device)
         cr_rets = torch.cat(batch_critic["returns"]).to(device)
+        cr_alive = torch.cat(batch_critic["alive"]).to(device)
 
         def _mk_h(lst, dim):
             return (torch.cat(lst, dim=0).squeeze(1).unsqueeze(0).to(device))
@@ -427,13 +464,18 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         h_actor = _mk_h(batch_h_actor, hidden_dim)
         h_critic = _mk_h(batch_h_critic, 128)
 
-        # Advantages
+        # Advantages — normalize ONCE using only alive steps
         if use_critic:
             cr_adv = cr_rets.unsqueeze(1) - cr_vals.detach()
         else:
-            # No critic: advantage = return (normalized below)
             cr_adv = cr_rets.unsqueeze(1)
-        cr_adv = (cr_adv - cr_adv.mean()) / (cr_adv.std() + 1e-8)
+        alive_flat = a_alive.view(-1)
+        alive_mask_bool = alive_flat > 0.5
+        if alive_mask_bool.sum() > 1:
+            alive_adv = cr_adv.view(-1)[alive_mask_bool]
+            cr_adv_flat = cr_adv.view(-1)
+            cr_adv_flat = (cr_adv_flat - alive_adv.mean()) / (alive_adv.std() + 1e-8)
+            cr_adv = cr_adv_flat.view(-1, 1)
 
         # Reshape to sequences
         episodes = episodes_per_batch
@@ -441,11 +483,13 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         a_actions_seq = a_actions.view(episodes, max_steps, -1)
         a_logprobs_seq = a_logprobs.view(episodes, max_steps)
         a_adv_seq = cr_adv.view(episodes, max_steps, 1).squeeze(-1)
+        a_alive_seq = a_alive.view(episodes, max_steps)
 
         h_actor_seq = h_actor.transpose(0, 1)  # [ep, 1, hidden]
 
         cr_g_seq = cr_g.view(episodes, max_steps, 1, -1).transpose(1, 2)
         cr_ret_seq = cr_rets.view(episodes, max_steps, 1).transpose(1, 2)
+        cr_alive_seq = cr_alive.view(episodes, max_steps)
         h_critic_seq = h_critic.transpose(0, 1)
 
         # Gradient loop
@@ -466,29 +510,37 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
                 mb_acts = a_actions_seq[mb]
                 mb_old_lp = a_logprobs_seq[mb].view(-1)
                 mb_adv = a_adv_seq[mb].reshape(-1)
-                mb_adv = (mb_adv - mb_adv.mean()) / (mb_adv.std() + 1e-8)
+                mb_alive = a_alive_seq[mb].reshape(-1)
                 mb_h = h_actor_seq[mb].transpose(0, 1)
 
                 dist, _, _ = actor(mb_states, None, None, mb_h)
                 flat_acts = mb_acts.view(-1, 4)
                 new_lp = dist.log_prob(flat_acts).sum(1)
-                entropy = dist.entropy().sum(1).mean()
+                entropy = dist.entropy().sum(1)
 
                 log_ratio = (new_lp - mb_old_lp).clamp(-10.0, 10.0)
                 ratio = torch.exp(log_ratio)
                 pg1 = -mb_adv * ratio
                 pg2 = -mb_adv * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
-                policy_loss = torch.max(pg1, pg2).mean()
+                surr = torch.max(pg1, pg2)
 
-                loss = policy_loss - entropy_coef * entropy
+                # MASK: only alive steps contribute to policy loss
+                n_alive = mb_alive.sum().clamp(min=1.0)
+                policy_loss = (surr * mb_alive).sum() / n_alive
+                entropy_loss = (entropy * mb_alive).sum() / n_alive
 
-                # Critic loss
+                loss = policy_loss - entropy_coef * entropy_loss
+
+                # Critic loss — also masked
                 if use_critic:
                     mb_cr_g = cr_g_seq[mb].reshape(curr_mb, max_steps, -1)
                     mb_cr_ret = cr_ret_seq[mb].reshape(-1, 1)
+                    mb_cr_alive = cr_alive_seq[mb].reshape(-1)
                     mb_h_cr = h_critic_seq[mb].reshape(1, curr_mb, -1)
                     new_vals, _ = critic(mb_cr_g, mb_h_cr)
-                    value_loss = nn.MSELoss()(new_vals, mb_cr_ret)
+                    val_err = (new_vals - mb_cr_ret).pow(2).squeeze(1)
+                    n_cr_alive = mb_cr_alive.sum().clamp(min=1.0)
+                    value_loss = (val_err * mb_cr_alive).sum() / n_cr_alive
                     loss = loss + 0.5 * value_loss
 
                 if not torch.isfinite(loss):
@@ -509,8 +561,8 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
 
         loss_history.append(batch_loss / update_epochs)
 
-        # Plot every 100 batches
-        if batch_idx % 100 == 0:
+        # Plot every 10 batches
+        if batch_idx % 10 == 0:
             _save_plot(reward_history, loss_history, lifespan_history,
                        logstd_history, save_dir, batch_idx, use_critic)
 
