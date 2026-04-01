@@ -754,68 +754,47 @@ class DroneFireEnv(ParallelEnv):
         jerk_penalties = {}
 
         for agent_name, action in actions.items():
-            smooth_action = 0.8 * self.last_actions[agent_name] + 0.2 * action
-            self.last_actions[agent_name] = smooth_action  # save for next step
+            # -----------------------------------------------------------------
+            # Action smoothing: mild EMA (α=0.5) — just enough to prevent
+            # single-step jitter while letting the network meaningfully
+            # control the aircraft.  Previous α=0.2 killed 80% of the
+            # network's output, making exploration and learning impossible.
+            # -----------------------------------------------------------------
+            smooth_action = 0.5 * self.last_actions[agent_name] + 0.5 * action
+            self.last_actions[agent_name] = smooth_action
 
             jerk_diff = np.sum(np.abs(action - self.last_raw_actions[agent_name]))
-            jerk_penalties[agent_name] = jerk_diff * 0.02  # Weight of penalty
+            jerk_penalties[agent_name] = jerk_diff * 0.02
             self.last_raw_actions[agent_name] = np.copy(action)
 
-            # if "fixed" in agent_name:
-            #     # Fixed-wing action mapping:
-            #     #   [0] Roll    : pass through unchanged
-            #     #   [1] Pitch   : pass through unchanged
-            #     #   [2] Throttle: NN output [-1,1] -> physics range [0.4, 1.0]
-            #     #       0.4 is the minimum throttle to avoid stall.
-            #     #   [3] Water   : NN output [-1,1] -> trigger [0.0, 1.0]
-            #     mapped_action = np.copy(smooth_action)
-            #     # mapped_action[2] = 0.55 + (smooth_action[2] + 1.0) * 0.225
-            #     mapped_action[3] = (smooth_action[3] + 1.0) / 2.0
-            #     drone_controls[agent_name] = mapped_action
             if "fixed" in agent_name:
                 mapped_action = np.copy(smooth_action)
 
-                # --- LOW-LEVEL SAFETY CONTROLLER ---
                 drone = self.sim.drones.get(agent_name)
                 if drone is not None:
-                    # pos = drone.get_position()
-                    # vel = drone.get_velocity()
-                    # speed = np.linalg.norm(vel[:2])
+                    # ---------------------------------------------------------
+                    # ACTION MAPPING — all outputs use the FULL [-1, 1] range
+                    # with bijective (1-to-1) linear maps.  No dead zones,
+                    # no clamped subranges — the network can use every output
+                    # neuron across its entire dynamic range.
+                    # ---------------------------------------------------------
 
-                    # # 1. Throttle floor — zabrání stall
-                    # #    NN dostane plnou kontrolu nad [-1,1], ale výsledek
-                    # #    se clipne na minimum 0.45 (pod tím letadlo padá)
-                    # mapped_action[2] = np.clip(smooth_action[2], -0.3, 1.0)
-                    # min_throttle = 0.45
-                    # # Přepočet z [-1,1] na [0,1] a clamp
-                    # throttle_physical = (mapped_action[2] + 1.0) / 2.0
-                    # throttle_physical = max(min_throttle, throttle_physical)
-                    # mapped_action[2] = throttle_physical * 2.0 - 1.0   # zpět do [-1,1]
-
-                    # # 2. Pitch clamp — zabrání nose-dive nebo přetažení
-                    # mapped_action[1] = np.clip(smooth_action[1], -0.4, 0.4)
-
-                    # # 3. Roll clamp — zabrání invertovanému letu
-                    # mapped_action[0] = np.clip(smooth_action[0], -0.6, 0.6)
-
-                    pos = drone.get_position()
-                    vel = drone.get_velocity()
-
-                    # 1. Throttle: lineární mapování [-1,1] → [0.45, 1.0]
-                    # Předchozí max(0.5, (x+1)/2) způsobovalo dead-zone:
-                    # celá záporná polovina výstupu sítě mapovala na 0.5 (minimum).
-                    # Gradient byl nulový pro 80%+ kroků → síť se throttle nenaučila.
-                    # Nové mapování: network=-1 → 0.45 m/s, network=0 → 0.725, network=1 → 1.0
-                    throttle_physical = 0.45 + (smooth_action[2] + 1.0) / 2.0 * 0.55
-                    mapped_action[2] = throttle_physical
-
-                    # 2. Pitch clamp
-                    mapped_action[1] = np.clip(smooth_action[1], -0.3, 0.3)
-
-                    # 3. Roll-cmd ze sítě — bez přebíjení (constraint korumpoval PPO trénink)
+                    # Roll: [-1, 1] → passed through directly to physics
+                    # (physics clamps to ±max_roll=45° internally)
                     mapped_action[0] = smooth_action[0]
 
-                # Water trigger
+                    # Pitch: [-1, 1] → passed through directly to physics
+                    # (physics interprets as γ_c = input × 45°;
+                    #  the guidance model inner loop tracks γ smoothly)
+                    # REMOVED the [-0.3, 0.3] clamp that created 70% dead zone.
+                    mapped_action[1] = smooth_action[1]
+
+                    # Throttle: [-1, 1] → [0.4, 1.0] (linear, bijective)
+                    # 0.4 × 30 m/s = 12 m/s (above stall speed of 7 m/s)
+                    # 1.0 × 30 m/s = 30 m/s (max speed)
+                    mapped_action[2] = 0.4 + (smooth_action[2] + 1.0) / 2.0 * 0.6
+
+                # Water trigger: [-1, 1] → [0, 1]
                 mapped_action[3] = (smooth_action[3] + 1.0) / 2.0
                 drone_controls[agent_name] = mapped_action
             else:

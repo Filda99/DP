@@ -561,3 +561,238 @@ class MAPPOCritic(nn.Module):
         value = self.value_head(gru_out.reshape(-1, gru_out.size(-1)))  # (B*S, 1)
 
         return value, new_hidden
+
+
+# =============================================================================
+# 4. SIMPLE FIXED-WING ACTOR  (lightweight, no attention)
+# =============================================================================
+
+class SimpleFWActor(nn.Module):
+    """
+    Lightweight actor for the fixed-wing aircraft.
+
+    Designed for Phase 1 training (learn to fly) where there are no scouts
+    and the cross-attention branch is dead weight.  Architecture:
+
+        self_state (17-d) → MLP (64 → 64) → GRU (64) → action dist (4-d)
+
+    ~6K parameters vs ~118K in CommanderActor.
+    Compatible interface: forward() returns (dist, None, new_hidden).
+    """
+    def __init__(self, self_state_dim=17, action_dim=4, hidden_dim=64):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+
+        self.encoder = nn.Sequential(
+            nn.Linear(self_state_dim, 64),
+            nn.Tanh(),
+            nn.Linear(64, hidden_dim),
+            nn.Tanh(),
+        )
+        self.gru = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim, batch_first=True)
+
+        self.action_mean = nn.Linear(hidden_dim, action_dim)
+        # std ≈ 0.6 at init — enough exploration for PPO to find good actions
+        self.action_logstd = nn.Parameter(torch.full((1, action_dim), -0.5))
+
+    def forward(self, self_state, incoming_messages=None, message_mask=None, hidden_state=None):
+        """
+        Parameters match CommanderActor signature so train_fw_flight.py needs
+        minimal changes.  incoming_messages and message_mask are ignored.
+        """
+        is_sequential = (self_state.dim() == 3)
+        batch_size = self_state.size(0)
+        seq_len = self_state.size(1) if is_sequential else 1
+
+        if is_sequential:
+            x = self_state.reshape(-1, self_state.size(-1))
+        else:
+            x = self_state if self_state.dim() == 2 else self_state.unsqueeze(0)
+
+        x = self.encoder(x)  # (B*S, hidden_dim)
+
+        if is_sequential:
+            x = x.view(batch_size, seq_len, -1)
+        else:
+            x = x.unsqueeze(1)
+
+        if hidden_state is None:
+            hidden_state = torch.zeros(1, batch_size, self.hidden_dim, device=x.device)
+
+        gru_out, new_hidden = self.gru(x, hidden_state)
+        features = gru_out.reshape(-1, self.hidden_dim)
+
+        action_mean = torch.tanh(self.action_mean(features))
+        log_std = self.action_logstd.clamp(-3.0, 0.0)  # std in [0.05, 1.0]
+        dist = Normal(action_mean, torch.exp(log_std))
+
+        return dist, None, new_hidden
+
+
+# =============================================================================
+# 5. COMMANDER ACTOR V2  (SimpleFWActor core + cross-attention into GRU)
+# =============================================================================
+
+class CommanderActorV2(nn.Module):
+    """
+    Two-stage actor for the commander aircraft.
+
+    Phase 1 (flight training): use SimpleFWActor to learn basic flight.
+    Phase 2 (mission training): upgrade to this class with scout messages.
+
+    Key design: messages feed INTO the GRU alongside the encoded state.
+    The GRU can then plan multi-step manoeuvres toward fire targets
+    reported by scouts, integrating message history over time.
+
+    Architecture:
+
+        self_state (17) → encoder (17→64→64) → enc_out (64)
+                                                    ↓
+        messages (N×5) → msg_embed(5→64) → cross_attn(q=enc_out) → ctx (64)
+                                                    ↓
+                                   cat([enc_out, ctx]) (128) → GRU(128→64) → action (4)
+
+    Weight transfer from SimpleFWActor
+    -----------------------------------
+    Transferred exactly (same shape, same semantics):
+        encoder       (17→64→64)     — perception of own state
+        action_mean   (64→4)         — action output
+        action_logstd (1, 4)         — exploration noise
+        gru.weight_hh (64×192)       — hidden→hidden dynamics (flight memory)
+
+    Reinitialised (input size changed from 64 to 128):
+        gru.weight_ih (128×192)      — how GRU reads new input
+        gru.bias_ih                  — corresponding bias
+
+    New (trained from scratch in Phase 2):
+        msg_embed        (5→64)
+        cross_attention  (64-d, 2 heads)
+    """
+    def __init__(self, self_state_dim=17, msg_input_dim=5, action_dim=4,
+                 hidden_dim=64, num_attn_heads=2):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+
+        # --- Flight core (encoder + action head same as SimpleFWActor) ---
+        self.encoder = nn.Sequential(
+            nn.Linear(self_state_dim, 64),
+            nn.Tanh(),
+            nn.Linear(64, hidden_dim),
+            nn.Tanh(),
+        )
+        # GRU input is wider: enc_out (64) + attention ctx (64) = 128
+        self.gru = nn.GRU(input_size=hidden_dim * 2, hidden_size=hidden_dim,
+                          batch_first=True)
+
+        # --- Message processing (NEW in Phase 2) ---
+        self.msg_embed = nn.Sequential(
+            nn.Linear(msg_input_dim, hidden_dim),
+            nn.ReLU()
+        )
+        self.cross_attention = MultiHeadAttention(embed_dim=hidden_dim,
+                                                  num_heads=num_attn_heads)
+
+        # --- Action head (same size as SimpleFWActor: 64→4) ---
+        self.action_mean = nn.Linear(hidden_dim, action_dim)
+        self.action_logstd = nn.Parameter(torch.full((1, action_dim), -0.5))
+
+    @classmethod
+    def from_simple_fw(cls, simple_actor: 'SimpleFWActor',
+                       msg_input_dim=5, num_attn_heads=2):
+        """
+        Create a CommanderActorV2 by transferring weights from a trained
+        SimpleFWActor.
+
+        Transferred: encoder, action_mean, action_logstd, gru.weight_hh/bias_hh.
+        Reinitialised: gru.weight_ih/bias_ih (input size changed 64→128).
+        New: msg_embed, cross_attention.
+
+        Usage:
+            simple = SimpleFWActor(...)
+            simple.load_state_dict(torch.load("actor_best.pt"))
+            commander = CommanderActorV2.from_simple_fw(simple)
+        """
+        hd = simple_actor.hidden_dim
+        self_state_dim = simple_actor.encoder[0].in_features
+        action_dim = simple_actor.action_mean.out_features
+
+        model = cls(self_state_dim=self_state_dim,
+                    msg_input_dim=msg_input_dim,
+                    action_dim=action_dim,
+                    hidden_dim=hd,
+                    num_attn_heads=num_attn_heads)
+
+        # Copy encoder, action head, logstd
+        model.encoder.load_state_dict(simple_actor.encoder.state_dict())
+        model.action_mean.load_state_dict(simple_actor.action_mean.state_dict())
+        model.action_logstd.data.copy_(simple_actor.action_logstd.data)
+
+        # Copy GRU hidden→hidden weights (flight dynamics memory)
+        old_gru = simple_actor.gru.state_dict()
+        with torch.no_grad():
+            model.gru.weight_hh_l0.copy_(old_gru['weight_hh_l0'])
+            model.gru.bias_hh_l0.copy_(old_gru['bias_hh_l0'])
+            # weight_ih: old is (192, 64), new is (192, 128).
+            # Copy old weights into the first 64 columns (enc_out half).
+            # The second 64 columns (ctx half) stay at random init so the
+            # GRU starts by mostly relying on its old enc_out pathway.
+            model.gru.weight_ih_l0[:, :hd] = old_gru['weight_ih_l0']
+            model.gru.weight_ih_l0[:, hd:] = 0.0
+            model.gru.bias_ih_l0.copy_(old_gru['bias_ih_l0'])
+
+        return model
+
+    def forward(self, self_state, incoming_messages=None, message_mask=None,
+                hidden_state=None):
+        is_sequential = (self_state.dim() == 3)
+        batch_size = self_state.size(0)
+        seq_len = self_state.size(1) if is_sequential else 1
+
+        # --- Encode own state ---
+        if is_sequential:
+            flat_state = self_state.reshape(-1, self_state.size(-1))
+        else:
+            flat_state = self_state if self_state.dim() == 2 else self_state.unsqueeze(0)
+
+        enc_out = self.encoder(flat_state)  # (B*S, hidden_dim)
+
+        # --- Cross-attention over scout messages ---
+        if incoming_messages is not None:
+            if is_sequential:
+                bs = batch_size * seq_len
+                msgs = incoming_messages.reshape(bs, incoming_messages.size(-2),
+                                                  incoming_messages.size(-1))
+                mask = message_mask.reshape(bs, message_mask.size(-1))
+            else:
+                msgs = incoming_messages
+                mask = message_mask
+
+            msg_feat = self.msg_embed(msgs)               # (B*S, N, hidden_dim)
+            query = enc_out.unsqueeze(1)                   # (B*S, 1, hidden_dim)
+            ctx = self.cross_attention(
+                query, msg_feat, msg_feat, key_padding_mask=mask
+            ).squeeze(1)                                   # (B*S, hidden_dim)
+        else:
+            ctx = torch.zeros_like(enc_out)
+
+        # --- Fuse and feed into GRU ---
+        fused = torch.cat([enc_out, ctx], dim=1)           # (B*S, hidden_dim*2)
+
+        if is_sequential:
+            fused = fused.view(batch_size, seq_len, -1)
+        else:
+            fused = fused.unsqueeze(1)
+
+        if hidden_state is None:
+            hidden_state = torch.zeros(1, batch_size, self.hidden_dim,
+                                       device=fused.device)
+
+        gru_out, new_hidden = self.gru(fused, hidden_state)
+        features = gru_out.reshape(-1, self.hidden_dim)    # (B*S, hidden_dim)
+
+        # --- Action output ---
+        action_mean = torch.tanh(self.action_mean(features))
+        log_std = self.action_logstd.clamp(-3.0, 0.0)
+        dist = Normal(action_mean, torch.exp(log_std))
+
+        return dist, None, new_hidden

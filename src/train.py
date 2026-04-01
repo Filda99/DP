@@ -143,8 +143,8 @@ def redo_reset_dormant_neurons(network, probe_inputs, dormancy_threshold=0.025):
             # 3. Layer norm scale for these neurons → reset to 1 (neutral)
             if name == "self_embed" and hasattr(network, 'layer_norm'):
                 # self_embed output occupies first 64 dims of layer_norm (total 128)
-                network.layer_norm.weight.data[dormant_mask] = 1.0
-                network.layer_norm.bias.data[dormant_mask]   = 0.0
+                network.layer_norm.weight.data[:64][dormant_mask] = 1.0
+                network.layer_norm.bias.data[:64][dormant_mask]   = 0.0
 
         n_reset += int(n_dormant)
         print(f"  [ReDo] {name}: {n_dormant}/{linear.out_features} neurons recycled "
@@ -199,9 +199,9 @@ def train():
 
     path_to_critic = ""
     path_to_scout = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/07_evaluation/models/scout_best.pt"
-    path_to_commander = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep14800.pt"   # od nuly — pre-trained model má zakořeněné špatné chování
+    path_to_commander = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/commander_ep16400.pt"
 
-    episodes_played = 14800
+    episodes_played = 16400
 
     # ==========================================================================
     # 2. TEAM CONFIGURATION & NETWORK DIMENSIONS
@@ -810,7 +810,7 @@ def train():
                     _probe_s   = c_fixed[:64].cpu()
                     _probe_m   = c_msgs[:64].cpu()
                     _probe_mm  = c_msg_m[:64].cpu()
-                    _probe_h   = torch.zeros(1, 1, 128)  # fresh hidden state for probe
+                    _probe_h   = torch.zeros(1, _probe_s.size(0), 128)  # batch dim musí odpovídat
                     probe = (_probe_s, _probe_m, _probe_mm, _probe_h)
                     n_reset = redo_reset_dormant_neurons(commander_actor.cpu(), probe)
                     commander_actor.to(device)
