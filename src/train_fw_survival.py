@@ -84,7 +84,7 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
     # --- Environment ---
     local_env = DroneFireEnv(
         num_quads=0, num_fixed=1,
-        grid_size_m=2000.0, max_steps=max_steps
+        grid_size_m=4000.0, max_steps=max_steps
     )
 
     # --- Buffers ---
@@ -283,13 +283,15 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
     lr_critic = 3e-4
     hidden_dim = 64      # SimpleFWActor hidden dim
 
-    # Entropy: start high to prevent premature std collapse
-    entropy_start = 0.02
-    entropy_end = 0.002
-    entropy_anneal_batches = 500
+    # Entropy: moderate — 0.02 was too aggressive and pushed std to ceiling,
+    # causing the catastrophic collapse at batch ~270.  With max_std=0.5 and
+    # entropy_start=0.005 the bonus encourages exploration without saturating.
+    entropy_start = 0.005
+    entropy_end = 0.001
+    entropy_anneal_batches = 300
 
     # ── Dims ─────────────────────────────────────────────────────────────────
-    temp_env = DroneFireEnv(num_quads=0, num_fixed=1, grid_size_m=2000.0, max_steps=max_steps)
+    temp_env = DroneFireEnv(num_quads=0, num_fixed=1, grid_size_m=4000.0, max_steps=max_steps)
     fixed_self_dim = temp_env.observation_space(temp_env.fixed_agents[0])["self_state"].shape[0]
     global_state_dim = temp_env.state_space.shape[0]
     if hasattr(temp_env, 'sim') and temp_env.sim is not None:
@@ -303,7 +305,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
 
     worker_config = {
         'N_QUADS': 0, 'N_FIXED': 1,
-        'grid_size_m': 2000.0,
+        'grid_size_m': 4000.0,
         'max_steps': max_steps,
         'fixed_self_dim': fixed_self_dim,
         'scout_msg_dim': 5,
@@ -354,6 +356,8 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
     print(f"Checkpoints → {save_dir}\n")
 
     best_avg = -1e9
+    batches_since_best = 0
+    patience = 100  # stop if no improvement for 100 batches (~3000 episodes)
     episodes_played = resume_episodes
     num_batches = num_episodes // episodes_per_batch
 
@@ -438,13 +442,24 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         # Save best
         if episodes_played >= 60 and avg_roll > best_avg:
             best_avg = avg_roll
+            batches_since_best = 0
             torch.save(actor.state_dict(), os.path.join(save_dir, "actor_best.pt"))
             if use_critic:
                 torch.save(critic.state_dict(), os.path.join(save_dir, "critic_best.pt"))
             print(f"   ⭐ New best! rolling avg = {best_avg:.1f}")
+        elif episodes_played >= 60:
+            batches_since_best += 1
 
         if batch_idx % 50 == 0:
             torch.save(actor.state_dict(), os.path.join(save_dir, f"actor_b{batch_idx:04d}.pt"))
+
+        # Early stopping check
+        if batches_since_best >= patience and batch_idx >= 50:
+            print(f"\n⏹  Early stopping: no improvement for {patience} batches")
+            print(f"   Best rolling avg = {best_avg:.1f} at batch ~{batch_idx - batches_since_best}")
+            _save_plot(reward_history, loss_history, lifespan_history,
+                       logstd_history, save_dir, batch_idx, use_critic)
+            break
 
         # ── PPO UPDATE ───────────────────────────────────────────────────
         a_states = torch.cat(batch_actor["states"]).to(device)

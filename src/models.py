@@ -637,7 +637,10 @@ class SimpleFWActor(nn.Module):
         features = gru_out.reshape(-1, self.hidden_dim)
 
         action_mean = torch.tanh(self.action_mean(features))
-        log_std = self.action_logstd.clamp(-3.0, 0.0)  # std in [0.05, 1.0]
+        # Upper clamp -0.7 → max std ≈ 0.50.  At std=1.0 the policy is
+        # uniform noise on [-1,1] and the entropy bonus pushes it there,
+        # causing the catastrophic collapse seen around batch 270.
+        log_std = self.action_logstd.clamp(-3.0, -0.7)  # std in [0.05, 0.50]
         dist = Normal(action_mean, torch.exp(log_std))
 
         return dist, None, new_hidden

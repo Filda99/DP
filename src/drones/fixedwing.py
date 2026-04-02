@@ -87,8 +87,11 @@ class FixedWing(BaseDrone):
 
         # Command: Flight Path Angle (Direct Pitch)
         # Instead of changing altitude, we set the climb angle directly.
-        # Positive input = Climb (+45 deg), Negative = Dive (-45 deg)
-        max_pitch = np.radians(45)
+        # Positive input = Climb, Negative = Dive
+        # Reduced from 45° to 15° — a transport aircraft doesn't need
+        # fighter-jet climb rates, and 45° made exploration lethal:
+        # even small pitch noise caused ceiling/ground crashes.
+        max_pitch = np.radians(15)
         gamma_c = np.clip(pitch_input, -1.0, 1.0) * max_pitch
 
         # Command: Airspeed (Va_c)

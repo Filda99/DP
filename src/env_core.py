@@ -672,7 +672,7 @@ class DroneFireEnv(ParallelEnv):
                     fw_start_y   = float(spawn_radius * np.sin(spawn_angle))
                     fw_yaw       = random.uniform(-np.pi, np.pi)
 
-                self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=fw_yaw)
+                self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 100.0], water_capacity=200.0, yaw=fw_yaw)
 
                 # Set a meaningful initial airspeed
                 drone = self.sim.drones[agent]
