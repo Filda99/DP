@@ -167,12 +167,13 @@ class DroneFireEnv(ParallelEnv):
         self.global_state_size = (16 * 16) + (self.num_quads * self.quad_self_dim) + (self.num_fixed * self.fixed_self_dim)
         self.state_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.global_state_size,), dtype=np.float32)
 
-        # Action history for smoothing (one 4-dim zero vector per agent).
+        # Action history for smoothing.
         # Used in step() to blend the previous action with the new one,
         # preventing jerky or oscillatory control signals.
-        self.last_actions = {agent: np.zeros(4, dtype=np.float32) for agent in self.possible_agents}
+        # Initialised lazily per agent on first step (action dims differ).
+        self.last_actions = {}
         # Raw action history to calculate Jerk rewards
-        self.last_raw_actions = {agent: np.zeros(4, dtype=np.float32) for agent in self.possible_agents}
+        self.last_raw_actions = {}
 
     # =========================================================================
     # PettingZoo required property accessors
@@ -548,8 +549,8 @@ class DroneFireEnv(ParallelEnv):
         # self.agents starts as a copy of possible_agents and is pruned as
         # agents are terminated during the episode.
         self.agents = self.possible_agents[:]
-        self.last_actions = {agent: np.zeros(4, dtype=np.float32) for agent in self.possible_agents}
-        self.last_raw_actions = {agent: np.zeros(4, dtype=np.float32) for agent in self.possible_agents}
+        self.last_actions = {}
+        self.last_raw_actions = {}
 
         # --- 2. Hard-restart the PyBullet engine ---
         # Calling stop_simulation() then creating a fresh Simulation() object
@@ -764,43 +765,64 @@ class DroneFireEnv(ParallelEnv):
             if "fixed" in agent_name:
                 smooth_action = action
             else:
-                smooth_action = 0.5 * self.last_actions[agent_name] + 0.5 * action
+                prev = self.last_actions.get(agent_name, np.zeros_like(action))
+                smooth_action = 0.5 * prev + 0.5 * action
             self.last_actions[agent_name] = smooth_action
 
-            jerk_diff = np.sum(np.abs(action - self.last_raw_actions[agent_name]))
+            jerk_diff = np.sum(np.abs(action - self.last_raw_actions.get(agent_name, np.zeros_like(action))))
             jerk_penalties[agent_name] = jerk_diff * 0.02
             self.last_raw_actions[agent_name] = np.copy(action)
 
             if "fixed" in agent_name:
-                mapped_action = np.copy(smooth_action)
-
                 drone = self.sim.drones.get(agent_name)
                 if drone is not None:
-                    # ---------------------------------------------------------
-                    # ACTION MAPPING — all outputs use the FULL [-1, 1] range
-                    # with bijective (1-to-1) linear maps.  No dead zones,
-                    # no clamped subranges — the network can use every output
-                    # neuron across its entire dynamic range.
-                    # ---------------------------------------------------------
+                    # =========================================================
+                    # HIERARCHICAL FLIGHT CONTROLLER
+                    # =========================================================
+                    # The RL network outputs HIGH-LEVEL strategy (3 dims):
+                    #   [0] heading_delta  [-1, 1] → turn left/right
+                    #   [1] target_alt     [-1, 1] → desired altitude
+                    #   [2] water_trigger  [-1, 1] → drop water or not
+                    #
+                    # This deterministic controller converts strategy → physics
+                    # commands [roll, pitch, throttle, water].  The aircraft
+                    # CANNOT crash from bad RL actions — the controller clamps
+                    # everything to safe ranges.  The RL agent only decides
+                    # WHERE to fly, not HOW to fly.
+                    # =========================================================
 
-                    # Roll: [-1, 1] → passed through directly to physics
-                    # (physics clamps to ±max_roll=45° internally)
-                    mapped_action[0] = smooth_action[0]
+                    heading_delta_raw = float(action[0])  # [-1, 1]
+                    target_alt_raw    = float(action[1])  # [-1, 1]
+                    water_raw         = float(action[2])  # [-1, 1]
 
-                    # Pitch: [-1, 1] → passed through directly to physics
-                    # (physics interprets as γ_c = input × 45°;
-                    #  the guidance model inner loop tracks γ smoothly)
-                    # REMOVED the [-0.3, 0.3] clamp that created 70% dead zone.
-                    mapped_action[1] = smooth_action[1]
+                    # --- 1. HEADING → ROLL ---
+                    # heading_delta [-1, 1] → desired turn [-π, π]
+                    # Proportional controller: larger turn desire → more roll
+                    desired_turn = heading_delta_raw * np.pi
+                    # Roll command: [-1, 1] (maps to ±45° in physics)
+                    # Gain 0.6: full heading_delta=±1 → roll=±0.6 (27°), gentle
+                    roll_cmd = np.clip(0.6 * heading_delta_raw, -1.0, 1.0)
 
-                    # Throttle: [-1, 1] → [0.4, 1.0] (linear, bijective)
-                    # 0.4 × 30 m/s = 12 m/s (above stall speed of 7 m/s)
-                    # 1.0 × 30 m/s = 30 m/s (max speed)
-                    mapped_action[2] = 0.4 + (smooth_action[2] + 1.0) / 2.0 * 0.6
+                    # --- 2. ALTITUDE → PITCH ---
+                    # target_alt [-1, 1] → [40, 250] meters
+                    target_alt = 40.0 + (target_alt_raw + 1.0) / 2.0 * 210.0
+                    current_alt = drone.state_pos[2]
+                    alt_error = target_alt - current_alt
+                    # PD controller: proportional on error, derivative on climb rate
+                    vz = drone.get_velocity()[2]
+                    # pitch_cmd [-1, 1] maps to ±15° in physics (max_pitch)
+                    pitch_cmd = np.clip(0.008 * alt_error - 0.02 * vz, -0.5, 0.5)
 
-                # Water trigger: [-1, 1] → [0, 1]
-                mapped_action[3] = (smooth_action[3] + 1.0) / 2.0
-                drone_controls[agent_name] = mapped_action
+                    # --- 3. THROTTLE (fixed cruise) ---
+                    throttle = 0.7  # → 0.7 × 30 = 21 m/s cruise
+
+                    # --- 4. WATER ---
+                    water_trigger = 1.0 if water_raw > 0.0 else 0.0
+
+                    mapped_action = np.array([roll_cmd, pitch_cmd, throttle, water_trigger])
+                    drone_controls[agent_name] = mapped_action
+                else:
+                    drone_controls[agent_name] = np.zeros(4)
             else:
                 # Quad: actions are used directly by the physics backend
                 drone_controls[agent_name] = smooth_action

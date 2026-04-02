@@ -69,7 +69,7 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
     # --- Build local networks ---
     local_actor = SimpleFWActor(
         self_state_dim=config['fixed_self_dim'],
-        action_dim=4,
+        action_dim=3,
         hidden_dim=hidden_dim,
     )
     local_actor.load_state_dict(actor_w)
@@ -198,7 +198,7 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
 
             if d["dead"]:
                 actor_buf["states"].append(d_state_zero)
-                actor_buf["actions"].append(torch.zeros(1, 4))
+                actor_buf["actions"].append(torch.zeros(1, 3))
                 actor_buf["logprobs"].append(torch.tensor([0.0]))
             else:
                 actor_buf["states"].append(d["self"])
@@ -320,7 +320,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
     # ── Networks ─────────────────────────────────────────────────────────────
     actor = SimpleFWActor(
         self_state_dim=fixed_self_dim,
-        action_dim=4,
+        action_dim=3,
         hidden_dim=hidden_dim,
     ).to(device)
 
@@ -443,7 +443,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
               f"R: {avg_batch:+7.1f} ({avg_roll:+7.1f})  "
               f"Life: {recent_life:.0f}  "
               f"alive: {alive_frac:.0%}  "
-              f"std=[{cur_stds[0]:.2f},{cur_stds[1]:.2f},{cur_stds[2]:.2f},{cur_stds[3]:.2f}]  "
+              f"std=[{cur_stds[0]:.2f},{cur_stds[1]:.2f},{cur_stds[2]:.2f}]  "
               f"deaths: [{dc_str}]  "
               f"{rollout_time:.1f}s")
 
@@ -537,7 +537,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
                 mb_h = h_actor_seq[mb].transpose(0, 1)
 
                 dist, _, _ = actor(mb_states, None, None, mb_h)
-                flat_acts = mb_acts.view(-1, 4)
+                flat_acts = mb_acts.view(-1, 3)
                 new_lp = dist.log_prob(flat_acts).sum(1)
                 entropy = dist.entropy().sum(1)
 
@@ -640,8 +640,8 @@ def _save_plot(rewards, losses, lifespans, logstds, save_dir, batch_idx, use_cri
     ax = axes[1, 1]
     if len(logstds) > 0 and hasattr(logstds[0], '__len__'):
         arr = np.array(logstds)
-        labels = ['Roll', 'Pitch', 'Throttle', 'Water']
-        colors = ['blue', 'red', 'green', 'orange']
+        labels = ['Heading', 'Altitude', 'Water']
+        colors = ['blue', 'red', 'orange']
         for i, (lbl, col) in enumerate(zip(labels, colors)):
             ax.plot(arr[:, i], color=col, linewidth=1, label=lbl)
         ax.legend(fontsize=8)

@@ -569,17 +569,23 @@ class MAPPOCritic(nn.Module):
 
 class SimpleFWActor(nn.Module):
     """
-    Lightweight actor for the fixed-wing aircraft.
+    Lightweight STRATEGY actor for the fixed-wing aircraft.
 
-    Designed for Phase 1 training (learn to fly) where there are no scouts
-    and the cross-attention branch is dead weight.  Architecture:
+    The network outputs HIGH-LEVEL decisions, NOT raw control surfaces:
+      [0] heading_delta [-1, 1]  → turn left/right
+      [1] target_alt    [-1, 1]  → desired altitude (mapped to [40, 250]m)
+      [2] water_trigger [-1, 1]  → drop water (>0) or not (<0)
 
-        self_state (17-d) → MLP (64 → 64) → GRU (64) → action dist (4-d)
+    A deterministic flight controller in env_core.py converts these strategy
+    outputs to physical [roll, pitch, throttle, water] commands.  The aircraft
+    cannot crash from bad RL actions — the controller handles flight safety.
 
-    ~6K parameters vs ~118K in CommanderActor.
-    Compatible interface: forward() returns (dist, None, new_hidden).
+    Architecture:
+        self_state (17-d) → MLP (64 → 64) → GRU (64) → strategy dist (3-d)
+
+    ~5K parameters.
     """
-    def __init__(self, self_state_dim=17, action_dim=4, hidden_dim=64):
+    def __init__(self, self_state_dim=17, action_dim=3, hidden_dim=64):
         super().__init__()
         self.hidden_dim = hidden_dim
 
@@ -592,24 +598,19 @@ class SimpleFWActor(nn.Module):
         self.gru = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim, batch_first=True)
 
         self.action_mean = nn.Linear(hidden_dim, action_dim)
-        # Small-scale init (not zero!) so the network can produce state-dependent
-        # outputs from the start.  Zero-init made output = bias regardless of
-        # input state → network couldn't learn to react to walls/altitude.
         nn.init.uniform_(self.action_mean.weight, -0.01, 0.01)
-        # Bias encodes the "default behaviour" before any learning:
-        #   [Roll=0.5, Pitch=0, Throttle=0, Water=-0.5]
-        # Roll=0.5 → continuous gentle turn → avoids straight-line boundary crash.
-        # Water=-0.5 → mapped to 0.25 → valve closed (threshold 0.5).
+        # Default strategy: gentle right turn, mid altitude, water off
+        #   heading_delta=0.3 → gentle right orbit (stays in map)
+        #   target_alt=0.0    → (40+250)/2 = 145m (center of safe band)
+        #   water=-0.5        → off
         with torch.no_grad():
-            self.action_mean.bias.copy_(torch.tensor([0.5, 0.0, 0.0, -0.5]))
+            self.action_mean.bias.copy_(torch.tensor([0.3, 0.0, -0.5]))
 
-        # Per-dimension std:
-        #   [Roll, Pitch, Throttle, Water]
-        # Lower std (0.35) so the mean actually determines behavior.
-        # At std=0.6 the policy was ~uniform noise and the mean didn't matter,
-        # so the network had no incentive to make mean state-dependent.
-        # Pitch tighter (0.25) to avoid altitude kills.
-        self.action_logstd = nn.Parameter(torch.tensor([[-1.05, -1.4, -1.05, -1.05]]))
+        # Per-dimension exploration std:
+        #   heading: std=0.35 → explores turns well
+        #   altitude: std=0.25 → moderate altitude changes  
+        #   water: std=0.35 → explores on/off
+        self.action_logstd = nn.Parameter(torch.tensor([[-1.05, -1.4, -1.05]]))
 
     def forward(self, self_state, incoming_messages=None, message_mask=None, hidden_state=None):
         """
@@ -669,14 +670,14 @@ class CommanderActorV2(nn.Module):
                                                     ↓
         messages (N×5) → msg_embed(5→64) → cross_attn(q=enc_out) → ctx (64)
                                                     ↓
-                                   cat([enc_out, ctx]) (128) → GRU(128→64) → action (4)
+                                   cat([enc_out, ctx]) (128) → GRU(128→64) → action (3)
 
     Weight transfer from SimpleFWActor
     -----------------------------------
     Transferred exactly (same shape, same semantics):
         encoder       (17→64→64)     — perception of own state
-        action_mean   (64→4)         — action output
-        action_logstd (1, 4)         — exploration noise
+        action_mean   (64→3)         — action output
+        action_logstd (1, 3)         — exploration noise
         gru.weight_hh (64×192)       — hidden→hidden dynamics (flight memory)
 
     Reinitialised (input size changed from 64 to 128):
@@ -687,7 +688,7 @@ class CommanderActorV2(nn.Module):
         msg_embed        (5→64)
         cross_attention  (64-d, 2 heads)
     """
-    def __init__(self, self_state_dim=17, msg_input_dim=5, action_dim=4,
+    def __init__(self, self_state_dim=17, msg_input_dim=5, action_dim=3,
                  hidden_dim=64, num_attn_heads=2):
         super().__init__()
         self.hidden_dim = hidden_dim
