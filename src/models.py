@@ -571,21 +571,22 @@ class SimpleFWActor(nn.Module):
     """
     Lightweight STRATEGY actor for the fixed-wing aircraft.
 
-    The network outputs HIGH-LEVEL decisions, NOT raw control surfaces:
-      [0] heading_delta [-1, 1]  → turn left/right
-      [1] target_alt    [-1, 1]  → desired altitude (mapped to [40, 250]m)
-      [2] water_trigger [-1, 1]  → drop water (>0) or not (<0)
+    The network outputs POSITION WAYPOINTS — true strategic decisions:
+      [0] dx          [-1, 1]  → relative X offset (× 500m from current pos)
+      [1] dy          [-1, 1]  → relative Y offset (× 500m from current pos)
+      [2] target_alt  [-1, 1]  → desired altitude (mapped to [40, 250]m)
+      [3] water_trigger [-1,1] → drop water (>0) or not (<0)
 
-    A deterministic flight controller in env_core.py converts these strategy
-    outputs to physical [roll, pitch, throttle, water] commands.  The aircraft
-    cannot crash from bad RL actions — the controller handles flight safety.
+    The training worker computes heading to waypoint (atan2) and passes
+    [heading_cmd, target_alt, water] to env_core.py's flight controller
+    which converts to physical [roll, pitch, throttle, water] commands.
 
     Architecture:
-        self_state (17-d) → MLP (64 → 64) → GRU (64) → strategy dist (3-d)
+        self_state (17-d) → MLP (64 → 64) → GRU (64) → waypoint dist (4-d)
 
     ~5K parameters.
     """
-    def __init__(self, self_state_dim=17, action_dim=3, hidden_dim=64):
+    def __init__(self, self_state_dim=17, action_dim=4, hidden_dim=64):
         super().__init__()
         self.hidden_dim = hidden_dim
 
@@ -599,18 +600,18 @@ class SimpleFWActor(nn.Module):
 
         self.action_mean = nn.Linear(hidden_dim, action_dim)
         nn.init.uniform_(self.action_mean.weight, -0.01, 0.01)
-        # Default strategy: gentle right turn, mid altitude, water off
-        #   heading_delta=0.3 → gentle right orbit (stays in map)
-        #   target_alt=0.0    → (40+250)/2 = 145m (center of safe band)
-        #   water=-0.5        → off
+        # Default strategy: slight forward movement, mid altitude, water off
+        #   dx=0.0, dy=0.0  → no strong directional bias (exploration will vary)
+        #   alt=0.0          → (40+250)/2 = 145m (center of safe band)
+        #   water=-0.5       → off
         with torch.no_grad():
-            self.action_mean.bias.copy_(torch.tensor([0.3, 0.0, -0.5]))
+            self.action_mean.bias.copy_(torch.tensor([0.0, 0.0, 0.0, -0.5]))
 
         # Per-dimension exploration std:
-        #   heading: std=0.35 → explores turns well
-        #   altitude: std=0.25 → moderate altitude changes  
-        #   water: std=0.35 → explores on/off
-        self.action_logstd = nn.Parameter(torch.tensor([[-1.05, -1.4, -1.05]]))
+        #   dx, dy: std≈0.30 → explores ±150m offset range
+        #   altitude: std≈0.25 → moderate altitude changes
+        #   water: std≈0.30   → explores on/off
+        self.action_logstd = nn.Parameter(torch.tensor([[-1.2, -1.2, -1.4, -1.2]]))
 
     def forward(self, self_state, incoming_messages=None, message_mask=None, hidden_state=None):
         """
@@ -676,8 +677,8 @@ class CommanderActorV2(nn.Module):
     -----------------------------------
     Transferred exactly (same shape, same semantics):
         encoder       (17→64→64)     — perception of own state
-        action_mean   (64→3)         — action output
-        action_logstd (1, 3)         — exploration noise
+        action_mean   (64→4)         — action output
+        action_logstd (1, 4)         — exploration noise
         gru.weight_hh (64×192)       — hidden→hidden dynamics (flight memory)
 
     Reinitialised (input size changed from 64 to 128):
@@ -688,7 +689,7 @@ class CommanderActorV2(nn.Module):
         msg_embed        (5→64)
         cross_attention  (64-d, 2 heads)
     """
-    def __init__(self, self_state_dim=17, msg_input_dim=5, action_dim=3,
+    def __init__(self, self_state_dim=17, msg_input_dim=5, action_dim=4,
                  hidden_dim=64, num_attn_heads=2):
         super().__init__()
         self.hidden_dim = hidden_dim

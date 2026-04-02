@@ -3,26 +3,21 @@ train_fw_survival.py — Phase 1: Waypoint-based fixed-wing STRATEGY training
 =============================================================================
 
 Architecture:
-  NN outputs a WAYPOINT COMMAND every `waypoint_steps` physics steps (~8s):
-    [0] heading_delta [-1,1]  → change heading by [-π, π]
-    [1] target_alt    [-1,1]  → desired altitude in [40, 250]m
-    [2] water_trigger [-1,1]  → drop water if > 0
+  NN outputs a POSITION WAYPOINT every `waypoint_steps` physics steps (~8s):
+    [0] dx          [-1,1]  → relative X offset (× 500m)
+    [1] dy          [-1,1]  → relative Y offset (× 500m)
+    [2] target_alt  [-1,1]  → desired altitude [40, 250]m
+    [3] water_trigger [-1,1] → drop water if > 0
 
-  A deterministic heading-hold + altitude-PD controller flies the aircraft
-  to the commanded heading/altitude for `waypoint_steps` inner steps.
-  The NN is queried again after the segment completes (or the agent dies).
+  The training worker computes:
+    target_pos = current_pos + [dx, dy] * 500m
+    heading    = atan2(target_y - cur_y, target_x - cur_x)
 
-  This gives ~20 strategic decisions per episode instead of ~1000 frame-by-
-  frame control actions.  Each decision has a clear accumulated reward signal,
-  making PPO credit assignment dramatically easier.
+  A deterministic controller in env_core.py flies toward that heading at
+  the desired altitude.  The NN is queried again after `waypoint_steps`
+  inner steps complete (or the agent dies).
 
-Reward:
-  +0.3 per physics step alive (survival bonus)
-  Boundary penalty (quadratic near edges)
-  Altitude penalty (outside [40, 150]m)
-  Patrol bonus (tiny pull toward map centre)
-  Crash penalty = -50
-  +50 for surviving all steps
+  ~20 strategic decisions per episode → clean credit assignment.
 
 Usage:
   python train_fw_survival.py
@@ -58,12 +53,11 @@ def _wrap_angle(a):
 
 def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx):
     """
-    Collect rollout episodes using the WAYPOINT system.
+    Collect rollout episodes using the POSITION WAYPOINT system.
 
-    Each episode has `num_decisions` NN calls (not `max_steps`).
-    Between NN calls, the heading-hold controller flies the aircraft for
-    `waypoint_steps` physics steps.  Reward is accumulated over each segment
-    and attributed to the single NN decision that triggered it.
+    Each episode has `num_decisions` NN calls.  The NN outputs [dx, dy, alt, water].
+    The worker computes target_pos = cur_pos + [dx,dy]*500m, then the heading-hold
+    controller flies toward that target for `waypoint_steps` inner steps.
     """
     import os
     os.environ["OMP_NUM_THREADS"] = "1"
@@ -77,14 +71,14 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
 
     max_steps = config['max_steps']
     waypoint_steps = config['waypoint_steps']
+    waypoint_range = config['waypoint_range']
     num_decisions = max_steps // waypoint_steps
     hidden_dim = config['hidden_dim']
     use_critic = config.get('use_critic', True)
 
-    # --- Build local networks ---
     local_actor = SimpleFWActor(
         self_state_dim=config['fixed_self_dim'],
-        action_dim=3,
+        action_dim=4,
         hidden_dim=hidden_dim,
     )
     local_actor.load_state_dict(actor_w)
@@ -96,13 +90,11 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
         local_critic.load_state_dict(critic_w)
         local_critic.eval()
 
-    # --- Environment ---
     local_env = DroneFireEnv(
         num_quads=0, num_fixed=1,
         grid_size_m=config['grid_size_m'], max_steps=max_steps
     )
 
-    # --- Buffers ---
     actor_buf = {k: [] for k in ["states", "actions", "logprobs", "returns", "alive"]}
     critic_buf = {k: [] for k in ["g_states", "values", "returns", "alive"]}
 
@@ -115,7 +107,6 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
     for ep_off in range(num_eps):
         obs, _ = local_env.reset(epizode_number=batch_start_idx + ep_off)
 
-        # Kill fire — strategy-only training (no extinguish mission yet)
         if local_env.sim.environment.fire_grid is not None:
             local_env.sim.environment.fire_grid.B[:] = False
             local_env.sim.environment.fire_grid.I[:] = 0.0
@@ -130,12 +121,11 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
         critic_h0_list.append(critic_h.clone())
 
         ep_data = []
-        physics_steps_alive = max_steps     # tracks actual survival
+        physics_steps_alive = max_steps
         ep_reward = 0.0
         agent_dead = False
 
         for dec_idx in range(num_decisions):
-            # --- Dead agent: pad with zeros ---
             if agent_dead or f_agent not in local_env.agents:
                 agent_dead = True
                 g_tensor = torch.zeros(1, config['fixed_self_dim'])
@@ -158,7 +148,6 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
                     val = torch.tensor([[0.0]])
                     c_h_out = critic_h
 
-            # Store decision data
             ep_data.append({
                 "dead": False,
                 "self": s_st,
@@ -173,16 +162,17 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
             actor_h = h_out
             critic_h = c_h_out
 
-            # --- Compute waypoint target ---
+            # --- Compute waypoint target position ---
             act_np = act.squeeze(0).numpy()
-            heading_delta = float(act_np[0])
-            target_alt_raw = float(act_np[1])
-            water_raw = float(act_np[2])
+            dx_raw = float(act_np[0])          # [-1, 1]
+            dy_raw = float(act_np[1])          # [-1, 1]
+            target_alt_raw = float(act_np[2])  # [-1, 1]
+            water_raw = float(act_np[3])       # [-1, 1]
 
-            # Get current heading from drone
             drone = local_env.sim.drones.get(f_agent)
-            current_yaw = drone.get_orientation_rpy()[2] if drone else 0.0
-            target_heading = current_yaw + heading_delta * np.pi
+            cur_pos = drone.get_position() if drone else np.zeros(3)
+            target_x = cur_pos[0] + dx_raw * waypoint_range
+            target_y = cur_pos[1] + dy_raw * waypoint_range
 
             # --- Execute waypoint_steps inner physics steps ---
             segment_reward = 0.0
@@ -191,16 +181,24 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
                 if f_agent not in local_env.agents:
                     break
 
-                # Compute heading-tracking command
                 drone = local_env.sim.drones.get(f_agent)
                 if drone is None:
                     break
-                cur_yaw = drone.get_orientation_rpy()[2]
-                heading_error = _wrap_angle(target_heading - cur_yaw)
-                heading_cmd = np.clip(heading_error / np.pi, -1.0, 1.0)
 
-                # Pass to env: [heading_cmd, target_alt_raw, water_raw]
-                # env_core.py controller converts to [roll, pitch, throttle, water]
+                # Heading to target waypoint
+                pos = drone.get_position()
+                dx_to_target = target_x - pos[0]
+                dy_to_target = target_y - pos[1]
+                dist_to_target = np.sqrt(dx_to_target**2 + dy_to_target**2)
+
+                if dist_to_target > 1.0:
+                    desired_heading = np.arctan2(dy_to_target, dx_to_target)
+                    cur_yaw = drone.get_orientation_rpy()[2]
+                    heading_error = _wrap_angle(desired_heading - cur_yaw)
+                    heading_cmd = np.clip(heading_error / np.pi, -1.0, 1.0)
+                else:
+                    heading_cmd = 0.0  # on target — fly straight
+
                 inner_action = np.array([heading_cmd, target_alt_raw, water_raw],
                                         dtype=np.float32)
                 obs, rewards_env, terms, _, infos_env = local_env.step(
@@ -218,7 +216,7 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
             ep_data[-1]["reward"] = segment_reward
             ep_reward += segment_reward
 
-        # --- GAE (over num_decisions, not max_steps) ---
+        # --- GAE (over num_decisions) ---
         gamma = config.get('gamma', 0.99)
         gae_lam = config.get('gae_lambda', 0.95)
         gae = 0.0
@@ -233,7 +231,6 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
             gae = delta + gamma * gae_lam * gae
             d["ret"] = gae + v_t
 
-        # --- Pack buffers ---
         d_state_zero = torch.zeros(1, config['fixed_self_dim'])
 
         for d in ep_data:
@@ -245,7 +242,7 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
 
             if d["dead"]:
                 actor_buf["states"].append(d_state_zero)
-                actor_buf["actions"].append(torch.zeros(1, 3))
+                actor_buf["actions"].append(torch.zeros(1, 4))
                 actor_buf["logprobs"].append(torch.tensor([0.0]))
             else:
                 actor_buf["states"].append(d["self"])
@@ -254,7 +251,6 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
             actor_buf["returns"].append(d.get("ret", 0.0))
             actor_buf["alive"].append(alive)
 
-        # Find death cause for this episode
         death = "survived"
         for d in ep_data:
             if "death_cause" in d:
@@ -265,7 +261,6 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
         all_lifespans.append(float(physics_steps_alive))
         all_deaths.append(death)
 
-    # --- Final cat ---
     def _cat(lst):
         return torch.cat(lst, dim=0)
 
@@ -316,8 +311,9 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
     # ── Hyperparameters ──────────────────────────────────────────────────────
     num_episodes = 30_000
     max_steps = 1000        # total physics steps per episode
-    waypoint_steps = 12     # physics steps per NN decision (~2s sim-time)
-    num_decisions = max_steps // waypoint_steps  # ~83 decisions per episode
+    waypoint_steps = 50     # physics steps per NN decision (~8.3s sim-time)
+    waypoint_range = 500.0  # meters — dx,dy in [-1,1] × this
+    num_decisions = max_steps // waypoint_steps  # 20 decisions per episode
 
     gamma = 0.99
     gae_lambda = 0.95
@@ -331,11 +327,12 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
     lr_critic = 3e-4
     hidden_dim = 64
 
-    # Entropy: with only 20 decisions per episode, each decision is high-impact.
-    # Keep moderate exploration to discover good waypoint sequences.
-    entropy_start = 0.01
-    entropy_end = 0.002
-    entropy_anneal_batches = 200
+    # Entropy: MINIMAL.  Previous runs showed entropy pushing std to 0.5 ceiling
+    # (near-uniform policy), preventing any learning.  With position waypoints,
+    # Gaussian noise provides sufficient exploration without entropy bonus.
+    entropy_start = 0.003
+    entropy_end = 0.0
+    entropy_anneal_batches = 100
 
     # ── Dims ─────────────────────────────────────────────────────────────────
     temp_env = DroneFireEnv(num_quads=0, num_fixed=1, grid_size_m=3000.0, max_steps=max_steps)
@@ -347,6 +344,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
     print(f"fixed_self_dim   = {fixed_self_dim}")
     print(f"max_steps        = {max_steps} (physics steps)")
     print(f"waypoint_steps   = {waypoint_steps} (physics steps per decision)")
+    print(f"waypoint_range   = {waypoint_range}m (dx,dy offset range)")
     print(f"num_decisions    = {num_decisions} (NN calls per episode)")
     print(f"hidden_dim       = {hidden_dim}")
     print(f"use_critic       = {use_critic}")
@@ -356,6 +354,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         'grid_size_m': 3000.0,
         'max_steps': max_steps,
         'waypoint_steps': waypoint_steps,
+        'waypoint_range': waypoint_range,
         'fixed_self_dim': fixed_self_dim,
         'scout_msg_dim': 5,
         'global_state_dim': global_state_dim,
@@ -368,7 +367,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
     # ── Networks ─────────────────────────────────────────────────────────────
     actor = SimpleFWActor(
         self_state_dim=fixed_self_dim,
-        action_dim=3,
+        action_dim=4,
         hidden_dim=hidden_dim,
     ).to(device)
 
@@ -480,7 +479,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
               f"R: {avg_batch:+7.1f} ({avg_roll:+7.1f})  "
               f"Life: {recent_life:.0f}  "
               f"alive: {alive_frac:.0%}  "
-              f"std=[{cur_stds[0]:.2f},{cur_stds[1]:.2f},{cur_stds[2]:.2f}]  "
+              f"std=[{cur_stds[0]:.2f},{cur_stds[1]:.2f},{cur_stds[2]:.2f},{cur_stds[3]:.2f}]  "
               f"deaths: [{dc_str}]  "
               f"{rollout_time:.1f}s")
 
@@ -573,7 +572,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
                 mb_h = h_actor_seq[mb].transpose(0, 1)
 
                 dist, _, _ = actor(mb_states, None, None, mb_h)
-                flat_acts = mb_acts.view(-1, 3)
+                flat_acts = mb_acts.view(-1, 4)
                 new_lp = dist.log_prob(flat_acts).sum(1)
                 entropy = dist.entropy().sum(1)
 
@@ -672,8 +671,8 @@ def _save_plot(rewards, losses, lifespans, logstds, save_dir, batch_idx, use_cri
     ax = axes[1, 1]
     if len(logstds) > 0 and hasattr(logstds[0], '__len__'):
         arr = np.array(logstds)
-        labels = ['Heading', 'Altitude', 'Water']
-        colors = ['blue', 'red', 'orange']
+        labels = ['dx', 'dy', 'Altitude', 'Water']
+        colors = ['blue', 'green', 'red', 'orange']
         for i, (lbl, col) in enumerate(zip(labels, colors)):
             ax.plot(arr[:, i], color=col, linewidth=1, label=lbl)
         ax.legend(fontsize=8)
