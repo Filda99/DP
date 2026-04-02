@@ -800,8 +800,12 @@ class DroneFireEnv(ParallelEnv):
                     # Proportional controller: larger turn desire → more roll
                     desired_turn = heading_delta_raw * np.pi
                     # Roll command: [-1, 1] (maps to ±45° in physics)
-                    # Gain 0.6: full heading_delta=±1 → roll=±0.6 (27°), gentle
-                    roll_cmd = np.clip(0.6 * heading_delta_raw, -1.0, 1.0)
+                    # Gain 2.0: When used with heading-hold (training loop
+                    # passes heading_error/π as action[0]), this gives:
+                    #   90° error → roll=1.0 (45° bank) — aggressive turn
+                    #   45° error → roll=0.5 (22° bank) — moderate
+                    #   10° error → roll=0.11 (5° bank) — gentle correction
+                    roll_cmd = np.clip(2.0 * heading_delta_raw, -1.0, 1.0)
 
                     # --- 2. ALTITUDE → PITCH ---
                     # target_alt [-1, 1] → [40, 250] meters

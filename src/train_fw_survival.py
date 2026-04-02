@@ -1,32 +1,32 @@
 """
-train_fw_survival.py — Phase 1: Teach the fixed-wing to SURVIVE (fly without crashing)
-======================================================================================
+train_fw_survival.py — Phase 1: Waypoint-based fixed-wing STRATEGY training
+=============================================================================
 
-Differences from train_fw_flight.py:
-  1. Uses SimpleFWActor (~6K params) instead of CommanderActor (~118K params)
-  2. NO autopilot — the network discovers flight from pure RL exploration
-  3. NO curriculum — simple single-phase training
-  4. action_logstd init = -0.5  (std ≈ 0.6, not 0.135)
-  5. env_core.py smoothing reduced from α=0.2 to α=0.5
-  6. Pitch clamp REMOVED — network controls full range
-  7. Option to train WITHOUT the critic (advantages = raw returns)
+Architecture:
+  NN outputs a WAYPOINT COMMAND every `waypoint_steps` physics steps (~8s):
+    [0] heading_delta [-1,1]  → change heading by [-π, π]
+    [1] target_alt    [-1,1]  → desired altitude in [40, 250]m
+    [2] water_trigger [-1,1]  → drop water if > 0
 
-The ONLY reward signal:
-  - +0.3 per step alive  (from env_core.py _apply_physics_shaping)
-  - Boundary penalty      (quadratic, near edges)
-  - Altitude penalty       (outside [40, 150] m)
-  - Crash penalty = -50
-  - +50 for surviving all steps
-  - Patrol bonus: tiny pull toward map centre (max 0.05/step)
+  A deterministic heading-hold + altitude-PD controller flies the aircraft
+  to the commanded heading/altitude for `waypoint_steps` inner steps.
+  The NN is queried again after the segment completes (or the agent dies).
 
-Max achievable reward per episode (2000 steps):
-  2000 × 0.35 + 50 = 750 points
+  This gives ~20 strategic decisions per episode instead of ~1000 frame-by-
+  frame control actions.  Each decision has a clear accumulated reward signal,
+  making PPO credit assignment dramatically easier.
+
+Reward:
+  +0.3 per physics step alive (survival bonus)
+  Boundary penalty (quadratic near edges)
+  Altitude penalty (outside [40, 150]m)
+  Patrol bonus (tiny pull toward map centre)
+  Crash penalty = -50
+  +50 for surviving all steps
 
 Usage:
-  cd src/
   python train_fw_survival.py
-  python train_fw_survival.py --no-critic     # test without critic baseline
-  python train_fw_survival.py --resume-episodes 5000 --resume-actor saved_models/fw_survival/actor_best.pt
+  python train_fw_survival.py --no-critic
 """
 
 import torch
@@ -44,13 +44,26 @@ from concurrent.futures import ProcessPoolExecutor
 
 
 # =============================================================================
+# HELPERS
+# =============================================================================
+
+def _wrap_angle(a):
+    """Wrap angle to [-π, π]."""
+    return (a + 3.141592653589793) % (2 * 3.141592653589793) - 3.141592653589793
+
+
+# =============================================================================
 # WORKER FUNCTION  (runs on CPU, no scouts)
 # =============================================================================
 
 def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx):
     """
-    Collect rollout episodes for the fixed-wing survival task.
-    No autopilot, no scouts — pure RL exploration.
+    Collect rollout episodes using the WAYPOINT system.
+
+    Each episode has `num_decisions` NN calls (not `max_steps`).
+    Between NN calls, the heading-hold controller flies the aircraft for
+    `waypoint_steps` physics steps.  Reward is accumulated over each segment
+    and attributed to the single NN decision that triggered it.
     """
     import os
     os.environ["OMP_NUM_THREADS"] = "1"
@@ -63,6 +76,8 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
     from models import SimpleFWActor, MAPPOCritic
 
     max_steps = config['max_steps']
+    waypoint_steps = config['waypoint_steps']
+    num_decisions = max_steps // waypoint_steps
     hidden_dim = config['hidden_dim']
     use_critic = config.get('use_critic', True)
 
@@ -84,7 +99,7 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
     # --- Environment ---
     local_env = DroneFireEnv(
         num_quads=0, num_fixed=1,
-        grid_size_m=3000.0, max_steps=max_steps
+        grid_size_m=config['grid_size_m'], max_steps=max_steps
     )
 
     # --- Buffers ---
@@ -100,7 +115,7 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
     for ep_off in range(num_eps):
         obs, _ = local_env.reset(epizode_number=batch_start_idx + ep_off)
 
-        # Kill fire immediately — this is a flight-only task
+        # Kill fire — strategy-only training (no extinguish mission yet)
         if local_env.sim.environment.fire_grid is not None:
             local_env.sim.environment.fire_grid.B[:] = False
             local_env.sim.environment.fire_grid.I[:] = 0.0
@@ -115,19 +130,14 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
         critic_h0_list.append(critic_h.clone())
 
         ep_data = []
-        lifespan = max_steps
+        physics_steps_alive = max_steps     # tracks actual survival
         ep_reward = 0.0
+        agent_dead = False
 
-        for step in range(max_steps):
-            g_state = local_env.state()
-            # For survival training: use only the commander self-state (17-d)
-            # as critic input. The full global_state is 273-d where 256-d
-            # fire map is always zero (fire killed). Feeding 93% zeros to
-            # the critic wastes capacity and makes learning harder.
-            g_tensor = None  # set below from self_state
-
-            if f_agent not in local_env.agents:
-                # Agent is dead — pad with zeros
+        for dec_idx in range(num_decisions):
+            # --- Dead agent: pad with zeros ---
+            if agent_dead or f_agent not in local_env.agents:
+                agent_dead = True
                 g_tensor = torch.zeros(1, config['fixed_self_dim'])
                 ep_data.append({
                     "dead": True, "gs": g_tensor,
@@ -135,9 +145,10 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
                 })
                 continue
 
+            # --- NN decision ---
             with torch.no_grad():
                 s_st = torch.FloatTensor(obs[f_agent]["self_state"]).unsqueeze(0)
-                g_tensor = s_st  # critic sees same state as actor
+                g_tensor = s_st
                 dist_out, _, h_out = local_actor(s_st, None, None, actor_h)
                 act = dist_out.sample()
 
@@ -147,6 +158,7 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
                     val = torch.tensor([[0.0]])
                     c_h_out = critic_h
 
+            # Store decision data
             ep_data.append({
                 "dead": False,
                 "self": s_st,
@@ -161,27 +173,62 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
             actor_h = h_out
             critic_h = c_h_out
 
-            actions = {f_agent: act.squeeze(0).numpy()}
-            if local_env.agents:
-                obs, rewards_env, terms, _, infos_env = local_env.step(actions)
-                r = rewards_env.get(f_agent, 0.0)
-                ep_data[-1]["reward"] = r
-                ep_reward += r
-                if terms.get(f_agent, False) and lifespan == max_steps:
-                    lifespan = step
-                    ep_data[-1]["death_cause"] = infos_env.get(f_agent, {}).get("death_cause", "unknown")
+            # --- Compute waypoint target ---
+            act_np = act.squeeze(0).numpy()
+            heading_delta = float(act_np[0])
+            target_alt_raw = float(act_np[1])
+            water_raw = float(act_np[2])
 
-        # --- GAE ---
+            # Get current heading from drone
+            drone = local_env.sim.drones.get(f_agent)
+            current_yaw = drone.get_orientation_rpy()[2] if drone else 0.0
+            target_heading = current_yaw + heading_delta * np.pi
+
+            # --- Execute waypoint_steps inner physics steps ---
+            segment_reward = 0.0
+
+            for inner in range(waypoint_steps):
+                if f_agent not in local_env.agents:
+                    break
+
+                # Compute heading-tracking command
+                drone = local_env.sim.drones.get(f_agent)
+                if drone is None:
+                    break
+                cur_yaw = drone.get_orientation_rpy()[2]
+                heading_error = _wrap_angle(target_heading - cur_yaw)
+                heading_cmd = np.clip(heading_error / np.pi, -1.0, 1.0)
+
+                # Pass to env: [heading_cmd, target_alt_raw, water_raw]
+                # env_core.py controller converts to [roll, pitch, throttle, water]
+                inner_action = np.array([heading_cmd, target_alt_raw, water_raw],
+                                        dtype=np.float32)
+                obs, rewards_env, terms, _, infos_env = local_env.step(
+                    {f_agent: inner_action})
+                r = rewards_env.get(f_agent, 0.0)
+                segment_reward += r
+
+                if terms.get(f_agent, False):
+                    physics_steps_alive = dec_idx * waypoint_steps + inner
+                    ep_data[-1]["death_cause"] = infos_env.get(
+                        f_agent, {}).get("death_cause", "unknown")
+                    agent_dead = True
+                    break
+
+            ep_data[-1]["reward"] = segment_reward
+            ep_reward += segment_reward
+
+        # --- GAE (over num_decisions, not max_steps) ---
         gamma = config.get('gamma', 0.99)
         gae_lam = config.get('gae_lambda', 0.95)
         gae = 0.0
         z_val = torch.tensor([[0.0]])
 
-        for i in reversed(range(max_steps)):
+        for i in reversed(range(num_decisions)):
             d = ep_data[i]
             v_t = d.get("val", z_val).item()
             r_t = d.get("reward", 0.0)
-            v_np = ep_data[i + 1].get("val", z_val).item() if i < max_steps - 1 else 0.0
+            v_np = ep_data[i + 1].get("val", z_val).item() if i < num_decisions - 1 else 0.0
             delta = r_t + gamma * v_np - v_t
             gae = delta + gamma * gae_lam * gae
             d["ret"] = gae + v_t
@@ -215,7 +262,7 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
                 break
 
         all_rewards.append(ep_reward)
-        all_lifespans.append(float(lifespan))
+        all_lifespans.append(float(physics_steps_alive))
         all_deaths.append(death)
 
     # --- Final cat ---
@@ -250,7 +297,7 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
 def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
                       use_critic=True):
     print("=" * 70)
-    print("  Fixed-Wing SURVIVAL Training (SimpleFWActor)")
+    print("  Fixed-Wing WAYPOINT Training (SimpleFWActor)")
     print(f"  Critic: {'ON' if use_critic else 'OFF (advantages = raw returns)'}")
     if resume_episodes > 0:
         print(f"  RESUME from episode {resume_episodes}")
@@ -268,10 +315,10 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
 
     # ── Hyperparameters ──────────────────────────────────────────────────────
     num_episodes = 30_000
-    max_steps = 1000      # Goldilocks zone for 3km map:
-                          # - 500 was too easy (constant orbit survived 100%)
-                          # - 2000 was too hard (0% survival, no positive examples)
-                          # - 1000: orbit survives ~30-50% → clear gradient both ways
+    max_steps = 1000        # total physics steps per episode
+    waypoint_steps = 12     # physics steps per NN decision (~2s sim-time)
+    num_decisions = max_steps // waypoint_steps  # ~83 decisions per episode
+
     gamma = 0.99
     gae_lambda = 0.95
     clip_coef = 0.2
@@ -282,14 +329,13 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
 
     lr_actor = 3e-4
     lr_critic = 3e-4
-    hidden_dim = 64      # SimpleFWActor hidden dim
+    hidden_dim = 64
 
-    # Entropy: moderate — 0.02 was too aggressive and pushed std to ceiling,
-    # causing the catastrophic collapse at batch ~270.  With max_std=0.5 and
-    # entropy_start=0.005 the bonus encourages exploration without saturating.
-    entropy_start = 0.005
-    entropy_end = 0.001
-    entropy_anneal_batches = 300
+    # Entropy: with only 20 decisions per episode, each decision is high-impact.
+    # Keep moderate exploration to discover good waypoint sequences.
+    entropy_start = 0.01
+    entropy_end = 0.002
+    entropy_anneal_batches = 200
 
     # ── Dims ─────────────────────────────────────────────────────────────────
     temp_env = DroneFireEnv(num_quads=0, num_fixed=1, grid_size_m=3000.0, max_steps=max_steps)
@@ -299,8 +345,9 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         temp_env.sim.stop_simulation()
 
     print(f"fixed_self_dim   = {fixed_self_dim}")
-    print(f"global_state_dim = {global_state_dim} (NOT used by survival critic)")
-    print(f"critic_input_dim = {fixed_self_dim} (self_state only)")
+    print(f"max_steps        = {max_steps} (physics steps)")
+    print(f"waypoint_steps   = {waypoint_steps} (physics steps per decision)")
+    print(f"num_decisions    = {num_decisions} (NN calls per episode)")
     print(f"hidden_dim       = {hidden_dim}")
     print(f"use_critic       = {use_critic}")
 
@@ -308,6 +355,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         'N_QUADS': 0, 'N_FIXED': 1,
         'grid_size_m': 3000.0,
         'max_steps': max_steps,
+        'waypoint_steps': waypoint_steps,
         'fixed_self_dim': fixed_self_dim,
         'scout_msg_dim': 5,
         'global_state_dim': global_state_dim,
@@ -324,7 +372,6 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         hidden_dim=hidden_dim,
     ).to(device)
 
-    # Count params
     n_params = sum(p.numel() for p in actor.parameters())
     print(f"SimpleFWActor params: {n_params:,}")
 
@@ -332,7 +379,6 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         actor.load_state_dict(torch.load(resume_actor, map_location=device))
         print(f"  Loaded actor from {resume_actor}")
 
-    # Survival critic sees self_state only (17-d), not full 273-d global state
     critic_input_dim = fixed_self_dim
     critic = MAPPOCritic(critic_input_dim, hidden_dim=128).to(device)
     if resume_critic and os.path.exists(resume_critic):
@@ -340,13 +386,10 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         print(f"  Loaded critic from {resume_critic}")
 
     # ── Optimizer ────────────────────────────────────────────────────────────
-    # Separate logstd into its own param group with higher LR so it can
-    # adapt faster.  With shared LR, logstd barely moved (0.35→0.36 in 20
-    # batches) because its gradient is small relative to the network weights.
     actor_main_params = [p for n, p in actor.named_parameters() if n != 'action_logstd']
     param_groups = [
         {"params": actor_main_params, "lr": lr_actor},
-        {"params": [actor.action_logstd], "lr": lr_actor * 3},  # 3× faster for std
+        {"params": [actor.action_logstd], "lr": lr_actor * 3},
     ]
     if use_critic:
         param_groups.append({"params": critic.parameters(), "lr": lr_critic})
@@ -365,21 +408,19 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
 
     best_avg = -1e9
     batches_since_best = 0
-    patience = 100  # stop if no improvement for 100 batches (~3000 episodes)
+    patience = 150
     episodes_played = resume_episodes
     num_batches = num_episodes // episodes_per_batch
 
     # ── Main training loop ───────────────────────────────────────────────────
     for batch_idx in range(1, num_batches + 1):
 
-        # Entropy annealing
         entropy_coef = max(
             entropy_end,
             entropy_start - (entropy_start - entropy_end)
                 * min(batch_idx - 1, entropy_anneal_batches) / entropy_anneal_batches
         )
 
-        # Snapshot weights
         actor_w = {k: v.cpu() for k, v in actor.state_dict().items()}
         critic_w = {k: v.cpu() for k, v in critic.state_dict().items()} if use_critic else None
 
@@ -423,20 +464,16 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         win = min(60, len(reward_history))
         avg_roll = float(np.mean(reward_history[-win:]))
 
-        # Log per-dimension std and alive fraction
         with torch.no_grad():
             cur_stds = torch.exp(actor.action_logstd.clamp(-3.0, 0.0)).squeeze()
-            cur_std = cur_stds.mean().item()
         logstd_history.append(cur_stds.cpu().numpy().copy())
 
         alive_frac = torch.cat(batch_actor["alive"]).mean().item()
 
-        # Death cause stats
         from collections import Counter
         dc = Counter(batch_deaths)
         dc_str = " ".join(f"{k}={v}" for k, v in dc.most_common())
 
-        avg_life = float(np.mean(batch_rewards))  # approx from rewards
         recent_life = float(np.mean(lifespan_history[-win:])) if lifespan_history else 0
         print(f"{datetime.datetime.now().strftime('%H:%M:%S')} | "
               f"Batch {batch_idx:04d} (Ep {episodes_played:05d}) | "
@@ -461,7 +498,6 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         if batch_idx % 50 == 0:
             torch.save(actor.state_dict(), os.path.join(save_dir, f"actor_b{batch_idx:04d}.pt"))
 
-        # Early stopping check
         if batches_since_best >= patience and batch_idx >= 50:
             print(f"\n⏹  Early stopping: no improvement for {patience} batches")
             print(f"   Best rolling avg = {best_avg:.1f} at batch ~{batch_idx - batches_since_best}")
@@ -470,6 +506,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
             break
 
         # ── PPO UPDATE ───────────────────────────────────────────────────
+        # Buffer shape: episodes × num_decisions (not max_steps!)
         a_states = torch.cat(batch_actor["states"]).to(device)
         a_actions = torch.cat(batch_actor["actions"]).to(device)
         a_logprobs = torch.cat(batch_actor["logprobs"]).to(device)
@@ -487,7 +524,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         h_actor = _mk_h(batch_h_actor, hidden_dim)
         h_critic = _mk_h(batch_h_critic, 128)
 
-        # Advantages — normalize ONCE using only alive steps
+        # Advantages
         if use_critic:
             cr_adv = cr_rets.unsqueeze(1) - cr_vals.detach()
         else:
@@ -500,19 +537,19 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
             cr_adv_flat = (cr_adv_flat - alive_adv.mean()) / (alive_adv.std() + 1e-8)
             cr_adv = cr_adv_flat.view(-1, 1)
 
-        # Reshape to sequences
+        # Reshape to sequences of num_decisions (NOT max_steps)
         episodes = episodes_per_batch
-        a_states_seq = a_states.view(episodes, max_steps, -1)
-        a_actions_seq = a_actions.view(episodes, max_steps, -1)
-        a_logprobs_seq = a_logprobs.view(episodes, max_steps)
-        a_adv_seq = cr_adv.view(episodes, max_steps, 1).squeeze(-1)
-        a_alive_seq = a_alive.view(episodes, max_steps)
+        a_states_seq = a_states.view(episodes, num_decisions, -1)
+        a_actions_seq = a_actions.view(episodes, num_decisions, -1)
+        a_logprobs_seq = a_logprobs.view(episodes, num_decisions)
+        a_adv_seq = cr_adv.view(episodes, num_decisions, 1).squeeze(-1)
+        a_alive_seq = a_alive.view(episodes, num_decisions)
 
-        h_actor_seq = h_actor.transpose(0, 1)  # [ep, 1, hidden]
+        h_actor_seq = h_actor.transpose(0, 1)
 
-        cr_g_seq = cr_g.view(episodes, max_steps, 1, -1).transpose(1, 2)
-        cr_ret_seq = cr_rets.view(episodes, max_steps, 1).transpose(1, 2)
-        cr_alive_seq = cr_alive.view(episodes, max_steps)
+        cr_g_seq = cr_g.view(episodes, num_decisions, 1, -1).transpose(1, 2)
+        cr_ret_seq = cr_rets.view(episodes, num_decisions, 1).transpose(1, 2)
+        cr_alive_seq = cr_alive.view(episodes, num_decisions)
         h_critic_seq = h_critic.transpose(0, 1)
 
         # Gradient loop
@@ -528,7 +565,6 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
                 mb = b_inds[start:start + mb_size]
                 curr_mb = len(mb)
 
-                # Actor forward
                 mb_states = a_states_seq[mb]
                 mb_acts = a_actions_seq[mb]
                 mb_old_lp = a_logprobs_seq[mb].view(-1)
@@ -547,16 +583,14 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
                 pg2 = -mb_adv * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
                 surr = torch.max(pg1, pg2)
 
-                # MASK: only alive steps contribute to policy loss
                 n_alive = mb_alive.sum().clamp(min=1.0)
                 policy_loss = (surr * mb_alive).sum() / n_alive
                 entropy_loss = (entropy * mb_alive).sum() / n_alive
 
                 loss = policy_loss - entropy_coef * entropy_loss
 
-                # Critic loss — also masked
                 if use_critic:
-                    mb_cr_g = cr_g_seq[mb].reshape(curr_mb, max_steps, -1)
+                    mb_cr_g = cr_g_seq[mb].reshape(curr_mb, num_decisions, -1)
                     mb_cr_ret = cr_ret_seq[mb].reshape(-1, 1)
                     mb_cr_alive = cr_alive_seq[mb].reshape(-1)
                     mb_h_cr = h_critic_seq[mb].reshape(1, curr_mb, -1)
@@ -584,12 +618,10 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
 
         loss_history.append(batch_loss / update_epochs)
 
-        # Plot every 10 batches
         if batch_idx % 10 == 0:
             _save_plot(reward_history, loss_history, lifespan_history,
                        logstd_history, save_dir, batch_idx, use_critic)
 
-    # Final plot
     _save_plot(reward_history, loss_history, lifespan_history,
                logstd_history, save_dir, batch_idx, use_critic)
 
@@ -603,7 +635,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
 
 def _save_plot(rewards, losses, lifespans, logstds, save_dir, batch_idx, use_critic):
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle(f"FW Survival — Batch {batch_idx}  "
+    fig.suptitle(f"FW Waypoint — Batch {batch_idx}  "
                  f"(critic={'ON' if use_critic else 'OFF'})", fontsize=13)
 
     # Reward
@@ -631,9 +663,9 @@ def _save_plot(rewards, losses, lifespans, logstds, save_dir, batch_idx, use_cri
         ma2 = np.convolve(lifespans, np.ones(30) / 30, mode='valid')
         ax.plot(range(29, len(lifespans)), ma2, color='darkorange', linewidth=1.5, label='MA 30')
         ax.legend()
-    ax.set_title("Avg Lifespan (steps)")
+    ax.set_title("Lifespan (physics steps)")
     ax.set_xlabel("Episodes")
-    ax.set_ylim(0, 2100)
+    ax.set_ylim(0, 1100)
     ax.grid(True, alpha=0.3)
 
     # Std (per dimension)
