@@ -817,3 +817,58 @@ class CommanderActorV2(nn.Module):
         dist = Normal(action_mean, torch.exp(log_std))
 
         return dist, None, new_hidden
+
+
+# =============================================================================
+# 6. PRIVILEGED CRITIC  (CTDE — sees global state during training)
+# =============================================================================
+
+class PrivilegedCritic(nn.Module):
+    """MLP+GRU value network that receives a privileged global-state vector
+    during training.  Used for both scout and commander — one instance each,
+    with different input dims and hidden dims.
+
+    Global state = agent's own obs (flattened) + privileged extras:
+        [fire_x_norm, fire_y_norm, fire_intensity,
+         other_agent_x, other_agent_y, other_agent_z]
+
+    This is the standard MAPPO CTDE approach — critics are centralised
+    (see everything), actors remain decentralised (see only own obs).
+    """
+
+    def __init__(self, input_dim, hidden_dim=128):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+        )
+        self.gru = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim,
+                          batch_first=True)
+        self.value_head = nn.Linear(hidden_dim, 1)
+
+    def forward(self, global_state, hidden_state=None):
+        """
+        global_state : (B, S, input_dim) or (B, input_dim)
+        hidden_state : (1, B, hidden_dim) or None
+        Returns: value (B*S,), new_hidden
+        """
+        is_sequential = (global_state.dim() == 3)
+        batch_size = global_state.size(0)
+        seq_len = global_state.size(1) if is_sequential else 1
+
+        x = global_state.reshape(-1, global_state.size(-1))
+        x = self.encoder(x)
+
+        x = x.view(batch_size, seq_len, -1)
+
+        if hidden_state is None:
+            hidden_state = torch.zeros(1, batch_size, self.hidden_dim,
+                                       device=x.device)
+
+        gru_out, new_hidden = self.gru(x, hidden_state)
+        value = self.value_head(gru_out.reshape(-1, self.hidden_dim))
+        return value.squeeze(-1), new_hidden

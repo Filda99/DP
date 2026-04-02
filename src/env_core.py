@@ -405,6 +405,47 @@ class DroneFireEnv(ParallelEnv):
                     "neighbor_mask": np.ones((self.max_neighbors,), dtype=bool)
                 }
 
+    def get_privileged_state(self, agent_name):
+        """Build privileged global-state vector for the critic (CTDE).
+
+        Contains the agent's own obs + privileged extras that the actor
+        never sees: fire position, fire intensity, other agent's position.
+
+        Scout  critic input: 15 (self) + 6 (priv) = 21
+        Cmdr   critic input: 17 (self) + 6 (priv) = 23
+        """
+        own_obs = self._get_obs(agent_name)
+        own_state = own_obs["self_state"]  # 15D (scout) or 17D (cmdr)
+
+        # Fire info (normalised by map_bounds)
+        fire_x_norm = self.fire_x / self.map_bounds
+        fire_y_norm = self.fire_y / self.map_bounds
+
+        # Current fire intensity (mean of fire grid, 0 if no grid)
+        fire_intensity = 0.0
+        if self.sim.environment.fire_grid is not None:
+            fire_intensity = float(np.mean(self.sim.environment.fire_grid.I))
+
+        # Other agent's position (normalised)
+        other_pos = np.zeros(3)
+        if "fixed" in agent_name:
+            # Commander critic sees scout position
+            for q in self.quad_agents:
+                if q in self.sim.drones:
+                    other_pos = self.sim.drones[q].get_position() / self.map_bounds
+                    break
+        else:
+            # Scout critic sees commander position
+            for f in self.fixed_agents:
+                if f in self.sim.drones:
+                    other_pos = self.sim.drones[f].get_position() / self.map_bounds
+                    break
+
+        priv = np.array([fire_x_norm, fire_y_norm, fire_intensity,
+                         other_pos[0], other_pos[1], other_pos[2]],
+                        dtype=np.float32)
+        return np.concatenate([own_state, priv])
+
     def _extract_local_fire_map(self, pos, resolution_px=32):
         """Extract and resize the fire intensity map local to the drone's position.
 
