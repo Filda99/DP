@@ -592,22 +592,24 @@ class SimpleFWActor(nn.Module):
         self.gru = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim, batch_first=True)
 
         self.action_mean = nn.Linear(hidden_dim, action_dim)
-        # Zero-init weights so initial policy is deterministic bias only.
-        nn.init.zeros_(self.action_mean.weight)
+        # Small-scale init (not zero!) so the network can produce state-dependent
+        # outputs from the start.  Zero-init made output = bias regardless of
+        # input state → network couldn't learn to react to walls/altitude.
+        nn.init.uniform_(self.action_mean.weight, -0.01, 0.01)
         # Bias encodes the "default behaviour" before any learning:
         #   [Roll=0.5, Pitch=0, Throttle=0, Water=-0.5]
-        # Roll=0.5 → continuous gentle turn → the ONLY way to survive.
-        # Straight flight (roll=0) hits the boundary in ~250 steps.
-        # Roll=0.5 → 22.5° bank → orbit radius ~55m → stays in map.
+        # Roll=0.5 → continuous gentle turn → avoids straight-line boundary crash.
         # Water=-0.5 → mapped to 0.25 → valve closed (threshold 0.5).
         with torch.no_grad():
             self.action_mean.bias.copy_(torch.tensor([0.5, 0.0, 0.0, -0.5]))
 
         # Per-dimension std:
         #   [Roll, Pitch, Throttle, Water]
-        # Pitch tighter: std=0.3 → 13° perturbations (survivable).
-        # Roll/throttle/water wider: std=0.6.
-        self.action_logstd = nn.Parameter(torch.tensor([[-0.5, -1.2, -0.5, -0.5]]))
+        # Lower std (0.35) so the mean actually determines behavior.
+        # At std=0.6 the policy was ~uniform noise and the mean didn't matter,
+        # so the network had no incentive to make mean state-dependent.
+        # Pitch tighter (0.25) to avoid altitude kills.
+        self.action_logstd = nn.Parameter(torch.tensor([[-1.05, -1.4, -1.05, -1.05]]))
 
     def forward(self, self_state, incoming_messages=None, message_mask=None, hidden_state=None):
         """

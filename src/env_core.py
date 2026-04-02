@@ -644,7 +644,7 @@ class DroneFireEnv(ParallelEnv):
                 # 20 %: wall-recovery — spawn 50–150 m od náhodné stěny, heading
                 #   přímo na ni ±30°. Síť MUSÍ naučit otočný manévr, jinak okamžitý
                 #   crash. Tím se gradient pro "vyhýbání zdi" stane dominantním.
-                if False:  # Wall-recovery disabled for Phase 1 flight training
+                if random.random() < 0.30:  # 30% wall-recovery spawns
                     wall = random.choice(['N', 'S', 'E', 'W'])
                     margin = random.uniform(50.0, 150.0)
                     if wall == 'N':

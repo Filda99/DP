@@ -84,7 +84,7 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
     # --- Environment ---
     local_env = DroneFireEnv(
         num_quads=0, num_fixed=1,
-        grid_size_m=4000.0, max_steps=max_steps
+        grid_size_m=3000.0, max_steps=max_steps
     )
 
     # --- Buffers ---
@@ -268,9 +268,10 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
 
     # ── Hyperparameters ──────────────────────────────────────────────────────
     num_episodes = 30_000
-    max_steps = 500       # short episodes: aircraft lives ~400 steps, so 500
-                          # avoids >80% dead padding; increase once survival is
-                          # reliable
+    max_steps = 1000      # Goldilocks zone for 3km map:
+                          # - 500 was too easy (constant orbit survived 100%)
+                          # - 2000 was too hard (0% survival, no positive examples)
+                          # - 1000: orbit survives ~30-50% → clear gradient both ways
     gamma = 0.99
     gae_lambda = 0.95
     clip_coef = 0.2
@@ -291,7 +292,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
     entropy_anneal_batches = 300
 
     # ── Dims ─────────────────────────────────────────────────────────────────
-    temp_env = DroneFireEnv(num_quads=0, num_fixed=1, grid_size_m=4000.0, max_steps=max_steps)
+    temp_env = DroneFireEnv(num_quads=0, num_fixed=1, grid_size_m=3000.0, max_steps=max_steps)
     fixed_self_dim = temp_env.observation_space(temp_env.fixed_agents[0])["self_state"].shape[0]
     global_state_dim = temp_env.state_space.shape[0]
     if hasattr(temp_env, 'sim') and temp_env.sim is not None:
@@ -305,7 +306,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
 
     worker_config = {
         'N_QUADS': 0, 'N_FIXED': 1,
-        'grid_size_m': 4000.0,
+        'grid_size_m': 3000.0,
         'max_steps': max_steps,
         'fixed_self_dim': fixed_self_dim,
         'scout_msg_dim': 5,
@@ -339,7 +340,14 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         print(f"  Loaded critic from {resume_critic}")
 
     # ── Optimizer ────────────────────────────────────────────────────────────
-    param_groups = [{"params": actor.parameters(), "lr": lr_actor}]
+    # Separate logstd into its own param group with higher LR so it can
+    # adapt faster.  With shared LR, logstd barely moved (0.35→0.36 in 20
+    # batches) because its gradient is small relative to the network weights.
+    actor_main_params = [p for n, p in actor.named_parameters() if n != 'action_logstd']
+    param_groups = [
+        {"params": actor_main_params, "lr": lr_actor},
+        {"params": [actor.action_logstd], "lr": lr_actor * 3},  # 3× faster for std
+    ]
     if use_critic:
         param_groups.append({"params": critic.parameters(), "lr": lr_critic})
     optimizer = optim.Adam(param_groups)
