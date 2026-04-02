@@ -315,7 +315,7 @@ class DroneFireEnv(ParallelEnv):
     def _get_boundary_measurements_norm(self, pos):
         """Return distances to all four map edges normalised by grid_size_m."""
         distances = self._get_boundary_measurements(pos)
-        return np.array(distances) / 2000.0
+        return np.array(distances) / self.grid_size_m
 
     def _get_boundary_measurements(self, pos):
         """Return raw (metre) distances from pos to each map edge.
@@ -362,11 +362,10 @@ class DroneFireEnv(ParallelEnv):
         dist_boundaries = self._get_boundary_measurements_norm(pos)
 
         # --- Danger flag ---
-        # 1.0 when the aircraft is within 300 m of any edge, otherwise 0.0.
-        # At ~20 m/s cruise speed, 300 m ≈ 15 s to the wall — enough lead time
-        # to initiate a turn.  The flag gives the policy a clear binary signal
-        # to start turning before the physics shaping penalty kicks in.
-        danger_flag = 1.0 if min(self._get_boundary_measurements(pos)) < 300.0 else 0.0
+        # 1.0 when the aircraft is within 20% of map half-size of any edge.
+        # At ~20 m/s cruise speed this gives enough lead time to turn.
+        danger_threshold = self.map_bounds * 0.20  # 20% of half-map
+        danger_flag = 1.0 if min(self._get_boundary_measurements(pos)) < danger_threshold else 0.0
 
         self_state = np.array([
             norm_pos[0], norm_pos[1], norm_pos[2],                            # 0-2  : position
@@ -645,9 +644,11 @@ class DroneFireEnv(ParallelEnv):
                 # 20 %: wall-recovery — spawn 50–150 m od náhodné stěny, heading
                 #   přímo na ni ±30°. Síť MUSÍ naučit otočný manévr, jinak okamžitý
                 #   crash. Tím se gradient pro "vyhýbání zdi" stane dominantním.
-                if random.random() < 0.30:  # 30% wall-recovery spawns
+                # Wall-recovery disabled for Phase 1 waypoint training — spawn
+                # always in inner 60% of map so FW can learn strategy first.
+                if False:  # 30% wall-recovery spawns (disabled for now)
                     wall = random.choice(['N', 'S', 'E', 'W'])
-                    margin = random.uniform(50.0, 150.0)
+                    margin = random.uniform(self.map_bounds * 0.03, self.map_bounds * 0.10)
                     if wall == 'N':
                         fw_start_x = random.uniform(-self.map_bounds * 0.8, self.map_bounds * 0.8)
                         fw_start_y = self.map_bounds - margin
@@ -666,8 +667,8 @@ class DroneFireEnv(ParallelEnv):
                         wall_heading = np.pi              # letí k západu (-X)
                     fw_yaw = wall_heading + random.uniform(-np.radians(30), np.radians(30))
                 else:
-                    # Normální spawn: náhodná pozice v centru, náhodný heading
-                    spawn_radius = random.uniform(0.0, self.map_bounds * 0.40)
+                    # Normální spawn: uvnitř 60% mapy (±30% map_bounds), náhodný heading
+                    spawn_radius = random.uniform(0.0, self.map_bounds * 0.30)
                     spawn_angle  = random.uniform(0, 2 * np.pi)
                     fw_start_x   = float(spawn_radius * np.cos(spawn_angle))
                     fw_start_y   = float(spawn_radius * np.sin(spawn_angle))
@@ -1122,12 +1123,10 @@ class DroneFireEnv(ParallelEnv):
         drone = self.sim.drones[agent]
         pos = drone.get_position()
         dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
-        if dist_to_fire <= 200.0:
-            # Gradient uvnitř 200m: 0.5 na kraji → 1.0 přímo nad ohněm.
-            # Bez tohoto gradientu se commander naučí kroužit na 200m
-            # (bezpečná vzdálenost) místo jít přímo nad oheň a hasit.
-            return 0.5 + 0.5 * (1.0 - dist_to_fire / 200.0)
-        return max(0.0, 0.5 * (1.0 - dist_to_fire / 1500.0))
+        close_radius = self.map_bounds * 0.13   # ~200m at 3km map
+        if dist_to_fire <= close_radius:
+            return 0.5 + 0.5 * (1.0 - dist_to_fire / close_radius)
+        return max(0.0, 0.5 * (1.0 - dist_to_fire / self.map_bounds))
 
     def _check_death(self, agent):
         """Detekce pádu agenta.

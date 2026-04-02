@@ -3,21 +3,21 @@ train_fw_survival.py — Phase 1: Waypoint-based fixed-wing STRATEGY training
 =============================================================================
 
 Architecture:
-  NN outputs a POSITION WAYPOINT every `waypoint_steps` physics steps (~8s):
+  NN outputs a POSITION WAYPOINT (up to 20× per episode):
     [0] dx          [-1,1]  → relative X offset (× 500m)
     [1] dy          [-1,1]  → relative Y offset (× 500m)
     [2] target_alt  [-1,1]  → desired altitude [40, 250]m
     [3] water_trigger [-1,1] → drop water if > 0
 
-  The training worker computes:
-    target_pos = current_pos + [dx, dy] * 500m
-    heading    = atan2(target_y - cur_y, target_x - cur_x)
+  The training worker:
+    1. Computes target = cur_pos + [dx,dy] × 500m
+    2. Clamps target to safe zone (10m from map boundary)
+    3. Flies toward target via heading-hold controller
+4. Ends segment EARLY if waypoint reached (< 50m) → asks for next
+    5. Ends segment at timeout (50 steps) → -1.0 penalty
 
-  A deterministic controller in env_core.py flies toward that heading at
-  the desired altitude.  The NN is queried again after `waypoint_steps`
-  inner steps complete (or the agent dies).
-
-  ~20 strategic decisions per episode → clean credit assignment.
+  Per-step rewards from env_core.py (survival, boundary, altitude)
+  accumulate into each segment's total reward.
 
 Usage:
   python train_fw_survival.py
@@ -55,9 +55,17 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
     """
     Collect rollout episodes using the POSITION WAYPOINT system.
 
-    Each episode has `num_decisions` NN calls.  The NN outputs [dx, dy, alt, water].
-    The worker computes target_pos = cur_pos + [dx,dy]*500m, then the heading-hold
-    controller flies toward that target for `waypoint_steps` inner steps.
+    Each episode has up to `num_decisions` NN calls.  The NN outputs
+    [dx, dy, alt, water].  The worker:
+      1. Computes target_pos = cur_pos + [dx,dy] * range
+      2. Clamps target to safe zone (10m from map boundary)
+      3. Flies toward target via heading-hold controller
+      4. Ends segment EARLY if waypoint reached (< 50m) → bonus
+      5. Ends segment at timeout (waypoint_steps) → penalty
+
+    Rewards per segment:
+      - Accumulated env rewards (survival, boundary, altitude) from inner steps
+      - -1.0  timeout penalty (teaches NN to give reachable targets)
     """
     import os
     os.environ["OMP_NUM_THREADS"] = "1"
@@ -75,6 +83,14 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
     num_decisions = max_steps // waypoint_steps
     hidden_dim = config['hidden_dim']
     use_critic = config.get('use_critic', True)
+
+    # Safe zone: 200m from map boundary (turning radius + overshoot protection)
+    map_half = config['grid_size_m'] / 2.0
+    safe_limit = map_half - 200.0
+
+    # Waypoint reached threshold (meters)
+    wp_reached_dist = 50.0
+    wp_timeout_penalty = -1.0
 
     local_actor = SimpleFWActor(
         self_state_dim=config['fixed_self_dim'],
@@ -121,6 +137,7 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
         critic_h0_list.append(critic_h.clone())
 
         ep_data = []
+        total_inner_steps = 0
         physics_steps_alive = max_steps
         ep_reward = 0.0
         agent_dead = False
@@ -128,6 +145,16 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
         for dec_idx in range(num_decisions):
             if agent_dead or f_agent not in local_env.agents:
                 agent_dead = True
+                g_tensor = torch.zeros(1, config['fixed_self_dim'])
+                ep_data.append({
+                    "dead": True, "gs": g_tensor,
+                    "val": torch.tensor([[0.0]]), "ret": 0.0, "reward": 0.0,
+                })
+                continue
+
+            # Check if we've exhausted physics steps budget
+            remaining = max_steps - total_inner_steps
+            if remaining <= 0:
                 g_tensor = torch.zeros(1, config['fixed_self_dim'])
                 ep_data.append({
                     "dead": True, "gs": g_tensor,
@@ -162,22 +189,28 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
             actor_h = h_out
             critic_h = c_h_out
 
-            # --- Compute waypoint target position ---
+            # --- Compute & clamp waypoint target position ---
             act_np = act.squeeze(0).numpy()
-            dx_raw = float(act_np[0])          # [-1, 1]
-            dy_raw = float(act_np[1])          # [-1, 1]
-            target_alt_raw = float(act_np[2])  # [-1, 1]
-            water_raw = float(act_np[3])       # [-1, 1]
+            dx_raw = float(act_np[0])
+            dy_raw = float(act_np[1])
+            target_alt_raw = float(act_np[2])
+            water_raw = float(act_np[3])
 
             drone = local_env.sim.drones.get(f_agent)
             cur_pos = drone.get_position() if drone else np.zeros(3)
             target_x = cur_pos[0] + dx_raw * waypoint_range
             target_y = cur_pos[1] + dy_raw * waypoint_range
 
-            # --- Execute waypoint_steps inner physics steps ---
-            segment_reward = 0.0
+            # Clamp to safe zone (10m from boundary)
+            target_x = np.clip(target_x, -safe_limit, safe_limit)
+            target_y = np.clip(target_y, -safe_limit, safe_limit)
 
-            for inner in range(waypoint_steps):
+            # --- Fly toward waypoint (dynamic segment length) ---
+            segment_reward = 0.0
+            wp_reached = False
+            steps_this_segment = min(waypoint_steps, remaining)
+
+            for inner in range(steps_this_segment):
                 if f_agent not in local_env.agents:
                     break
 
@@ -185,11 +218,15 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
                 if drone is None:
                     break
 
-                # Heading to target waypoint
                 pos = drone.get_position()
                 dx_to_target = target_x - pos[0]
                 dy_to_target = target_y - pos[1]
                 dist_to_target = np.sqrt(dx_to_target**2 + dy_to_target**2)
+
+                # Check if waypoint reached → end segment early
+                if dist_to_target < wp_reached_dist:
+                    wp_reached = True
+                    # Still execute this step (fly through the waypoint)
 
                 if dist_to_target > 1.0:
                     desired_heading = np.arctan2(dy_to_target, dx_to_target)
@@ -197,7 +234,7 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
                     heading_error = _wrap_angle(desired_heading - cur_yaw)
                     heading_cmd = np.clip(heading_error / np.pi, -1.0, 1.0)
                 else:
-                    heading_cmd = 0.0  # on target — fly straight
+                    heading_cmd = 0.0
 
                 inner_action = np.array([heading_cmd, target_alt_raw, water_raw],
                                         dtype=np.float32)
@@ -205,13 +242,23 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
                     {f_agent: inner_action})
                 r = rewards_env.get(f_agent, 0.0)
                 segment_reward += r
+                total_inner_steps += 1
 
                 if terms.get(f_agent, False):
-                    physics_steps_alive = dec_idx * waypoint_steps + inner
+                    physics_steps_alive = total_inner_steps
                     ep_data[-1]["death_cause"] = infos_env.get(
                         f_agent, {}).get("death_cause", "unknown")
                     agent_dead = True
                     break
+
+                # Break AFTER executing the step where we reached the waypoint
+                if wp_reached:
+                    break
+
+            # --- Waypoint reward shaping ---
+            if not agent_dead:
+                if not wp_reached:
+                    segment_reward += wp_timeout_penalty
 
             ep_data[-1]["reward"] = segment_reward
             ep_reward += segment_reward
@@ -221,17 +268,26 @@ def collect_survival_worker(num_eps, actor_w, critic_w, config, batch_start_idx)
         gae_lam = config.get('gae_lambda', 0.95)
         gae = 0.0
         z_val = torch.tensor([[0.0]])
+        n_actual = len(ep_data)
 
-        for i in reversed(range(num_decisions)):
+        for i in reversed(range(n_actual)):
             d = ep_data[i]
             v_t = d.get("val", z_val).item()
             r_t = d.get("reward", 0.0)
-            v_np = ep_data[i + 1].get("val", z_val).item() if i < num_decisions - 1 else 0.0
+            v_np = ep_data[i + 1].get("val", z_val).item() if i < n_actual - 1 else 0.0
             delta = r_t + gamma * v_np - v_t
             gae = delta + gamma * gae_lam * gae
             d["ret"] = gae + v_t
 
         d_state_zero = torch.zeros(1, config['fixed_self_dim'])
+
+        # Pad to exactly num_decisions if ep_data is shorter
+        # (can happen if early waypoint reaches consume steps faster)
+        while len(ep_data) < num_decisions:
+            ep_data.append({
+                "dead": True, "gs": d_state_zero.clone(),
+                "val": torch.tensor([[0.0]]), "ret": 0.0, "reward": 0.0,
+            })
 
         for d in ep_data:
             alive = 0.0 if d["dead"] else 1.0
@@ -312,7 +368,7 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
     num_episodes = 30_000
     max_steps = 1000        # total physics steps per episode
     waypoint_steps = 50     # physics steps per NN decision (~8.3s sim-time)
-    waypoint_range = 500.0  # meters — dx,dy in [-1,1] × this
+    waypoint_range = 200.0  # meters — dx,dy in [-1,1] × this
     num_decisions = max_steps // waypoint_steps  # 20 decisions per episode
 
     gamma = 0.99
@@ -384,15 +440,15 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
         critic.load_state_dict(torch.load(resume_critic, map_location=device))
         print(f"  Loaded critic from {resume_critic}")
 
-    # ── Optimizer ────────────────────────────────────────────────────────────
+    # ── Optimizers (separate for actor & critic) ────────────────────────────
     actor_main_params = [p for n, p in actor.named_parameters() if n != 'action_logstd']
-    param_groups = [
+    optimizer_actor = optim.Adam([
         {"params": actor_main_params, "lr": lr_actor},
         {"params": [actor.action_logstd], "lr": lr_actor * 3},
-    ]
+    ])
+    optimizer_critic = None
     if use_critic:
-        param_groups.append({"params": critic.parameters(), "lr": lr_critic})
-    optimizer = optim.Adam(param_groups)
+        optimizer_critic = optim.Adam(critic.parameters(), lr=lr_critic)
 
     # ── Tracking ─────────────────────────────────────────────────────────────
     reward_history = []
@@ -586,8 +642,21 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
                 policy_loss = (surr * mb_alive).sum() / n_alive
                 entropy_loss = (entropy * mb_alive).sum() / n_alive
 
-                loss = policy_loss - entropy_coef * entropy_loss
+                actor_loss = policy_loss - entropy_coef * entropy_loss
 
+                # --- Actor update (separate from critic) ---
+                if not torch.isfinite(actor_loss):
+                    print(f"  ⚠️ Non-finite actor loss — skipping")
+                    optimizer_actor.zero_grad()
+                    continue
+
+                optimizer_actor.zero_grad()
+                actor_loss.backward()
+                nn.utils.clip_grad_norm_(actor.parameters(), max_norm=0.5)
+                optimizer_actor.step()
+
+                # --- Critic update (separate optimizer, won't affect actor) ---
+                value_loss_item = 0.0
                 if use_critic:
                     mb_cr_g = cr_g_seq[mb].reshape(curr_mb, num_decisions, -1)
                     mb_cr_ret = cr_ret_seq[mb].reshape(-1, 1)
@@ -597,21 +666,15 @@ def train_fw_survival(resume_episodes=0, resume_actor="", resume_critic="",
                     val_err = (new_vals - mb_cr_ret).pow(2).squeeze(1)
                     n_cr_alive = mb_cr_alive.sum().clamp(min=1.0)
                     value_loss = (val_err * mb_cr_alive).sum() / n_cr_alive
-                    loss = loss + 0.5 * value_loss
 
-                if not torch.isfinite(loss):
-                    print(f"  ⚠️ Non-finite loss — skipping minibatch")
-                    optimizer.zero_grad()
-                    continue
+                    if torch.isfinite(value_loss):
+                        optimizer_critic.zero_grad()
+                        value_loss.backward()
+                        nn.utils.clip_grad_norm_(critic.parameters(), max_norm=1.0)
+                        optimizer_critic.step()
+                        value_loss_item = value_loss.item()
 
-                optimizer.zero_grad()
-                loss.backward()
-                all_params = list(actor.parameters())
-                if use_critic:
-                    all_params += list(critic.parameters())
-                nn.utils.clip_grad_norm_(all_params, max_norm=0.5)
-                optimizer.step()
-                ep_loss += loss.item()
+                ep_loss += actor_loss.item() + value_loss_item
 
             batch_loss += ep_loss / max(1, num_minibatches)
 
