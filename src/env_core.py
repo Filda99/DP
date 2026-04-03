@@ -624,15 +624,17 @@ class DroneFireEnv(ParallelEnv):
         )
 
         # --- Fire start position: curriculum learning ---
-        # For the first 2000 episodes the fire is fixed at the map centre [0, 0]
-        # so the agents can learn a basic "fly to fire" behaviour without the
-        # added difficulty of searching a large arena.
-        # After episode 2000 the fire spawns at a random position inside a
-        # 60%-of-half-map radius, forcing generalisation across scenarios.
+        # Phase 1 (ep < 1500): fire at centre, scout spawns very close
+        # Phase 2 (1500-5000): fire up to 30% of map, scout within 200m
+        # Phase 3 (5000+):     fire up to 60% of map, scout within 400m
         if epizode_number < 1500:
             safe_zone = self.map_bounds * 0.1
             self.fire_x = 0.0
             self.fire_y = 0.0
+        elif epizode_number < 5000:
+            safe_zone = self.map_bounds * 0.3
+            self.fire_x = random.uniform(-safe_zone, safe_zone)
+            self.fire_y = random.uniform(-safe_zone, safe_zone)
         else:
             safe_zone = self.map_bounds * 0.6
             self.fire_x = random.uniform(-safe_zone, safe_zone)
@@ -642,11 +644,9 @@ class DroneFireEnv(ParallelEnv):
         self.current_episode = epizode_number
 
         # --- Drone spawn: blízko ohně ---
-        # Scout spawní do 150m od ohně — tighter curriculum so agents receive
-        # non-zero mission rewards from the very first steps of each episode.
-        max_spawn_dist = min(400.0, safe_zone)
+        max_spawn_dist = max(30.0, min(400.0, safe_zone))
         angle = random.uniform(0, 2 * np.pi)
-        dist  = random.uniform(50.0, max_spawn_dist)
+        dist  = random.uniform(20.0, max_spawn_dist)
         start_x = float(np.clip(self.fire_x + np.cos(angle) * dist, -self.map_bounds * 0.8, self.map_bounds * 0.8))
         start_y = float(np.clip(self.fire_y + np.sin(angle) * dist, -self.map_bounds * 0.8, self.map_bounds * 0.8))
         start_z = random.uniform(60.0, 120.0)
