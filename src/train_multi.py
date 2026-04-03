@@ -62,6 +62,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     torch.set_num_threads(1)
     import numpy as np
     import cv2  # pre-import to avoid repeated lazy-loading in env
+    import random
 
     from env_core import DroneFireEnv
     from models import ScoutActor, SimpleFWActor, CommanderActorV2, PrivilegedCritic
@@ -147,7 +148,16 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     d_neigh_s = torch.zeros(1, max(1, N_QUADS - 1), 3)
     d_neigh_m = torch.ones(1, max(1, N_QUADS - 1), dtype=torch.bool)
 
+    steps_range = config.get('steps_range', None)
+
     for ep_off in range(num_eps):
+        # Randomize episode length
+        if steps_range is not None:
+            ep_max_steps = random.randint(steps_range[0], steps_range[1])
+        else:
+            ep_max_steps = max_steps
+        local_env.max_steps = ep_max_steps
+
         obs, _ = local_env.reset(epizode_number=batch_start_idx + ep_off)
 
         # Recalculate safe_limit after reset (map size may have changed)
@@ -176,8 +186,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         scout_death_cause = "survived"
         cmdr_death_cause = "survived"
         total_cmdr_steps = 0
-        scout_lifespan = max_steps
-        cmdr_lifespan = max_steps
+        scout_lifespan = ep_max_steps
+        cmdr_lifespan = ep_max_steps
 
         # Commander waypoint state
         target_x, target_y = 0.0, 0.0
@@ -410,6 +420,10 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     cmdr_lifespan = step + 1
                     cmdr_death_cause = "env_empty"
 
+            # Early exit: no point stepping physics when both agents are dead
+            if not scout_alive and not cmdr_alive:
+                break
+
             # --- Trajectory recording ---
             if log_this_ep:
                 s_drone = local_env.sim.drones.get(q_agent) if q_agent else None
@@ -619,10 +633,11 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
     grid_size_m = 1000.0
     map_size_range = (600, 2000)   # random map size per episode [m]
     num_episodes = 30_000
-    max_steps = 2000
+    max_steps = 4000              # buffer size (upper bound)
+    steps_range = (1500, 4000)     # actual ep length randomized per episode
     waypoint_steps = 50
     waypoint_range = 100.0
-    num_decisions_cmdr = max_steps // waypoint_steps  # 40
+    num_decisions_cmdr = max_steps // waypoint_steps  # 80
 
     gamma = 0.99
     gamma_cmdr = 0.95          # shorter horizon for 40 decisions
@@ -667,6 +682,7 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
         'grid_size_m': grid_size_m,
         'map_size_range': map_size_range,
         'max_steps': max_steps,
+        'steps_range': steps_range,
         'waypoint_steps': waypoint_steps,
         'waypoint_range': waypoint_range,
         'num_decisions_cmdr': num_decisions_cmdr,
