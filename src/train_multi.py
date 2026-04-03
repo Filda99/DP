@@ -28,6 +28,7 @@ import torch.optim as optim
 import numpy as np
 import os
 import argparse
+import random
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -148,14 +149,9 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     d_neigh_s = torch.zeros(1, max(1, N_QUADS - 1), 3)
     d_neigh_m = torch.ones(1, max(1, N_QUADS - 1), dtype=torch.bool)
 
-    steps_range = config.get('steps_range', None)
+    ep_max_steps = config.get('ep_max_steps', max_steps)
 
     for ep_off in range(num_eps):
-        # Randomize episode length
-        if steps_range is not None:
-            ep_max_steps = random.randint(steps_range[0], steps_range[1])
-        else:
-            ep_max_steps = max_steps
         local_env.max_steps = ep_max_steps
 
         obs, _ = local_env.reset(epizode_number=batch_start_idx + ep_off)
@@ -763,7 +759,10 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
     reward_history = []
     loss_history_scout = []
     loss_history_cmdr = []
+    critic_loss_history_scout = []
+    critic_loss_history_cmdr = []
     lifespan_history = []
+    ep_max_steps_per_batch = []   # avg ep_max_steps per batch
     logstd_history_cmdr = []
 
     save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -797,6 +796,13 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
         agg_h = {"scout": [], "cmdr": []}
         batch_rewards = []
         batch_deaths = []
+
+        # Pick episode length for this batch (same for all workers)
+        if steps_range is not None:
+            batch_ep_max = random.randint(steps_range[0] // 100, steps_range[1] // 100) * 100
+        else:
+            batch_ep_max = max_steps
+        worker_config['ep_max_steps'] = batch_ep_max
 
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
             futures = [
@@ -841,6 +847,7 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
 
         # Logging
         avg_batch = float(np.mean(batch_rewards))
+        ep_max_steps_per_batch.append(batch_ep_max)
         win = min(60, len(reward_history))
         avg_roll = float(np.mean(reward_history[-win:]))
 
@@ -925,6 +932,7 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
         num_minibatches = 4
         mb_size_s = max(1, eps // num_minibatches)
         scout_loss_total = 0.0
+        scout_critic_loss_total = 0.0
 
         for epoch in range(update_epochs):
             b_inds = np.random.permutation(eps)
@@ -970,9 +978,12 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
                     v_loss.backward()
                     nn.utils.clip_grad_norm_(critic_scout.parameters(), max_norm=0.5)
                     optimizer_critic_scout.step()
+                    scout_critic_loss_total += v_loss.item()
 
         loss_history_scout.append(
             scout_loss_total / max(1, update_epochs * num_minibatches))
+        critic_loss_history_scout.append(
+            scout_critic_loss_total / max(1, update_epochs * num_minibatches))
 
         # ==============================================================
         # PPO UPDATE — COMMANDER
@@ -983,6 +994,8 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
         c_actions = torch.cat(agg_cmdr["actions"]).to(device)
         c_logprobs = torch.cat(agg_cmdr["logprobs"]).to(device)
         c_returns = torch.cat(agg_cmdr["returns"]).to(device)
+        cmdr_loss_total = 0.0
+        cmdr_critic_loss_total = 0.0
         c_alive = torch.cat(agg_cmdr["alive"]).to(device)
         c_values = torch.cat(agg_cmdr["values"]).to(device)
         c_cstates = torch.cat(agg_cmdr["critic_states"]).to(device)
@@ -1011,7 +1024,6 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
         h_cmdr_seq = h_cmdr.transpose(0, 1)
 
         mb_size_c = max(1, eps // num_minibatches)
-        cmdr_loss_total = 0.0
 
         for epoch in range(update_epochs):
             b_inds = np.random.permutation(eps)
@@ -1065,9 +1077,12 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
                     v_loss_c.backward()
                     nn.utils.clip_grad_norm_(critic_cmdr.parameters(), max_norm=0.5)
                     optimizer_critic_cmdr.step()
+                    cmdr_critic_loss_total += v_loss_c.item()
 
         loss_history_cmdr.append(
             cmdr_loss_total / max(1, update_epochs * num_minibatches))
+        critic_loss_history_cmdr.append(
+            cmdr_critic_loss_total / max(1, update_epochs * num_minibatches))
 
         # ==============================================================
         # PERIODIC SAVE & PLOT
@@ -1076,12 +1091,14 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
             _save_plot_multi(
                 reward_history, loss_history_scout, loss_history_cmdr,
                 lifespan_history, logstd_history_cmdr,
-                save_dir, batch_idx)
+                save_dir, batch_idx, ep_max_steps_per_batch,
+                critic_loss_history_scout, critic_loss_history_cmdr)
 
     _save_plot_multi(
         reward_history, loss_history_scout, loss_history_cmdr,
         lifespan_history, logstd_history_cmdr,
-        save_dir, batch_idx)
+        save_dir, batch_idx, ep_max_steps_per_batch,
+        critic_loss_history_scout, critic_loss_history_cmdr)
 
     print(f"\n✅ Training complete!")
     print(f"   Best: {save_dir}/scout_best.pt + cmdr_best.pt")
@@ -1092,7 +1109,8 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
 # =============================================================================
 
 def _save_plot_multi(rewards, loss_s, loss_c, lifespans, logstds,
-                     save_dir, batch_idx):
+                     save_dir, batch_idx, ep_max_per_batch=None,
+                     critic_loss_s=None, critic_loss_c=None):
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     fig.suptitle(f"Multi-Agent — Batch {batch_idx}", fontsize=13)
 
@@ -1129,6 +1147,17 @@ def _save_plot_multi(rewards, loss_s, loss_c, lifespans, logstds,
         ax.legend()
     ax.set_title("Avg Lifespan (steps)")
     ax.grid(True, alpha=0.3)
+    # Show avg ep_max_steps per batch as dashed line
+    if ep_max_per_batch and len(ep_max_per_batch) > 0:
+        # Expand per-batch to per-episode by repeating each value
+        eps_per_b = max(1, len(lifespans) // max(1, len(ep_max_per_batch)))
+        ep_max_expanded = []
+        for v in ep_max_per_batch:
+            ep_max_expanded.extend([v] * eps_per_b)
+        ep_max_expanded = ep_max_expanded[:len(lifespans)]
+        ax.plot(ep_max_expanded, color='gray', linewidth=1.2, linestyle='--',
+                alpha=0.6, label='max steps')
+        ax.legend(loc='lower right', fontsize=7)
 
     # Commander Std
     ax = axes[1, 1]
@@ -1142,8 +1171,15 @@ def _save_plot_multi(rewards, loss_s, loss_c, lifespans, logstds,
     ax.set_title("Commander Action Std")
     ax.grid(True, alpha=0.3)
 
-    # Empty slot
-    axes[1, 2].set_visible(False)
+    # Critic Value Loss (6th panel)
+    ax = axes[1, 2]
+    if critic_loss_s and len(critic_loss_s) > 0:
+        ax.plot(critic_loss_s, color='green', linewidth=1, label='Scout')
+    if critic_loss_c and len(critic_loss_c) > 0:
+        ax.plot(critic_loss_c, color='tomato', linewidth=1, label='Commander')
+    ax.set_title("Critic Value Loss (MSE)")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, f"training_b{batch_idx:04d}.png"),

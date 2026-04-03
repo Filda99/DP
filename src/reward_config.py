@@ -9,11 +9,9 @@ SHARED = {
     "survival_bonus":       0.3,   # per-krok bonus za přežití (oba agenti)
     "boundary_penalty":     5.0,    # max penalizace při nárazu do hranice
     "boundary_extra":       3.0,    # extra penalizace pro fixed-wing blízko hranice
-    "crash_penalty":        -50,    # sníženo z -150 — break-even byl na 500 krocích (= aktuální avg lifespan)
-                                    # → advantage ≈ 0 → policy gradient ≈ šum → entropie rostla
-                                    # s -50: break-even = 167 kroků, lifespan 500 = +100 advantage → jasný gradient
+    "crash_penalty":        -200,   # must hurt relative to extinguish (+5/step)
     "reward_clip_min":      -15.0,
-    "reward_clip_max":      150.0,  # zvýšeno z 50 — extinguish bonus (eff*500) může být ~100/krok
+    "reward_clip_max":      15.0,   # extinguish max = 5/step, survival = 0.3
 }
 
 # ─── Quadkoptéra (Scout) ─────────────────────────────────────────────────────

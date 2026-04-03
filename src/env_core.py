@@ -1005,7 +1005,7 @@ class DroneFireEnv(ParallelEnv):
             is_dropping = drone_controls[f_agent][3] > 0.5
 
             if eff > 0.0:
-                fire_bonus = min(eff * 50.0, 50.0)  # cap per-step bonus
+                fire_bonus = min(eff * 50.0, 5.0)  # cap per-step bonus
                 rewards[f_agent] += fire_bonus
 
                 # Scouts get 20% of the extinguish bonus — their messages guided commander
@@ -1027,14 +1027,14 @@ class DroneFireEnv(ParallelEnv):
         # Tohle dává agentům motivaci jednat rychle — čím déle čekají, tím víc
         # oheň roste a tím víc bodů ztrácejí. Sdílená penalizace zarovnává
         # incentivy scoutů a commandera směrem k jedinému cíli.
-        # if self.sim.environment.fire_grid is not None:
-        #     current_burning = int(np.sum(self.sim.environment.fire_grid.B))
-        #     delta_burned = max(0, current_burning - self._prev_burning_count)
-        #     if delta_burned > 0:
-        #         spread_penalty = delta_burned * 0.005  # 0.005 bodů za každou novou hořící buňku
-        #         for agent in rewards:
-        #             rewards[agent] -= spread_penalty
-        #     self._prev_burning_count = current_burning
+        if self.sim.environment.fire_grid is not None:
+            current_burning = int(np.sum(self.sim.environment.fire_grid.B))
+            delta_burned = max(0, current_burning - self._prev_burning_count)
+            if delta_burned > 0:
+                spread_penalty = delta_burned * 0.02  # ~0.5/krok when fire grows by 25 cells
+                for agent in rewards:
+                    rewards[agent] -= spread_penalty
+            self._prev_burning_count = current_burning
 
         for agent in rewards:
             rewards[agent] = np.clip(rewards[agent], SHARED["reward_clip_min"], SHARED["reward_clip_max"])
