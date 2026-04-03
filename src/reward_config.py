@@ -19,19 +19,19 @@ SHARED = {
 # ─── Quadkoptéra (Scout) ─────────────────────────────────────────────────────
 QUAD = {
     # Hranice mapy
-    "boundary_threshold_frac":  0.10,   # 10 % map_bounds/2
+    "boundary_threshold_frac":  0.40,   # 40 % map_bounds/2 — wider zone for small maps
 
     # Výška — sweet spot kde scout vidí dobře ale není v updraftu
     "alt_ideal_min":    40.0,   # pod touto výškou je silný updraft → penalizace
     "alt_ideal_max":   200.0,   # nad touto výškou je příliš daleko od ohně → penalizace
     "alt_ceiling":     400.0,   # tvrdá smrt — 200m výš než ideal_max = víc prostoru
-    "alt_penalty_k":     1.5,   # síla penalizace za výšku mimo rozsah (zvýšeno z 1.0)
+    "alt_penalty_k":     5.0,   # síla penalizace za výšku mimo rozsah (zvýšeno — silný gradient od země)
 
     # Mise — hover nad ohněm
     "fire_flat_bonus":   1.0,   # flat bonus za detekci ohně
     "fire_intensity_k": 10.0,   # násobitel intenzity
     "fire_speed_pen":    0.05,  # penalizace za rychlost nad ohněm
-    "fire_approach_k":   3.0,   # bonus za přibližování k ohni (potential-based shaping)
+    # "fire_approach_k":   3.0,   # REMOVED — approach shaping confused the scout
 
     # Scale
     "reward_scale":      0.3,
@@ -52,7 +52,7 @@ FIXED = {
     "alt_ideal_k":       0.002, # síla tahu k ideální výšce — zakomentováno, ale připraveno
 
     # Survival donut
-    "donut_radius":    500.0,   # uvnitř = flat bonus
+    "donut_radius":    250.0,   # uvnitř = flat bonus (scaled for 1km map)
     "donut_bonus":       0.05,  # bonus uvnitř donutu
     "survival_base":     0.02,   # base survival bonus (navíc k SHARED)
     "rubber_band_k":     0.02,  # síla tahu zpět do středu
@@ -61,10 +61,10 @@ FIXED = {
     "mission_state_bonus": 0.1,
     "orbital_radius_fire":    120.0,   # ideální kroužení kolem ohně (bylo 150)
     "orbital_radius_refill":  80.0,   # ideální kroužení u refill zóny
-    "orbital_radius_patrol": 300.0,   # patrol orbit kolem středu
+    "orbital_radius_patrol": 150.0,   # patrol orbit kolem středu (scaled for 1km map)
 
     # Water trigger bonus
-    "water_trigger_dist":   300.0,   # max vzdálenost od ohně pro bonus
+    "water_trigger_dist":   150.0,   # max vzdálenost od ohně pro bonus (scaled for 1km map)
     "water_trigger_alt":    150.0,   # max výška pro bonus
     "water_trigger_bonus":    1.5,   # bonus za aktivaci triggeru
     "water_trigger_thresh":   0.0,   # threshold last_action[3] pro "is_dropping"

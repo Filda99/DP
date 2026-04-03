@@ -61,6 +61,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     import torch
     torch.set_num_threads(1)
     import numpy as np
+    import cv2  # pre-import to avoid repeated lazy-loading in env
 
     from env_core import DroneFireEnv
     from models import ScoutActor, SimpleFWActor, CommanderActorV2, PrivilegedCritic
@@ -74,10 +75,11 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     N_QUADS = config['N_QUADS']
     scout_msg_dim = config['scout_msg_dim']
     use_cmdr_v2 = config.get('use_cmdr_v2', False)
+    map_size_range = config.get('map_size_range', None)
 
     map_half = config['grid_size_m'] / 2.0
-    safe_limit = map_half - 200.0
-    wp_reached_dist = 50.0
+    safe_limit = map_half - 150.0
+    wp_reached_dist = 30.0
     wp_timeout_penalty = -1.0
 
     # ── Rebuild networks on CPU ──────────────────────────────────────────
@@ -119,6 +121,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         num_quads=N_QUADS, num_fixed=1,
         grid_size_m=config['grid_size_m'], max_steps=max_steps
     )
+    local_env.map_size_range = map_size_range
 
     # ── Buffers ──────────────────────────────────────────────────────────
     scout_buf = {k: [] for k in [
@@ -146,6 +149,10 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
     for ep_off in range(num_eps):
         obs, _ = local_env.reset(epizode_number=batch_start_idx + ep_off)
+
+        # Recalculate safe_limit after reset (map size may have changed)
+        map_half = local_env.map_bounds
+        safe_limit = map_half - 150.0
 
         q_agent = local_env.quad_agents[0] if N_QUADS > 0 else None
         f_agent = local_env.fixed_agents[0]
@@ -609,11 +616,12 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
     # ── Hyperparameters ──────────────────────────────────────────────────
     N_QUADS = 1
     N_FIXED = 1
-    grid_size_m = 3000.0
+    grid_size_m = 1000.0
+    map_size_range = (600, 2000)   # random map size per episode [m]
     num_episodes = 30_000
     max_steps = 2000
     waypoint_steps = 50
-    waypoint_range = 200.0
+    waypoint_range = 100.0
     num_decisions_cmdr = max_steps // waypoint_steps  # 40
 
     gamma = 0.99
@@ -657,6 +665,7 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
     worker_config = {
         'N_QUADS': N_QUADS, 'N_FIXED': N_FIXED,
         'grid_size_m': grid_size_m,
+        'map_size_range': map_size_range,
         'max_steps': max_steps,
         'waypoint_steps': waypoint_steps,
         'waypoint_range': waypoint_range,
@@ -783,8 +792,14 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
                 )
                 for i in range(num_workers)
             ]
+            failed = 0
             for fut in futures:
-                w_scout, w_cmdr, w_h, w_rew, w_life, w_deaths = fut.result()
+                try:
+                    w_scout, w_cmdr, w_h, w_rew, w_life, w_deaths = fut.result()
+                except Exception as e:
+                    failed += 1
+                    print(f"   ⚠ Worker failed: {e}")
+                    continue
                 batch_rewards.extend(w_rew)
                 batch_deaths.extend(w_deaths)
                 lifespan_history.extend(w_life)
@@ -801,6 +816,12 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
                     agg_h["cmdr"].append(w_h["cmdr"])
 
         rollout_time = time.time() - t0
+
+        if failed > 0:
+            print(f"   ⚠ {failed}/{num_workers} workers failed this batch")
+        if not batch_rewards:
+            print(f"   ⚠ All workers failed, skipping batch {batch_idx}")
+            continue
 
         # Logging
         avg_batch = float(np.mean(batch_rewards))
@@ -845,7 +866,7 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
                        os.path.join(save_dir, "cmdr_best.pt"))
             print(f"   ⭐ New best! rolling avg = {best_avg:.1f}")
 
-        if batch_idx % 50 == 0:
+        if batch_idx % 10 == 0:
             torch.save(scout_actor.state_dict(),
                        os.path.join(save_dir, f"scout_b{batch_idx:04d}.pt"))
             torch.save(cmdr_actor.state_dict(),
@@ -873,7 +894,7 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
             s_adv = (s_adv - s_adv.mean()) / (s_adv.std() + 1e-8)
 
         # Reshape: [episodes, max_steps, ...]
-        eps = episodes_per_batch
+        eps = s_returns.numel() // max_steps  # actual eps (may be < episodes_per_batch if workers failed)
         s_maps_seq = s_maps.view(eps, max_steps, 1, 32, 32)
         s_self_seq = s_self.view(eps, max_steps, -1)
         s_neigh_s_seq = s_neigh_s.view(eps, max_steps, s_neigh_s.size(-2), 3)

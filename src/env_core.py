@@ -30,6 +30,11 @@ from src.simulation import Simulation
 import random
 from reward_config import QUAD, FIXED, SHARED
 
+# Fixed normalisation constant — independent of map size so that networks
+# trained on one map generalise to others.  All positions and distances
+# in observations are divided by this value instead of map_bounds.
+NORM_DIST = 1000.0
+
 class DroneFireEnv(ParallelEnv):
     # PettingZoo requires a metadata dict on every ParallelEnv subclass.
     metadata = {"render_modes": ["human"], "name": "drone_fire_v2"}
@@ -210,15 +215,15 @@ class DroneFireEnv(ParallelEnv):
         # --- 1. Normalise position and velocity to roughly [-1, 1] ---
         # Dividing position by map_bounds ensures 0 = centre, ±1 = edge.
         # Dividing velocity by 20.0 assumes max useful speed ~20 m/s.
-        norm_pos = pos / self.map_bounds
+        norm_pos = pos / NORM_DIST
         norm_vel = vel / 20.0
 
         # --- 2. Static fire start position (coarse compass) ---
         # Even before the scout has visually found the fire it gets a
         # normalised vector pointing toward the fire's *initial* spawn
         # position.  This helps early exploration / curriculum learning.
-        rel_fire_start_x = (self.fire_x - pos[0]) / self.map_bounds
-        rel_fire_start_y = (self.fire_y - pos[1]) / self.map_bounds
+        rel_fire_start_x = (self.fire_x - pos[0]) / NORM_DIST
+        rel_fire_start_y = (self.fire_y - pos[1]) / NORM_DIST
 
         # --- 3. Normalised distances to each map boundary ---
         dist_measurements = self._get_boundary_measurements_norm(pos)
@@ -252,7 +257,7 @@ class DroneFireEnv(ParallelEnv):
                 other_pos = self.sim.drones[other].get_position()
                 rel_pos = other_pos - pos
                 # Normalise relative position by arena size
-                neighbor_states.append(rel_pos / self.grid_size_m)
+                neighbor_states.append(rel_pos / NORM_DIST)
                 neighbor_mask.append(False)  # False = valid, include in attention
             else:
                 # Dead neighbour: zero-pad slot and mask it out
@@ -315,7 +320,7 @@ class DroneFireEnv(ParallelEnv):
     def _get_boundary_measurements_norm(self, pos):
         """Return distances to all four map edges normalised by grid_size_m."""
         distances = self._get_boundary_measurements(pos)
-        return np.array(distances) / self.grid_size_m
+        return np.array(distances) / NORM_DIST
 
     def _get_boundary_measurements(self, pos):
         """Return raw (metre) distances from pos to each map edge.
@@ -347,14 +352,14 @@ class DroneFireEnv(ParallelEnv):
         # Relative compass direction to the refill (water-replenishment) zone
         if self.sim.environment.refill_zone is not None:
             refill_pos = self.sim.environment.refill_zone['position']
-            rel_base_x = (refill_pos[0] - pos[0]) / self.map_bounds
-            rel_base_y = (refill_pos[1] - pos[1]) / self.map_bounds
+            rel_base_x = (refill_pos[0] - pos[0]) / NORM_DIST
+            rel_base_y = (refill_pos[1] - pos[1]) / NORM_DIST
         else:
             rel_base_x = 0.0
             rel_base_y = 0.0
 
         # --- Normalise ---
-        norm_pos = pos / self.map_bounds        # x,y,z in roughly [-1, 1]
+        norm_pos = pos / NORM_DIST               # fixed normalisation
         norm_vel = vel / 20.0                   # vx,vy,vz in roughly [-1, 1]
         norm_rpy = rpy / np.pi                  # angles from [-pi,pi] to [-1,1]
 
@@ -418,8 +423,8 @@ class DroneFireEnv(ParallelEnv):
         own_state = own_obs["self_state"]  # 15D (scout) or 17D (cmdr)
 
         # Fire info (normalised by map_bounds)
-        fire_x_norm = self.fire_x / self.map_bounds
-        fire_y_norm = self.fire_y / self.map_bounds
+        fire_x_norm = self.fire_x / NORM_DIST
+        fire_y_norm = self.fire_y / NORM_DIST
 
         # Current fire intensity (mean of fire grid, 0 if no grid)
         fire_intensity = 0.0
@@ -432,13 +437,13 @@ class DroneFireEnv(ParallelEnv):
             # Commander critic sees scout position
             for q in self.quad_agents:
                 if q in self.sim.drones:
-                    other_pos = self.sim.drones[q].get_position() / self.map_bounds
+                    other_pos = self.sim.drones[q].get_position() / NORM_DIST
                     break
         else:
             # Scout critic sees commander position
             for f in self.fixed_agents:
                 if f in self.sim.drones:
-                    other_pos = self.sim.drones[f].get_position() / self.map_bounds
+                    other_pos = self.sim.drones[f].get_position() / NORM_DIST
                     break
 
         priv = np.array([fire_x_norm, fire_y_norm, fire_intensity,
@@ -585,6 +590,14 @@ class DroneFireEnv(ParallelEnv):
             np.random.seed(seed)
             random.seed(seed)
 
+        # --- 0. Optional map-size randomisation ---
+        # If map_size_range is set, randomly pick a new grid_size each episode
+        # so the policy generalises across different arena scales.
+        if hasattr(self, 'map_size_range') and self.map_size_range is not None:
+            lo, hi = self.map_size_range
+            self.grid_size_m = float(random.randint(int(lo) // 100, int(hi) // 100) * 100)
+            self.map_bounds = self.grid_size_m / 2.0
+
         # --- 1. Restore the full agent list and reset action histories ---
         # self.agents starts as a copy of possible_agents and is pruned as
         # agents are terminated during the episode.
@@ -636,7 +649,7 @@ class DroneFireEnv(ParallelEnv):
         dist  = random.uniform(50.0, max_spawn_dist)
         start_x = float(np.clip(self.fire_x + np.cos(angle) * dist, -self.map_bounds * 0.8, self.map_bounds * 0.8))
         start_y = float(np.clip(self.fire_y + np.sin(angle) * dist, -self.map_bounds * 0.8, self.map_bounds * 0.8))
-        start_z = random.uniform(30.0, 70.0)
+        start_z = random.uniform(60.0, 120.0)
 
         # --- Refill zone: na opačné straně od ohně ---
         refill_x = float(np.clip(-self.fire_x + random.uniform(-50, 50), -self.map_bounds * 0.8, self.map_bounds * 0.8))
@@ -1003,7 +1016,7 @@ class DroneFireEnv(ParallelEnv):
                 # Dense reward: dropping water near fire
                 f_pos = self.sim.drones[f_agent].get_position()
                 dist_to_fire = np.linalg.norm([f_pos[0] - self.fire_x, f_pos[1] - self.fire_y])
-                if dist_to_fire < 200.0:
+                if dist_to_fire < 100.0:
                     rewards[f_agent] += 2.0  # dense: +2/krok za správné hašení
                 else:
                     # Penalty for wasting water far from fire
@@ -1122,12 +1135,8 @@ class DroneFireEnv(ParallelEnv):
             self._prev_fire_dists[agent] = 0.0
 
         else:
-            # Oheň není vidět → potential-based shaping: bonus za přibližování k ohni
-            dist_now = np.sqrt((pos[0] - self.fire_x)**2 + (pos[1] - self.fire_y)**2)
-            prev_dist = self._prev_fire_dists.get(agent, dist_now)
-            approach_progress = (prev_dist - dist_now) / self.map_bounds  # > 0 = přibližuje se
-            reward += approach_progress * QUAD["fire_approach_k"]
-            self._prev_fire_dists[agent] = dist_now
+            # Oheň není vidět → žádný mission reward, survival shaping stačí
+            pass
 
         return reward
 
@@ -1153,7 +1162,7 @@ class DroneFireEnv(ParallelEnv):
         drone = self.sim.drones[agent]
         pos = drone.get_position()
         dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
-        close_radius = self.map_bounds * 0.13   # ~200m at 3km map
+        close_radius = max(100.0, self.map_bounds * 0.13)   # at least 100m
         if dist_to_fire <= close_radius:
             return 0.5 + 0.5 * (1.0 - dist_to_fire / close_radius)
         return max(0.0, 0.5 * (1.0 - dist_to_fire / self.map_bounds))
