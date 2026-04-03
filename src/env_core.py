@@ -984,47 +984,30 @@ class DroneFireEnv(ParallelEnv):
         self.agents = agents_to_keep
 
         # --- 6. Team reward: commander extinguishing -> bonus for everyone ---
-        # When the commander successfully drops water on fire (eff > 0), both
-        # the commander AND all scouts receive the bonus.  This is the key
-        # credit-assignment mechanism: scouts only observe fire and generate
-        # messages; they cannot extinguish directly.  By giving them a share of
-        # the extinguish bonus we provide them with a training signal that their
-        # messages (which guided the commander) were useful.
-        # for f_agent in self.fixed_agents:
-        #     # Safety check: skip agents that were terminated this step or
-        #     # never received an action (would cause KeyError otherwise).
-        #     if f_agent not in drone_controls or f_agent not in rewards:
-        #         continue
+        for f_agent in self.fixed_agents:
+            if f_agent not in drone_controls or f_agent not in rewards:
+                continue
 
-        #     eff = self.sim.drone_extinguish_stats.get(f_agent, 0.0)
+            eff = self.sim.drone_extinguish_stats.get(f_agent, 0.0)
+            is_dropping = drone_controls[f_agent][3] > 0.5
 
-        #     # Check if the commander is currently dropping water (trigger > 0.5)
-        #     is_dropping = drone_controls[f_agent][3] > 0.5
+            if eff > 0.0:
+                fire_bonus = min(eff * 50.0, 50.0)  # cap per-step bonus
+                rewards[f_agent] += fire_bonus
 
-        #     if eff > 0.0:
-        #         # Extinguish bonus: zvýšeno z 200*0.3=60 na 500 — musí být dominantní signal
-        #         fire_bonus = eff * 500
-        #         rewards[f_agent] += fire_bonus
-        #         print(f"[{self.current_step}] ZASAH! eff={eff:.3f} bonus=+{fire_bonus:.1f}")
+                # Scouts get 20% of the extinguish bonus — their messages guided commander
+                for q_agent in [a for a in self.quad_agents if a in rewards]:
+                    rewards[q_agent] += fire_bonus * 0.2
 
-        #         # Scouts get 10 % of the extinguish bonus — their messages guided commander
-        #         for q_agent in [a for a in self.quad_agents if a in rewards]:
-        #             rewards[q_agent] += fire_bonus * 0.1
-
-        #     elif is_dropping and f_agent in self.sim.drones:
-        #         # Dense reward: dropping water near scout-reported fire.
-        #         # Na rozdíl od extinguish (sparse), tohle je KAŽDÝ krok kde commander
-        #         # správně pouští vodu — klíčový bridge signal pro učení.
-        #         f_pos = self.sim.drones[f_agent].get_position()
-        #         dist_to_fire = np.linalg.norm([f_pos[0] - self.fire_x, f_pos[1] - self.fire_y])
-        #         if dist_to_fire < 200.0:
-        #             # Ověř že scout skutečně vidí oheň (threshold 0.005, ne 0.1!)
-        #             scout_sees_fire = any(
-        #                 np.mean(self._extract_local_fire_map(self.sim.drones[q].get_position())) > 0.005
-        #                 for q in self.quad_agents if q in self.sim.drones
-        #             )
-        #             if scout_sees_fire:
-        #                 rewards[f_agent] += 2.0  # dense: +2/krok za správné hašení
+            elif is_dropping and f_agent in self.sim.drones:
+                # Dense reward: dropping water near fire
+                f_pos = self.sim.drones[f_agent].get_position()
+                dist_to_fire = np.linalg.norm([f_pos[0] - self.fire_x, f_pos[1] - self.fire_y])
+                if dist_to_fire < 200.0:
+                    rewards[f_agent] += 2.0  # dense: +2/krok za správné hašení
+                else:
+                    # Penalty for wasting water far from fire
+                    rewards[f_agent] -= 1.0
 
         # --- 7. Fire spread penalty — penalizace za šíření ohně (urgence) ---
         # Každý krok kde se oheň rozšíří o nové buňky, oba agenti dostanou trest.
@@ -1109,11 +1092,9 @@ class DroneFireEnv(ParallelEnv):
           - Detekci ohně pod sebou (flat + proporcionální k intenzitě)
           - Pomalý pohyb nad ohněm (lepší pozorování)
 
-        Scout je penalizován za:
-          - Létání pod alt_ideal_min (termální updraft zóna — nebezpečné)
-          - Létání nad alt_ideal_max (příliš daleko, snímek je méně přesný)
-          Tato altitude penalizace se aplikuje JEN při misi (nad ohněm),
-          aby nedošlo ke konfliktu s _apply_physics_shaping.
+        Fire bonus se dává JEN v ideálním výškovém bandu [alt_ideal_min, alt_ideal_max].
+        Pod nebo nad tímto pásmem scout oheň vidí, ale nedostává za to bonus —
+        motivace je být ve výšce, kde může efektivně navádět commandera.
         """
         drone = self.sim.drones[agent]
         pos = drone.get_position()
@@ -1122,7 +1103,10 @@ class DroneFireEnv(ParallelEnv):
         reward_zone = self._extract_local_fire_map(pos)
         avg_fire_intensity = np.mean(reward_zone)
 
-        if avg_fire_intensity > 0.001:
+        # Fire bonus ONLY in ideal altitude band
+        in_alt_band = QUAD["alt_ideal_min"] <= pos[2] <= QUAD["alt_ideal_max"]
+
+        if avg_fire_intensity > 0.001 and in_alt_band:
             reward += QUAD["fire_flat_bonus"]
             reward += avg_fire_intensity * QUAD["fire_intensity_k"]
 
@@ -1130,6 +1114,11 @@ class DroneFireEnv(ParallelEnv):
             reward -= speed * QUAD["fire_speed_pen"]
 
             # Aktualizuj předchozí vzdálenost (scout je nad ohněm → dist blízká 0)
+            self._prev_fire_dists[agent] = 0.0
+
+        elif avg_fire_intensity > 0.001 and not in_alt_band:
+            # Scout sees fire but is at wrong altitude — small bonus + altitude hint
+            reward += QUAD["fire_flat_bonus"] * 0.2  # tiny signal: you see fire, fix altitude
             self._prev_fire_dists[agent] = 0.0
 
         else:

@@ -23,9 +23,9 @@ QUAD = {
 
     # Výška — sweet spot kde scout vidí dobře ale není v updraftu
     "alt_ideal_min":    40.0,   # pod touto výškou je silný updraft → penalizace
-    "alt_ideal_max":   120.0,   # nad touto výškou je příliš daleko od ohně → penalizace
-    "alt_ceiling":     250.0,   # tvrdá smrt (zvýšeno z 200 — dáme víc prostoru)
-    "alt_penalty_k":     1,   # síla penalizace za výšku mimo rozsah (bylo 0.8 — přebíjel ho fire bonus)
+    "alt_ideal_max":   200.0,   # nad touto výškou je příliš daleko od ohně → penalizace
+    "alt_ceiling":     400.0,   # tvrdá smrt — 200m výš než ideal_max = víc prostoru
+    "alt_penalty_k":     1.5,   # síla penalizace za výšku mimo rozsah (zvýšeno z 1.0)
 
     # Mise — hover nad ohněm
     "fire_flat_bonus":   1.0,   # flat bonus za detekci ohně
