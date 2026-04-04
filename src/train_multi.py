@@ -122,7 +122,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     scout_buf = {k: [] for k in [
         "maps", "self_states", "neighbor_states", "neighbor_masks",
         "actions", "logprobs", "returns", "values",
-        "critic_states"
+        "critic_states", "alive"
     ]}
     cmdr_buf = {k: [] for k in [
         "states", "messages", "msg_masks",
@@ -151,8 +151,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
         # Recalculate safe_limit after reset (map size may have changed)
         map_half = local_env.map_bounds
-        safe_limit = map_half - 250.0
-        boundary_emergency = map_half - 100.0
+        safe_limit = max(50.0, map_half - 250.0)
+        boundary_emergency = max(safe_limit + 50.0, map_half - 100.0)
 
         q_agent = local_env.quad_agents[0] if N_QUADS > 0 else None
         f_agent = local_env.fixed_agents[0]
@@ -377,28 +377,34 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
             r_scout = 0.0
             r_cmdr = 0.0
             if local_env.agents:
-                obs, rewards, terms, _, infos = local_env.step(actions)
+                obs, rewards, terms, truncs, infos = local_env.step(actions)
 
                 # Scout reward
                 r_scout = rewards.get(q_agent, 0.0) if q_agent else 0.0
                 if scout_alive and q_agent in local_env.agents:
                     scout_ep_data[-1]["reward"] = r_scout
                     ep_reward_scout += r_scout
-                if q_agent and terms.get(q_agent, False):
+                if q_agent and (terms.get(q_agent, False) or truncs.get(q_agent, False)):
                     scout_alive = False
                     scout_lifespan = step + 1
-                    scout_death_cause = infos.get(
-                        q_agent, {}).get("death_cause", "unknown")
+                    if terms.get(q_agent, False):
+                        scout_death_cause = infos.get(
+                            q_agent, {}).get("death_cause", "unknown")
+                    else:
+                        scout_death_cause = "survived"
 
                 # Commander segment reward
                 r_cmdr = rewards.get(f_agent, 0.0)
                 segment_reward += r_cmdr
 
-                if terms.get(f_agent, False):
+                if terms.get(f_agent, False) or truncs.get(f_agent, False):
                     cmdr_alive = False
                     cmdr_lifespan = step + 1
-                    cmdr_death_cause = infos.get(
-                        f_agent, {}).get("death_cause", "unknown")
+                    if terms.get(f_agent, False):
+                        cmdr_death_cause = infos.get(
+                            f_agent, {}).get("death_cause", "unknown")
+                    else:
+                        cmdr_death_cause = "survived"
                     # Store segment reward for current decision
                     if cmdr_ep_data:
                         cmdr_ep_data[-1]["reward"] = segment_reward
@@ -503,6 +509,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     scout_buf["returns"].append(d["ret"])
                     scout_buf["values"].append(d["value"])
                     scout_buf["critic_states"].append(d["critic_state"])
+                    scout_buf["alive"].append(1.0)
                     continue
             # Dead or out of range — pad
             scout_buf["maps"].append(d_map)
@@ -514,6 +521,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
             scout_buf["returns"].append(0.0)
             scout_buf["values"].append(0.0)
             scout_buf["critic_states"].append(torch.zeros(1, scout_priv_dim))
+            scout_buf["alive"].append(0.0)
 
         # ==================================================================
         # PACK COMMANDER BUFFER (num_decisions_cmdr entries, padded)
@@ -776,7 +784,7 @@ def train_multi(resume_scout="", resume_cmdr="",
         # Aggregate buffers
         agg_scout = {k: [] for k in [
             "maps", "self_states", "neighbor_states", "neighbor_masks",
-            "actions", "logprobs", "returns", "values", "critic_states"
+            "actions", "logprobs", "returns", "values", "critic_states", "alive"
         ]}
         agg_cmdr = {k: [] for k in [
             "states", "messages", "msg_masks",
@@ -896,18 +904,22 @@ def train_multi(resume_scout="", resume_cmdr="",
         s_returns = torch.cat(agg_scout["returns"]).to(device)
         s_values = torch.cat(agg_scout["values"]).to(device)
         s_cstates = torch.cat(agg_scout["critic_states"]).to(device)
+        s_alive = torch.cat(agg_scout["alive"]).to(device)
 
         h_scout = (torch.cat(agg_h["scout"], dim=0)
                    .squeeze(1).unsqueeze(0).to(device))
 
         # Advantages = returns - values (GAE already computed correctly)
         s_adv = s_returns - s_values
-        if s_adv.numel() > 1:
-            s_adv = (s_adv - s_adv.mean()) / (s_adv.std() + 1e-8)
+        alive_bool_s = s_alive > 0.5
+        if alive_bool_s.sum() > 1:
+            alive_adv = s_adv[alive_bool_s]
+            s_adv = (s_adv - alive_adv.mean()) / (alive_adv.std() + 1e-8)
 
         # Normalize returns for critic target (prevents MSE explosion)
-        s_ret_mean = s_returns.mean()
-        s_ret_std = s_returns.std() + 1e-8
+        alive_rets_s = s_returns[alive_bool_s] if alive_bool_s.sum() > 1 else s_returns
+        s_ret_mean = alive_rets_s.mean()
+        s_ret_std = alive_rets_s.std() + 1e-8
         s_returns_norm = (s_returns - s_ret_mean) / s_ret_std
 
         # Reshape: [episodes, max_steps, ...]
@@ -921,6 +933,7 @@ def train_multi(resume_scout="", resume_cmdr="",
         s_adv_seq = s_adv.view(eps, max_steps)
         s_returns_seq = s_returns.view(eps, max_steps)
         s_returns_norm_seq = s_returns_norm.view(eps, max_steps)
+        s_alive_seq = s_alive.view(eps, max_steps)
         s_cstates_seq = s_cstates.view(eps, max_steps, -1)
         h_scout_seq = h_scout.transpose(0, 1)
 
@@ -941,6 +954,7 @@ def train_multi(resume_scout="", resume_cmdr="",
                 mb_acts = s_actions_seq[mb]
                 mb_old_lp = s_logprobs_seq[mb].view(-1)
                 mb_adv = s_adv_seq[mb].reshape(-1)
+                mb_alive_s = s_alive_seq[mb].reshape(-1)
                 mb_rets = s_returns_norm_seq[mb].reshape(-1)
                 mb_cs = s_cstates_seq[mb]
                 mb_h = h_scout_seq[mb].transpose(0, 1)
@@ -956,7 +970,9 @@ def train_multi(resume_scout="", resume_cmdr="",
                 pg2 = -mb_adv * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
                 surr = torch.max(pg1, pg2)
 
-                loss_s = surr.mean() - entropy_scout * entropy.mean()
+                n_alive_s = mb_alive_s.sum().clamp(min=1.0)
+                loss_s = ((surr * mb_alive_s).sum() / n_alive_s
+                          - entropy_scout * (entropy * mb_alive_s).sum() / n_alive_s)
 
                 if torch.isfinite(loss_s):
                     optimizer_scout.zero_grad()
@@ -965,9 +981,10 @@ def train_multi(resume_scout="", resume_cmdr="",
                     optimizer_scout.step()
                     scout_loss_total += loss_s.item()
 
-                # Critic value loss (separate optimizer)
+                # Critic value loss (separate optimizer, masked by alive)
                 v_pred, _ = critic_scout(mb_cs, None)
-                v_loss = F.mse_loss(v_pred, mb_rets)
+                v_err = (v_pred - mb_rets) ** 2
+                v_loss = (v_err * mb_alive_s).sum() / n_alive_s
                 if torch.isfinite(v_loss):
                     optimizer_critic_scout.zero_grad()
                     v_loss.backward()

@@ -17,19 +17,17 @@ SHARED = {
 # ─── Quadkoptéra (Scout) ─────────────────────────────────────────────────────
 QUAD = {
     # Hranice mapy
-    "boundary_threshold_frac":  0.40,   # 40 % map_bounds/2 — wider zone for small maps
+    "boundary_threshold_m":  150.0,   # fixní 150m od okraje — nezávislé na velikosti mapy
 
     # Výška — sweet spot kde scout vidí dobře ale není v updraftu
     "alt_ideal_min":    40.0,   # pod touto výškou je silný updraft → penalizace
     "alt_ideal_max":   200.0,   # nad touto výškou je příliš daleko od ohně → penalizace
     "alt_ceiling":     400.0,   # tvrdá smrt — 200m výš než ideal_max = víc prostoru
-    "alt_penalty_k":     5.0,   # síla penalizace za výšku mimo rozsah (zvýšeno — silný gradient od země)
 
     # Mise — hover nad ohněm
     "fire_flat_bonus":   1.0,   # flat bonus za detekci ohně
     "fire_intensity_k": 10.0,   # násobitel intenzity
     "fire_speed_pen":    0.05,  # penalizace za rychlost nad ohněm
-    # "fire_approach_k":   3.0,   # REMOVED — approach shaping confused the scout
 
     # Scale
     "reward_scale":      0.3,
@@ -38,16 +36,15 @@ QUAD = {
 # ─── Fixed-wing (Commander) ──────────────────────────────────────────────────
 FIXED = {
     # Hranice mapy
-    "boundary_threshold_frac":  0.75,   # 75 % map_bounds/2 = 375m od okraje — penalizace začíná dřív
+    "boundary_threshold_m":  300.0,   # fixní 300m od okraje — fixed-wing potřebuje víc prostoru na otáčení
     "boundary_extra_frac":      0.35,   # extra penalizace pod 35 % prahu = 105m od okraje
 
     # Výška — sweet spot pro hašení
     "alt_ideal_min":    40.0,   # pod touto výškou je nebezpečí srážky s terénem
-    "alt_ideal_max":   150.0,   # nad touto výškou voda nedopadne přesně
+    "alt_ideal_max":   250.0,   # nad touto výškou voda nedopadne přesně
     "alt_ceiling":     450.0,   # tvrdá smrt (zvýšeno z 400 — víc prostoru pro recovery)
     "alt_penalty_k":     0.15,   # per 10m nad ideal_max (silnější penalizace)
     "alt_ideal_target":  80.0,  # středová cílová výška (pro tah)
-    "alt_ideal_k":       0.002, # síla tahu k ideální výšce — zakomentováno, ale připraveno
 
     # Survival donut
     "donut_radius":    250.0,   # uvnitř = flat bonus (scaled for 1km map)

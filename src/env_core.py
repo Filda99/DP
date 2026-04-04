@@ -268,9 +268,6 @@ class DroneFireEnv(ParallelEnv):
         while len(neighbor_states) < self.max_neighbors:
             neighbor_states.append(np.zeros(3, dtype=np.float32))
             neighbor_mask.append(True)
-        
-        # Extract local fire map (used for local_map output and fire_info above)
-        local_map = self._extract_local_fire_map(pos)
 
         return {
             "local_map": local_map,
@@ -369,7 +366,7 @@ class DroneFireEnv(ParallelEnv):
         # --- Danger flag ---
         # 1.0 when the aircraft is within 20% of map half-size of any edge.
         # At ~20 m/s cruise speed this gives enough lead time to turn.
-        danger_threshold = self.map_bounds * 0.20  # 20% of half-map
+        danger_threshold = FIXED["boundary_threshold_m"]  # fixed absolute distance, same as penalty zone
         danger_flag = 1.0 if min(self._get_boundary_measurements(pos)) < danger_threshold else 0.0
 
         self_state = np.array([
@@ -659,74 +656,13 @@ class DroneFireEnv(ParallelEnv):
         # --- 4. Spawn every agent at its starting position ---
         for agent in self.agents:
             if "fixed" in agent:
-                # # Fixed-wing spawns at an offset from the quad start to avoid
-                # # mid-air collisions at the very beginning of the episode.
-                # fw_start_x = float(np.clip(start_x + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
-                # fw_start_y = float(np.clip(start_y + random.uniform(-50, 50), -self.map_bounds * 0.6, self.map_bounds * 0.6))
-                # # Point the aircraft toward the map centre so it immediately
-                # # starts flying inward rather than away from the action.
-                # to_center_vec = -np.array([fw_start_x, fw_start_y])
-                # yaw_to_center = np.arctan2(to_center_vec[1], to_center_vec[0])
-
-                # self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=yaw_to_center)
-
-                # # Set a meaningful initial airspeed so the fixed-wing physics
-                # # are in a stable flight regime from frame 0.
-                # drone = self.sim.drones[agent]
-                # drone.state_va = 15.0
-
-                # if epizode_number < 1500:
-                #     # Letadlo se spawne 150 metrů od ohně, v ideální výšce 60m
-                #     angle = random.uniform(0, 2 * np.pi)
-                #     dist = 100.0
-                #     fw_start_x = float(np.clip(self.fire_x + np.cos(angle) * dist, -self.map_bounds * 0.8, self.map_bounds * 0.8))
-                #     fw_start_y = float(np.clip(self.fire_y + np.sin(angle) * dist, -self.map_bounds * 0.8, self.map_bounds * 0.8))
-                    
-                #     # Natočíme ho tak, aby letělo přímo na oheň
-                #     to_fire_vec = -np.array([np.cos(angle), np.sin(angle)])
-                #     yaw_to_fire = np.arctan2(to_fire_vec[1], to_fire_vec[0])
-                    
-                #     self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 60.0], water_capacity=200.0, yaw=yaw_to_fire)
-                # else:
-                # --- Spawn curriculum (2 režimy) ---
-                #
-                # 80 %: normální spawn — 0–400 m od středu, NÁHODNÝ heading ±180°.
-                #   Dřívější "heading ke středu ±30°" nutilo síť kroužit v centru
-                #   a nikdy necvičit otáčení u zdi. Nyní dostane různorodé scénáře.
-                #   400 m od zdi = 20 s na reakci (20 m/s) → bezpečné.
-                #
-                # 20 %: wall-recovery — spawn 50–150 m od náhodné stěny, heading
-                #   přímo na ni ±30°. Síť MUSÍ naučit otočný manévr, jinak okamžitý
-                #   crash. Tím se gradient pro "vyhýbání zdi" stane dominantním.
-                # Wall-recovery disabled for Phase 1 waypoint training — spawn
-                # always in inner 60% of map so FW can learn strategy first.
-                if False:  # 30% wall-recovery spawns (disabled for now)
-                    wall = random.choice(['N', 'S', 'E', 'W'])
-                    margin = random.uniform(self.map_bounds * 0.03, self.map_bounds * 0.10)
-                    if wall == 'N':
-                        fw_start_x = random.uniform(-self.map_bounds * 0.8, self.map_bounds * 0.8)
-                        fw_start_y = self.map_bounds - margin
-                        wall_heading = np.pi / 2          # letí k severu (+Y)
-                    elif wall == 'S':
-                        fw_start_x = random.uniform(-self.map_bounds * 0.8, self.map_bounds * 0.8)
-                        fw_start_y = -self.map_bounds + margin
-                        wall_heading = -np.pi / 2         # letí k jihu (-Y)
-                    elif wall == 'E':
-                        fw_start_x = self.map_bounds - margin
-                        fw_start_y = random.uniform(-self.map_bounds * 0.8, self.map_bounds * 0.8)
-                        wall_heading = 0.0                # letí k východu (+X)
-                    else:  # W
-                        fw_start_x = -self.map_bounds + margin
-                        fw_start_y = random.uniform(-self.map_bounds * 0.8, self.map_bounds * 0.8)
-                        wall_heading = np.pi              # letí k západu (-X)
-                    fw_yaw = wall_heading + random.uniform(-np.radians(30), np.radians(30))
-                else:
-                    # Normální spawn: uvnitř 60% mapy (±30% map_bounds), náhodný heading
-                    spawn_radius = random.uniform(0.0, self.map_bounds * 0.30)
-                    spawn_angle  = random.uniform(0, 2 * np.pi)
-                    fw_start_x   = float(spawn_radius * np.cos(spawn_angle))
-                    fw_start_y   = float(spawn_radius * np.sin(spawn_angle))
-                    fw_yaw       = random.uniform(-np.pi, np.pi)
+            
+                # Normální spawn: uvnitř 60% mapy (±30% map_bounds), náhodný heading
+                spawn_radius = random.uniform(0.0, self.map_bounds * 0.30)
+                spawn_angle  = random.uniform(0, 2 * np.pi)
+                fw_start_x   = float(spawn_radius * np.cos(spawn_angle))
+                fw_start_y   = float(spawn_radius * np.sin(spawn_angle))
+                fw_yaw       = random.uniform(-np.pi, np.pi)
 
                 self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 100.0], water_capacity=200.0, yaw=fw_yaw)
 
@@ -806,7 +742,6 @@ class DroneFireEnv(ParallelEnv):
         # jumping discontinuously, which would excite unphysical oscillations
         # in the rigid-body simulator.
         drone_controls = {}
-        jerk_penalties = {}
 
         for agent_name, action in actions.items():
             # -----------------------------------------------------------------
@@ -823,10 +758,6 @@ class DroneFireEnv(ParallelEnv):
                 prev = self.last_actions.get(agent_name, np.zeros_like(action))
                 smooth_action = 0.5 * prev + 0.5 * action
             self.last_actions[agent_name] = smooth_action
-
-            jerk_diff = np.sum(np.abs(action - self.last_raw_actions.get(agent_name, np.zeros_like(action))))
-            jerk_penalties[agent_name] = jerk_diff * 0.02
-            self.last_raw_actions[agent_name] = np.copy(action)
 
             if "fixed" in agent_name:
                 drone = self.sim.drones.get(agent_name)
@@ -924,11 +855,6 @@ class DroneFireEnv(ParallelEnv):
                 infos[agent]["death_cause"] = death_cause
             else:
                 rewards[agent] += self._apply_physics_shaping(agent)
-                # Jerk penalty jen pro fixed-wing — penalizuje trhavé akce,
-                # nutí commandera plánovat dopředu a dávat hladké příkazy.
-                # Váha 0.02: klidný let (Δ≈0.1/osa) → -0.008/krok, trhavý (Δ≈1.0) → -0.08/krok.
-                if "fixed" in agent:
-                    rewards[agent] -= jerk_penalties.get(agent, 0.0)
 
                 # Agent-type-specific mission reward
                 if "fixed" in agent:
@@ -953,8 +879,6 @@ class DroneFireEnv(ParallelEnv):
                     if max_seen_intensity > 0.005:
                         # MISSION: letět k ohni, hasit
                         # Threshold 0.005 = oheň zabírá ~1% FOV při intensity 0.5
-                        # (mean 32x32 mapy; 0.1 bylo příliš vysoké — commander byl skoro
-                        # vždy v patrol módu i když scout oheň jasně viděl)
                         rewards[agent] += self._get_fixed_reward(agent, best_fire_pos)
                     else:
                         # PATROL: zůstat blízko středu
@@ -963,19 +887,13 @@ class DroneFireEnv(ParallelEnv):
                     rewards[agent] += self._get_quad_reward(agent)
                 
                 if time_is_up:
-                    rewards[agent] += 50.0
+                    rewards[agent] += 20.0
                 
-                # rewards[agent] *= 0.1  # scale down rewards to keep them in a reasonable range
-                # rewards[agent] = np.clip(rewards[agent], -10.0, 10.0)
-                # if "fixed" in agent:
-                #     rewards[agent] *= FIXED["reward_scale"]  # commander dostane 3× silnější signal
-                # else:
-                #     rewards[agent] *= QUAD["reward_scale"]
-            
-                # If alive: store observation and keep the agent in the active list.
+             
+            # If alive: store observation and keep the agent in the active list.
             # If dead: PettingZoo requires us to still return a final observation
             # for the terminated agent (the "terminal observation" convention).
-            if not terminations[agent]:
+            if not terminations[agent] and not truncations[agent]:
                 observations[agent] = self._get_obs(agent)
                 agents_to_keep.append(agent)
             else:
@@ -1005,7 +923,7 @@ class DroneFireEnv(ParallelEnv):
             is_dropping = drone_controls[f_agent][3] > 0.5
 
             if eff > 0.0:
-                fire_bonus = min(eff * 50.0, 5.0)  # cap per-step bonus
+                fire_bonus = min(eff * 50.0, 3.0)  # cap per-step bonus
                 rewards[f_agent] += fire_bonus
 
                 # Scouts get 20% of the extinguish bonus — their messages guided commander
@@ -1065,9 +983,9 @@ class DroneFireEnv(ParallelEnv):
         dist_to_edge = min(dist_boundaries)
 
         if "fixed" in agent:
-            threshold = self.map_bounds / 2 * FIXED["boundary_threshold_frac"]
+            threshold = FIXED["boundary_threshold_m"]
         else:
-            threshold = self.map_bounds / 2 * QUAD["boundary_threshold_frac"]
+            threshold = QUAD["boundary_threshold_m"]
 
         if dist_to_edge < threshold:
             reward -= SHARED["boundary_penalty"] * (1.0 - dist_to_edge / threshold) ** 2
@@ -1076,25 +994,19 @@ class DroneFireEnv(ParallelEnv):
         if "fixed" in agent:
             alt_min = FIXED["alt_ideal_min"]
             alt_max = FIXED["alt_ideal_max"]
-            k       = FIXED["alt_penalty_k"]
 
             if pos[2] > alt_max:
-                reward -= k * (pos[2] - alt_max) / 10.0
+                reward -= (pos[2] - alt_max) / alt_max
             elif pos[2] < alt_min:
-                # Penalizace za letu příliš nízko — silnější než horní (blíže k zemi = blíže ke smrti)
-                reward -= k * 3.0 * (alt_min - pos[2]) / alt_min
+                reward -= (alt_min - pos[2]) / alt_min
         else:
-            # Scout: altitude shaping VŽDY aktivní (ne jen nad ohněm)
-            # Bez tohoto scoutu nic nebrání klesat dolů celou epizodu.
             alt_min = QUAD["alt_ideal_min"]
             alt_max = QUAD["alt_ideal_max"]
-            k       = QUAD["alt_penalty_k"]
 
             if pos[2] > alt_max:
-                reward -= k * (pos[2] - alt_max) / alt_max
+                reward -= (pos[2] - alt_max) / alt_max
             elif pos[2] < alt_min:
-                # Silnější penalizace směrem k zemi — nesmí klesat
-                reward -= k * (alt_min - pos[2]) / alt_min
+                reward -= (alt_min - pos[2]) / alt_min
 
         return reward
 
@@ -1190,6 +1102,7 @@ class DroneFireEnv(ParallelEnv):
 
         max_ceiling = FIXED["alt_ceiling"] if "fixed" in agent else QUAD["alt_ceiling"]
         if pos[2] > max_ceiling:
+            self.sim._destroy_drone(agent)
             return True, SHARED["crash_penalty"], "ceiling"
 
         return False, 0.0, ""
