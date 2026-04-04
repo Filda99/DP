@@ -1,25 +1,27 @@
 # Heterogeneous MAPPO — Drone Wildfire Suppression
 
-Multi-agent reinforcement learning system for cooperative wildfire suppression using a heterogeneous team of drones. A quadrotor scout (ScoutActor) explores the fire area and broadcasts messages to a fixed-wing commander (CommanderActor), which coordinates the suppression. Training uses the **Heterogeneous MAPPO** algorithm with parallel rollout collection across 20 CPU workers.
+Multi-agent reinforcement learning system for cooperative wildfire suppression using a heterogeneous team of drones. A quadrotor **scout** explores the fire area and broadcasts messages to a fixed-wing **commander**, which navigates to the fire and extinguishes it. Training uses the **Heterogeneous MAPPO** algorithm with parallel rollout collection.
 
 ## Project structure
 
 ```
 src/
-├── train.py        # Main training entry point (Heterogeneous MAPPO)
-├── worker.py       # Parallel rollout worker (runs in ProcessPoolExecutor)
-├── models.py       # ScoutActor, CommanderActor, MAPPOCritic
-├── env_core.py     # DroneFireEnv (PettingZoo-style multi-agent env)
-├── simulation.py   # PyBullet simulation backend
-├── fire_grid.py    # Fire spread model
-├── grid_mapper.py  # Local 32x32 fire map for scout observations
-├── drones/         # Per-drone physics controllers
-└── visualizer.py   # Training dashboard plots
+├── train_multi.py    # Main training script (Heterogeneous MAPPO)
+├── models.py         # ScoutActor, CommanderActor, PrivilegedCritic
+├── env_core.py       # DroneFireEnv (PettingZoo ParallelEnv)
+├── reward_config.py  # Centrální konfigurace reward parametrů
+├── simulation.py     # PyBullet simulation backend
+├── fire_grid.py      # Fire spread model
+├── grid_mapper.py    # World↔grid coordinate mapping
+├── drones/           # Per-drone physics controllers
+└── visualizer.py     # Training dashboard plots
 
-saved_models/       # Best checkpoints (scout_best.pt, commander_best.pt)
-logs/               # Per-episode JSON logs
-results/            # Plots and analysis outputs
-run.sh              # SGE cluster job script (20-core SMP)
+demos/
+└── MAPPO_easiestScenario/
+    └── demo_both_training.py   # Demo vizualizace natrénovaných modelů
+
+saved_models/multi/   # Checkpointy (scout_best.pt, cmdr_best.pt, ...)
+results/              # Grafy a analýzy
 requirements.txt
 ```
 
@@ -29,37 +31,70 @@ requirements.txt
 
 | Agent | Network | Observation | Action |
 |---|---|---|---|
-| Quadrotor scout | `ScoutActor` (CNN + GRU + Self-Attention) | Local fire map 32×32, self state, neighbour positions | Roll, Pitch, Yaw, Throttle |
-| Fixed-wing commander | `CommanderActor` (GRU + Cross-Attention) | Self state, scout messages (5-dim vectors) | Roll, Pitch, Yaw, Throttle |
-| Shared critic | `MAPPOCritic` (MLP + GRU) | Global state (fire map 16×16 + all agent states) | Value estimate |
+| Quadrotor scout | `ScoutActor` (CNN + Self-Attention + GRU, hidden=128) | Local fire map 32×32 + self state (15D) + neighbour positions | Roll, Pitch, Yaw, Throttle (4D, per-step) |
+| Fixed-wing commander | `CommanderActor` (Encoder + Cross-Attention + GRU, hidden=64) | Self state (17D) + scout messages (5D × 2) | dx, dy, target_alt, water_trigger (4D waypoint, every 50 steps) |
+| Privileged critics | `PrivilegedCritic` (MLP + GRU) × 2 | Agent obs + fire pos + fire intensity + other agent pos | Value estimate (CTDE) |
+
+### Commander waypoint pipeline
+
+```
+CommanderActor NN → waypoint [dx, dy, alt, water] (every 50 physics steps)
+        ↓
+train_multi.py heading controller → [heading_cmd, alt, water] (every step)
+        ↓
+env_core.py flight controller → [roll, pitch, throttle, water] → physics
+```
 
 ### Training loop
 
 ```
-Main process (GPU/CPU)
-  for each batch:
-    1. Snapshot network weights → CPU tensors
-    2. Dispatch 20 workers in parallel (ProcessPoolExecutor)
-       each worker: 3 episodes × full rollout → returns tensors
-    3. Collect & cat all worker buffers
-    4. PPO update (update_epochs passes, Adam optimizer)
+Main process (CPU)
+  for each batch (30 episodes):
+    1. Snapshot network weights
+    2. Run 15 workers × 2 episodes (inline, sequential)
+    3. Collect buffers: scout [eps × max_steps], commander [eps × num_decisions]
+    4. PPO update (4 epochs, minibatch, separate optimizers per agent)
     5. Save checkpoint if rolling avg reward improved
 ```
 
-### Key hyperparameters (`src/train.py`)
+## Key hyperparameters
 
 | Parameter | Value | Description |
 |---|---|---|
-| `num_episodes` | 2500 | Total training episodes |
-| `max_steps` | 2500 | Max timesteps per episode |
-| `num_workers` | 20 | Parallel rollout workers |
-| `eps_per_worker` | 3 | Episodes per worker per batch |
-| `episodes_per_batch` | 60 | Total episodes per gradient update |
-| `update_epochs` | 4 | PPO gradient passes per batch |
+| `num_workers` | 15 | Parallel rollout workers |
+| `eps_per_worker` | 2 | Episodes per worker per batch |
+| `max_steps` | 4000 | Buffer size (upper bound) |
+| `steps_range` | (1500, 4000) | Actual episode length (randomized) |
+| `map_size_range` | (600, 2000) | Map size randomization [m] |
+| `waypoint_steps` | 50 | Commander decision interval |
+| `waypoint_range` | 100 m | Max waypoint displacement |
+| `gamma` / `gamma_cmdr` | 0.99 / 0.95 | Discount factors |
 | `clip_coef` | 0.2 | PPO clipping range |
-| `lr_commander` / `lr_critic` | 3e-4 | Learning rates |
-| `lr_scout_fine_tune` | 5e-5 | Scout fine-tune LR (pre-trained) |
-| `gamma` | 0.99 | Discount factor |
+| `update_epochs` | 4 | PPO gradient passes per batch |
+| `lr_scout` | 1e-4 | Scout actor learning rate |
+| `lr_cmdr` | 3e-4 | Commander actor learning rate |
+| `lr_critic` | 3e-4 | Both critics learning rate |
+| `hidden_dim_scout` | 128 | Scout GRU hidden size |
+| `hidden_dim_cmdr` | 64 | Commander GRU hidden size |
+| `entropy_scout` | 0.003 | Scout entropy coefficient |
+| `entropy_cmdr` | 0.01 | Commander entropy coefficient |
+
+## Reward summary
+
+| Reward | Value | Agent |
+|---|---|---|
+| Survival bonus | +0.3/step | Both |
+| Episode completion | +20.0 | Both |
+| Boundary penalty | −5.0 × (1 − dist/threshold)² | Scout (<150m), Cmdr (<300m) |
+| Altitude penalty | Continuous gradient outside ideal band | Scout (40–200m), Cmdr (40–150m) |
+| Crash (ground/boundary/ceiling) | −200 | Both |
+| Fire detection | +1.0 flat + intensity × 10.0 | Scout (in altitude band) |
+| Approach shaping | ±0.3 per 100m (potential-based) | Scout (when no fire visible) |
+| Fire approach gradient | 0.0–1.0 (distance-based) | Commander |
+| Water extinguish | min(eff × 50, 3.0)/step | Commander |
+| Scout share of extinguish | 20% of commander bonus | Scout |
+| Fire spread penalty | −Δcells × 0.02 | Both |
+| Reward clipping | [−15, +15] | Both |
 
 ## Quick start
 
@@ -68,84 +103,91 @@ Main process (GPU/CPU)
 pip install -r requirements.txt
 ```
 
-### Run training locally
+---
+
+## Training (`train_multi.py`)
+
+Modely se ukládají do `saved_models/multi/`. Checkpointy: `scout_best.pt`, `cmdr_best.pt` + periodické `scout_b{BATCH}.pt`, `cmdr_b{BATCH}.pt` každých 10 batchů.
+
+### Trénink od nuly
 ```bash
-cd /path/to/DP
-python src/train.py
+cd ~/tmp/DP
+python src/train_multi.py
 ```
 
-Output: `saved_models/scout_best.pt`, `saved_models/commander_best.pt`, `final_training_plot.png`
-
-### Run on the cluster (SGE)
+### Pokračování z checkpointu (resume)
 ```bash
-qsub run.sh
+# Resume z batch 70:
+python src/train_multi.py \
+  --resume-scout saved_models/multi/scout_b0070.pt \
+  --resume-cmdr  saved_models/multi/cmdr_b0070.pt
+
+# Resume z nejlepšího modelu:
+python src/train_multi.py \
+  --resume-scout saved_models/multi/scout_best.pt \
+  --resume-cmdr  saved_models/multi/cmdr_best.pt
 ```
-`run.sh` requests 20 SMP slots and 2h wall time. Output goes to `out.$JOB_ID.txt`.
 
-## Running on the cluster with tmux (interactive, long jobs)
-
-Use this when you want to SSH in, start a long run, and safely disconnect.
-
-**Start the job:**
+### Trénink s logováním trajektorií
 ```bash
-# 1. SSH into the cluster
+python src/train_multi.py --log-episodes --log-dir /tmp/ep_logs
+```
+
+### Trénink přes tmux (dlouhé běhy, odpojitelné)
+```bash
+# 1. SSH na cluster
 ssh xjahnf00@aeroworks
 
-# 2. Start a named tmux session
-tmux new -s mujjob
+# 2. Nová tmux session
+tmux new -s train
 
-# 3. Inside tmux — run the training
+# 3. Spusť trénink
 cd ~/tmp/DP
-python src/train.py
+python src/train_multi.py
 
-# 4. Detach from tmux (training keeps running after you log out)
-#    Press:  Ctrl + B,  then  D
+# 4. Odpoj se: Ctrl+B, pak D  (trénink běží dál)
+
+# 5. Připoj se zpátky:
+tmux attach -t train
 ```
 
-**Come back to a running job:**
+---
+
+## Demo (`demo_both_training.py`)
+
+Vizualizace natrénovaných modelů. Defaultně bere `saved_models/multi/scout_best.pt` + `cmdr_best.pt`.
+
+### Spuštění s nejlepšími modely
 ```bash
-# SSH back in, then:
-tmux attach -t mujjob
+cd ~/tmp/DP
+python demos/MAPPO_easiestScenario/demo_both_training.py
 ```
 
-**Other useful tmux commands:**
-```bash
-tmux ls               # list all sessions
-tmux kill-session -t mujjob   # kill the session
-```
-
-## Profiling the PPO update
-
-`train.py` has a built-in cProfile hook. Set the flag at the top of `train()`:
-
+### Demo s konkrétním checkpointem
+Uprav cesty v `demo_both_training.py` (řádky 35–36):
 ```python
-profiling = True   # runs one batch, prints cProfile table, saves ppo_update.prof, then exits
+MODEL_SCOUT     = os.path.join(project_root, "saved_models", "multi", "scout_b0070.pt")
+MODEL_COMMANDER = os.path.join(project_root, "saved_models", "multi", "cmdr_b0070.pt")
 ```
 
-View the saved profile:
+---
+
+## Užitečné tmux příkazy
 ```bash
-pip install snakeviz
-snakeviz ppo_update.prof
+tmux ls                       # seznam sessions
+tmux attach -t train          # připojit se
+tmux kill-session -t train    # zabít session
 ```
-
-**Profiling results (CPU, 1 batch, 8 epochs, 150k samples):**
-
-| Op | Self time | Notes |
-|---|---|---|
-| `loss.backward()` | 222s (71%) | Unavoidable on CPU — GPU gives ~20× speedup |
-| `GRU` (all networks) | 31s (10%) | Sequential on CPU |
-| `conv2d` (ScoutActor CNN) | 29s (9%) | Freeze CNN if not fine-tuning |
-| `linear` layers | 17s (5%) | |
-
-The code itself has no Python-level overhead — the bottleneck is pure math on CPU. To speed up: use a GPU, reduce `update_epochs`, or freeze `scout_actor.cnn` with `scout_actor.cnn.requires_grad_(False)`.
 
 ## Saved models
 
-| File | Description |
+| Soubor | Popis |
 |---|---|
-| `saved_models/scout_best.pt` | Best ScoutActor checkpoint (rolling avg reward) |
-| `saved_models/commander_best.pt` | Best CommanderActor checkpoint |
-| `saved_models/scout_ep{N}.pt` | Periodic snapshots every 10 batches |
+| `saved_models/multi/scout_best.pt` | Nejlepší ScoutActor (podle rolling avg reward) |
+| `saved_models/multi/cmdr_best.pt` | Nejlepší CommanderActor |
+| `saved_models/multi/scout_b{N}.pt` | Periodické snapshoty každých 10 batchů |
+| `saved_models/multi/cmdr_b{N}.pt` | Periodické snapshoty commandera |
+| `saved_models/multi/training_b{N}.png` | Grafy tréninku |
 
 ---
 

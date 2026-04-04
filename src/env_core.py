@@ -1047,8 +1047,15 @@ class DroneFireEnv(ParallelEnv):
             self._prev_fire_dists[agent] = 0.0
 
         else:
-            # Oheň není vidět → žádný mission reward, survival shaping stačí
-            pass
+            # Oheň není vidět → approach shaping: odměna za přibližování k ohni
+            # Potential-based: Φ(s) = -dist, reward = γΦ(s') - Φ(s) ≈ -(dist' - dist)
+            # Pozitivní když se scout přibližuje, negativní když se vzdaluje.
+            cur_dist = np.sqrt((pos[0] - self.fire_x)**2 + (pos[1] - self.fire_y)**2)
+            prev_dist = self._prev_fire_dists.get(agent, cur_dist)
+            # Škálování: 0.3 za 100m přiblížení (~survival bonus magnitude)
+            approach_reward = (prev_dist - cur_dist) / 100.0 * 0.3
+            reward += np.clip(approach_reward, -0.3, 0.3)
+            self._prev_fire_dists[agent] = cur_dist
 
         return reward
 

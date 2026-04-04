@@ -32,8 +32,8 @@ from src.models import ScoutActor, CommanderActor
 # ============================================================
 # KONFIGURACE
 # ============================================================
-MODEL_SCOUT     = os.path.join(project_root, "saved_models", "scout_best.pt")
-MODEL_COMMANDER = os.path.join(project_root, "saved_models", "cmdr_best.pt")
+MODEL_SCOUT     = os.path.join(project_root, "saved_models", "multi", "scout_best.pt")
+MODEL_COMMANDER = os.path.join(project_root, "saved_models", "multi", "cmdr_best.pt")
 
 N_QUADS    = 1
 N_FIXED    = 1
@@ -233,8 +233,8 @@ def run_demo():
             if need_new_waypoint:
                 s_st_f = torch.FloatTensor(obs["fixed_0"]["self_state"]).to(device).unsqueeze(0)
                 # Build message tensor for commander (latest + best-fire slots)
-                msgs_t = last_scout_msg.clone()  # [1, 1, 5]
-                msgs_m = torch.tensor([[not scout_msg_valid]])  # True = masked
+                msgs_t = torch.cat([last_scout_msg, last_scout_msg], dim=1)  # [1, 2, 5]
+                msgs_m = torch.tensor([[not scout_msg_valid, not scout_msg_valid]])  # [1, 2]
                 with torch.no_grad():
                     dist_c, _, h_cmdr = commander_actor(s_st_f, msgs_t, msgs_m, h_cmdr)
                 act_np = dist_c.mean.squeeze(0).cpu().numpy()

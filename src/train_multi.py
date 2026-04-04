@@ -80,7 +80,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
     map_half = config['grid_size_m'] / 2.0
     safe_limit = map_half - 250.0
-    boundary_emergency = map_half - 100.0   # hard override: steer toward center
+    boundary_emergency = map_half - 200.0   # hard override: steer toward center
     wp_reached_dist = 30.0
     wp_timeout_penalty = -1.0
 
@@ -152,7 +152,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         # Recalculate safe_limit after reset (map size may have changed)
         map_half = local_env.map_bounds
         safe_limit = max(50.0, map_half - 250.0)
-        boundary_emergency = max(safe_limit + 50.0, map_half - 100.0)
+        boundary_emergency = max(safe_limit + 50.0, map_half - 200.0)
 
         q_agent = local_env.quad_agents[0] if N_QUADS > 0 else None
         f_agent = local_env.fixed_agents[0]
