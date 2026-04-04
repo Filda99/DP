@@ -7,9 +7,9 @@ Architecture:
     - NN called EVERY physics step → 4D action + 5D message
     - Input: local_map [1,32,32] + self_state [15] + neighbor_states [N,3]
 
-  Commander (CommanderActorV2 / SimpleFWActor):
+  Commander (CommanderActor):
     - NN called every `waypoint_steps` (50) physics steps → 4D waypoint
-    - Input: self_state [17] + scout messages [2*N_quads, 5]
+    - Input: self_state [17] + scout messages [N_msg_slots, 5]
     - Between calls: heading-hold controller flies toward waypoint
 
   Separate PPO optimizers, no shared critic.
@@ -66,7 +66,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     import random
 
     from env_core import DroneFireEnv
-    from models import ScoutActor, SimpleFWActor, CommanderActorV2, PrivilegedCritic
+    from models import ScoutActor, CommanderActor, PrivilegedCritic
 
     max_steps = config['max_steps']
     waypoint_steps = config['waypoint_steps']
@@ -76,7 +76,6 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     hidden_dim_scout = config['hidden_dim_scout']
     N_QUADS = config['N_QUADS']
     scout_msg_dim = config['scout_msg_dim']
-    use_cmdr_v2 = config.get('use_cmdr_v2', False)
     map_size_range = config.get('map_size_range', None)
 
     map_half = config['grid_size_m'] / 2.0
@@ -93,19 +92,12 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     local_scout.load_state_dict(scout_w)
     local_scout.eval()
 
-    if use_cmdr_v2:
-        local_cmdr = CommanderActorV2(
-            self_state_dim=config['fixed_self_dim'],
-            msg_input_dim=scout_msg_dim,
-            action_dim=4,
-            hidden_dim=hidden_dim_cmdr,
-        )
-    else:
-        local_cmdr = SimpleFWActor(
-            self_state_dim=config['fixed_self_dim'],
-            action_dim=4,
-            hidden_dim=hidden_dim_cmdr,
-        )
+    local_cmdr = CommanderActor(
+        self_state_dim=config['fixed_self_dim'],
+        msg_input_dim=scout_msg_dim,
+        action_dim=4,
+        hidden_dim=hidden_dim_cmdr,
+    )
     local_cmdr.load_state_dict(cmdr_w)
     local_cmdr.eval()
 
@@ -292,12 +284,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         s_st_f = torch.FloatTensor(
                             obs[f_agent]["self_state"]).unsqueeze(0)
 
-                        if use_cmdr_v2:
-                            dist_c, _, h_out_c = local_cmdr(
-                                s_st_f, msgs_t, msgs_m, cmdr_h)
-                        else:
-                            dist_c, _, h_out_c = local_cmdr(
-                                s_st_f, None, None, cmdr_h)
+                        dist_c, _, h_out_c = local_cmdr(
+                            s_st_f, msgs_t, msgs_m, cmdr_h)
 
                         act_c = dist_c.sample()
 
@@ -606,17 +594,17 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 # TRAINING FUNCTION
 # =============================================================================
 
-def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
+def train_multi(resume_scout="", resume_cmdr="",
                 log_episodes=False, log_dir="/tmp/ep_logs"):
     print("=" * 70)
     print("  Multi-Agent Training: Scout (frame-by-frame) + Commander (waypoint)")
-    print(f"  Commander: {'CommanderActorV2' if use_cmdr_v2 else 'SimpleFWActor'}")
+    print("  Commander: CommanderActor (with scout messages)")
     print("=" * 70)
 
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
     from env_core import DroneFireEnv
-    from models import ScoutActor, SimpleFWActor, CommanderActorV2, PrivilegedCritic
+    from models import ScoutActor, CommanderActor, PrivilegedCritic
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cpu":
@@ -671,7 +659,6 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
     print(f"waypoint_steps   = {waypoint_steps}")
     print(f"waypoint_range   = {waypoint_range}m")
     print(f"num_decisions    = {num_decisions_cmdr} (commander)")
-    print(f"use_cmdr_v2      = {use_cmdr_v2}")
 
     worker_config = {
         'N_QUADS': N_QUADS, 'N_FIXED': N_FIXED,
@@ -690,7 +677,6 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
         'gamma': gamma,
         'gamma_cmdr': gamma_cmdr,
         'gae_lambda': gae_lambda,
-        'use_cmdr_v2': use_cmdr_v2,
         'log_episodes': log_episodes,
         'log_dir': log_dir,
     }
@@ -714,19 +700,12 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
             print(f"  Skipped (shape mismatch): {skipped}")
         print(f"  Loaded scout from {resume_scout}")
 
-    if use_cmdr_v2:
-        cmdr_actor = CommanderActorV2(
-            self_state_dim=fixed_self_dim,
-            msg_input_dim=scout_msg_dim,
-            action_dim=4,
-            hidden_dim=hidden_dim_cmdr,
-        ).to(device)
-    else:
-        cmdr_actor = SimpleFWActor(
-            self_state_dim=fixed_self_dim,
-            action_dim=4,
-            hidden_dim=hidden_dim_cmdr,
-        ).to(device)
+    cmdr_actor = CommanderActor(
+        self_state_dim=fixed_self_dim,
+        msg_input_dim=scout_msg_dim,
+        action_dim=4,
+        hidden_dim=hidden_dim_cmdr,
+    ).to(device)
     print(f"Commander params: {sum(p.numel() for p in cmdr_actor.parameters()):,}")
 
     if resume_cmdr and os.path.isfile(resume_cmdr):
@@ -916,6 +895,11 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
         if s_adv.numel() > 1:
             s_adv = (s_adv - s_adv.mean()) / (s_adv.std() + 1e-8)
 
+        # Normalize returns for critic target (prevents MSE explosion)
+        s_ret_mean = s_returns.mean()
+        s_ret_std = s_returns.std() + 1e-8
+        s_returns_norm = (s_returns - s_ret_mean) / s_ret_std
+
         # Reshape: [episodes, max_steps, ...]
         eps = s_returns.numel() // max_steps  # actual eps (may be < episodes_per_batch if workers failed)
         s_maps_seq = s_maps.view(eps, max_steps, 1, 32, 32)
@@ -926,6 +910,7 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
         s_logprobs_seq = s_logprobs.view(eps, max_steps)
         s_adv_seq = s_adv.view(eps, max_steps)
         s_returns_seq = s_returns.view(eps, max_steps)
+        s_returns_norm_seq = s_returns_norm.view(eps, max_steps)
         s_cstates_seq = s_cstates.view(eps, max_steps, -1)
         h_scout_seq = h_scout.transpose(0, 1)
 
@@ -946,7 +931,7 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
                 mb_acts = s_actions_seq[mb]
                 mb_old_lp = s_logprobs_seq[mb].view(-1)
                 mb_adv = s_adv_seq[mb].reshape(-1)
-                mb_rets = s_returns_seq[mb].reshape(-1)
+                mb_rets = s_returns_norm_seq[mb].reshape(-1)
                 mb_cs = s_cstates_seq[mb]
                 mb_h = h_scout_seq[mb].transpose(0, 1)
 
@@ -1010,6 +995,12 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
             alive_vals = c_adv[alive_bool]
             c_adv = (c_adv - alive_vals.mean()) / (alive_vals.std() + 1e-8)
 
+        # Normalize returns for critic target
+        alive_rets = c_returns[alive_bool] if alive_bool.sum() > 1 else c_returns
+        c_ret_mean = alive_rets.mean()
+        c_ret_std = alive_rets.std() + 1e-8
+        c_returns_norm = (c_returns - c_ret_mean) / c_ret_std
+
         # Reshape: [episodes, num_decisions_cmdr, ...]
         nd = num_decisions_cmdr
         c_states_seq = c_states.view(eps, nd, -1)
@@ -1020,6 +1011,7 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
         c_adv_seq = c_adv.view(eps, nd)
         c_alive_seq = c_alive.view(eps, nd)
         c_returns_seq = c_returns.view(eps, nd)
+        c_returns_norm_seq = c_returns_norm.view(eps, nd)
         c_cstates_seq = c_cstates.view(eps, nd, -1)
         h_cmdr_seq = h_cmdr.transpose(0, 1)
 
@@ -1038,14 +1030,11 @@ def train_multi(resume_scout="", resume_cmdr="", use_cmdr_v2=False,
                 mb_old_lp = c_logprobs_seq[mb].view(-1)
                 mb_adv = c_adv_seq[mb].reshape(-1)
                 mb_alive = c_alive_seq[mb].reshape(-1)
-                mb_rets = c_returns_seq[mb].reshape(-1)
+                mb_rets = c_returns_norm_seq[mb].reshape(-1)
                 mb_cs = c_cstates_seq[mb]
                 mb_h = h_cmdr_seq[mb].transpose(0, 1)
 
-                if use_cmdr_v2:
-                    dist, _, _ = cmdr_actor(mb_states, mb_msgs, mb_mm, mb_h)
-                else:
-                    dist, _, _ = cmdr_actor(mb_states, None, None, mb_h)
+                dist, _, _ = cmdr_actor(mb_states, mb_msgs, mb_mm, mb_h)
 
                 flat_acts = mb_acts.view(-1, 4)
                 new_lp = dist.log_prob(flat_acts).sum(1)
@@ -1194,8 +1183,6 @@ if __name__ == "__main__":
         description="Multi-agent training: Scout + Commander")
     parser.add_argument("--resume-scout", type=str, default="")
     parser.add_argument("--resume-cmdr", type=str, default="")
-    parser.add_argument("--v2", action="store_true",
-                        help="Use CommanderActorV2 with scout messages")
     parser.add_argument("--log-episodes", action="store_true",
                         help="Save trajectory logs for replay (1 ep/worker/batch)")
     parser.add_argument("--log-dir", type=str, default="/tmp/ep_logs",
@@ -1205,7 +1192,6 @@ if __name__ == "__main__":
     train_multi(
         resume_scout=args.resume_scout,
         resume_cmdr=args.resume_cmdr,
-        use_cmdr_v2=args.v2,
         log_episodes=args.log_episodes,
         log_dir=args.log_dir,
     )
