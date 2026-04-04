@@ -47,7 +47,7 @@ EPISODE_SEED = 101
 WAYPOINT_RANGE  = 100.0   # metres per unit of dx/dy
 WAYPOINT_STEPS  = 50      # physics steps per waypoint segment
 WP_REACHED_DIST = 30.0    # metres
-SAFE_LIMIT_BUF  = 150.0   # boundary buffer
+SAFE_LIMIT_BUF  = 250.0   # boundary buffer
 # ============================================================
 
 
@@ -177,6 +177,7 @@ def run_demo():
     refill_size = refill_info['size'] if refill_info else 20.0
 
     safe_limit = env.map_bounds - SAFE_LIMIT_BUF
+    boundary_emergency = env.map_bounds - 100.0
 
     h_scout = torch.zeros(1, 1, 128).to(device)
     h_cmdr  = torch.zeros(1, 1, 64).to(device)
@@ -251,6 +252,11 @@ def run_demo():
             # Heading controller → physical action
             if drone is not None:
                 pos = drone.get_position()
+                # Emergency boundary override
+                if abs(pos[0]) > boundary_emergency or abs(pos[1]) > boundary_emergency:
+                    target_x = 0.0
+                    target_y = 0.0
+                    need_new_waypoint = True
                 dx_to = target_x - pos[0]
                 dy_to = target_y - pos[1]
                 dist_to = np.sqrt(dx_to**2 + dy_to**2)

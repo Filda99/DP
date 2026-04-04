@@ -79,7 +79,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     map_size_range = config.get('map_size_range', None)
 
     map_half = config['grid_size_m'] / 2.0
-    safe_limit = map_half - 150.0
+    safe_limit = map_half - 250.0
+    boundary_emergency = map_half - 100.0   # hard override: steer toward center
     wp_reached_dist = 30.0
     wp_timeout_penalty = -1.0
 
@@ -150,7 +151,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
         # Recalculate safe_limit after reset (map size may have changed)
         map_half = local_env.map_bounds
-        safe_limit = map_half - 150.0
+        safe_limit = map_half - 250.0
+        boundary_emergency = map_half - 100.0
 
         q_agent = local_env.quad_agents[0] if N_QUADS > 0 else None
         f_agent = local_env.fixed_agents[0]
@@ -336,6 +338,14 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                 drone = local_env.sim.drones.get(f_agent)
                 if drone is not None:
                     pos = drone.get_position()
+
+                    # Emergency boundary override: if near kill zone, steer to center
+                    if (abs(pos[0]) > boundary_emergency or
+                            abs(pos[1]) > boundary_emergency):
+                        target_x = 0.0
+                        target_y = 0.0
+                        need_new_waypoint = True  # ask NN for new wp next step
+
                     dx_to = target_x - pos[0]
                     dy_to = target_y - pos[1]
                     dist_to = np.sqrt(dx_to**2 + dy_to**2)
