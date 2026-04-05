@@ -79,8 +79,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     map_size_range = config.get('map_size_range', None)
 
     map_half = config['grid_size_m'] / 2.0
-    safe_limit = map_half - 250.0
-    boundary_emergency = map_half - 200.0   # hard override: steer toward center
+    safe_limit = map_half - 350.0            # waypoints clipped to this box
+    boundary_emergency = map_half - 300.0    # hard override: steer toward center
     wp_reached_dist = 30.0
     wp_timeout_penalty = -1.0
 
@@ -149,10 +149,10 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
         obs, _ = local_env.reset(epizode_number=batch_start_idx + ep_off)
 
-        # Recalculate safe_limit after reset (map size may have changed)
+        # Recalculate after reset (map size may have changed)
         map_half = local_env.map_bounds
-        safe_limit = max(50.0, map_half - 250.0)
-        boundary_emergency = max(safe_limit + 50.0, map_half - 200.0)
+        safe_limit = map_half - 350.0            # fixed 350m buffer from edge
+        boundary_emergency = map_half - 300.0    # fixed 300m buffer from edge
 
         q_agent = local_env.quad_agents[0] if N_QUADS > 0 else None
         f_agent = local_env.fixed_agents[0]
@@ -632,8 +632,8 @@ def train_multi(resume_scout="", resume_cmdr="",
     # ── Hyperparameters ──────────────────────────────────────────────────
     N_QUADS = 1
     N_FIXED = 1
-    grid_size_m = 1000.0
-    map_size_range = (600, 2000)   # random map size per episode [m]
+    grid_size_m = 2000.0
+    map_size_range = (1000, 2000)  # random map size per episode [m]
     num_episodes = 30_000
     max_steps = 4000              # buffer size (upper bound)
     steps_range = (1500, 4000)     # actual ep length randomized per episode
