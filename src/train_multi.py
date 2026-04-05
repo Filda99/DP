@@ -133,7 +133,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     scout_h0_list = []
     cmdr_h0_list = []
     all_rewards = []
-    all_lifespans = []
+    all_scout_lifespans = []
+    all_cmdr_lifespans = []
     all_deaths = []
 
     # Dummy tensors for dead scout steps
@@ -556,8 +557,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
         ep_reward_total = ep_reward_scout + ep_reward_cmdr
         all_rewards.append(ep_reward_total)
-        avg_life = (scout_lifespan + cmdr_lifespan) / 2.0
-        all_lifespans.append(avg_life)
+        all_scout_lifespans.append(scout_lifespan)
+        all_cmdr_lifespans.append(cmdr_lifespan)
         all_deaths.append(f"s:{scout_death_cause},c:{cmdr_death_cause}")
 
         # --- Episode log (for replay/analysis) ---
@@ -605,7 +606,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         "cmdr": torch.cat(cmdr_h0_list, dim=0) if cmdr_h0_list else None,
     }
 
-    return out_scout, out_cmdr, out_init_h, all_rewards, all_lifespans, all_deaths
+    return out_scout, out_cmdr, out_init_h, all_rewards, (all_scout_lifespans, all_cmdr_lifespans), all_deaths
 
 
 # =============================================================================
@@ -752,15 +753,16 @@ def train_multi(resume_scout="", resume_cmdr="",
     optimizer_critic_scout = optim.Adam(critic_scout.parameters(), lr=lr_critic)
     optimizer_critic_cmdr = optim.Adam(critic_cmdr.parameters(), lr=lr_critic)
 
-    # ── Tracking ─────────────────────────────────────────────────────────
-    reward_history = []
+    # ── Tracking (all per-batch, not per-episode) ──────────────────────
+    reward_history = []           # per-episode (for rolling avg)
+    reward_per_batch = []         # avg reward per batch
     loss_history_scout = []
     loss_history_cmdr = []
     critic_loss_history_scout = []
     critic_loss_history_cmdr = []
-    lifespan_history = []
-    ep_max_steps_per_batch = []   # avg ep_max_steps per batch
-    logstd_history_cmdr = []
+    scout_life_pct_history = []   # avg scout lifespan % per batch
+    cmdr_life_pct_history = []    # avg cmdr lifespan % per batch
+    scout_death_history = []      # list of Counter dicts per batch
 
     save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "..", "saved_models", "multi")
@@ -793,6 +795,8 @@ def train_multi(resume_scout="", resume_cmdr="",
         agg_h = {"scout": [], "cmdr": []}
         batch_rewards = []
         batch_deaths = []
+        batch_scout_lifespans = []
+        batch_cmdr_lifespans = []
 
         # Pick episode length for this batch (same for all workers)
         if steps_range is not None:
@@ -814,14 +818,15 @@ def train_multi(resume_scout="", resume_cmdr="",
             failed = 0
             for fut in futures:
                 try:
-                    w_scout, w_cmdr, w_h, w_rew, w_life, w_deaths = fut.result()
+                    w_scout, w_cmdr, w_h, w_rew, (w_scout_life, w_cmdr_life), w_deaths = fut.result()
                 except Exception as e:
                     failed += 1
                     print(f"   ⚠ Worker failed: {e}")
                     continue
                 batch_rewards.extend(w_rew)
                 batch_deaths.extend(w_deaths)
-                lifespan_history.extend(w_life)
+                batch_scout_lifespans.extend(w_scout_life)
+                batch_cmdr_lifespans.extend(w_cmdr_life)
                 reward_history.extend(w_rew)
                 episodes_played += len(w_rew)
 
@@ -844,14 +849,19 @@ def train_multi(resume_scout="", resume_cmdr="",
 
         # Logging
         avg_batch = float(np.mean(batch_rewards))
-        ep_max_steps_per_batch.append(batch_ep_max)
+        reward_per_batch.append(avg_batch)
         win = min(60, len(reward_history))
         avg_roll = float(np.mean(reward_history[-win:]))
+
+        # Per-batch lifespan as % of ep_max
+        scout_life_pct = float(np.mean(batch_scout_lifespans)) / batch_ep_max * 100
+        cmdr_life_pct = float(np.mean(batch_cmdr_lifespans)) / batch_ep_max * 100
+        scout_life_pct_history.append(scout_life_pct)
+        cmdr_life_pct_history.append(cmdr_life_pct)
 
         with torch.no_grad():
             cur_stds = torch.exp(
                 cmdr_actor.action_logstd.clamp(-3.0, 0.0)).squeeze()
-        logstd_history_cmdr.append(cur_stds.cpu().numpy().copy())
 
         from collections import Counter
         # Parse "s:cause,c:cause" death strings into separate counters
@@ -867,13 +877,12 @@ def train_multi(resume_scout="", resume_cmdr="",
                     cmdr_deaths_c[cause] += 1
         s_str = " ".join(f"{k}={v}" for k, v in scout_deaths_c.most_common())
         c_str = " ".join(f"{k}={v}" for k, v in cmdr_deaths_c.most_common())
-        recent_life = float(np.mean(lifespan_history[-win:])) if lifespan_history else 0
+        scout_death_history.append(dict(scout_deaths_c))
 
         print(f"{datetime.datetime.now().strftime('%H:%M:%S')} | "
               f"Batch {batch_idx:04d} (Ep {episodes_played:05d}) | "
               f"R: {avg_batch:+8.1f} ({avg_roll:+8.1f})  "
-              f"Life: {recent_life:.0f}  "
-              f"std=[{cur_stds[0]:.2f},{cur_stds[1]:.2f},{cur_stds[2]:.2f},{cur_stds[3]:.2f}]  "
+              f"Scout:{scout_life_pct:.0f}% Cmdr:{cmdr_life_pct:.0f}%  "
               f"scout:[{s_str}] cmdr:[{c_str}]  "
               f"{rollout_time:.1f}s")
 
@@ -1105,15 +1114,17 @@ def train_multi(resume_scout="", resume_cmdr="",
         # ==============================================================
         if batch_idx % 10 == 0:
             _save_plot_multi(
-                reward_history, loss_history_scout, loss_history_cmdr,
-                lifespan_history, logstd_history_cmdr,
-                save_dir, batch_idx, ep_max_steps_per_batch,
+                reward_per_batch, loss_history_scout, loss_history_cmdr,
+                scout_life_pct_history, cmdr_life_pct_history,
+                scout_death_history,
+                save_dir, batch_idx,
                 critic_loss_history_scout, critic_loss_history_cmdr)
 
     _save_plot_multi(
-        reward_history, loss_history_scout, loss_history_cmdr,
-        lifespan_history, logstd_history_cmdr,
-        save_dir, batch_idx, ep_max_steps_per_batch,
+        reward_per_batch, loss_history_scout, loss_history_cmdr,
+        scout_life_pct_history, cmdr_life_pct_history,
+        scout_death_history,
+        save_dir, batch_idx,
         critic_loss_history_scout, critic_loss_history_cmdr)
 
     print(f"\n✅ Training complete!")
@@ -1124,76 +1135,107 @@ def train_multi(resume_scout="", resume_cmdr="",
 # PLOT HELPER
 # =============================================================================
 
-def _save_plot_multi(rewards, loss_s, loss_c, lifespans, logstds,
-                     save_dir, batch_idx, ep_max_per_batch=None,
+def _save_plot_multi(reward_batches, loss_s, loss_c,
+                     scout_life_pct, cmdr_life_pct, scout_deaths,
+                     save_dir, batch_idx,
                      critic_loss_s=None, critic_loss_c=None):
+    """All data is per-batch (x-axis = batch number)."""
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     fig.suptitle(f"Multi-Agent — Batch {batch_idx}", fontsize=13)
+    batches = np.arange(1, len(reward_batches) + 1)
 
-    # Reward
+    def _ma(data, w=10):
+        if len(data) < w:
+            return None, None
+        ma = np.convolve(data, np.ones(w) / w, mode='valid')
+        return np.arange(w, len(data) + 1), ma
+
+    # (0,0) Reward per Batch
     ax = axes[0, 0]
-    ax.plot(rewards, alpha=0.2, color='steelblue', linewidth=0.5)
-    if len(rewards) >= 30:
-        ma = np.convolve(rewards, np.ones(30) / 30, mode='valid')
-        ax.plot(range(29, len(rewards)), ma, color='navy', linewidth=1.5,
-                label='MA 30')
-        ax.legend()
-    ax.set_title("Total Reward per Episode")
-    ax.grid(True, alpha=0.3)
-
-    # Scout Loss
-    ax = axes[0, 1]
-    ax.plot(loss_s, color='green', linewidth=1, label='Scout')
-    ax.set_title("Scout PPO Loss")
-    ax.grid(True, alpha=0.3)
-
-    # Commander Loss
-    ax = axes[0, 2]
-    ax.plot(loss_c, color='tomato', linewidth=1, label='Commander')
-    ax.set_title("Commander PPO Loss")
-    ax.grid(True, alpha=0.3)
-
-    # Lifespan
-    ax = axes[1, 0]
-    ax.plot(lifespans, alpha=0.3, color='orange', linewidth=0.5)
-    if len(lifespans) >= 30:
-        ma2 = np.convolve(lifespans, np.ones(30) / 30, mode='valid')
-        ax.plot(range(29, len(lifespans)), ma2, color='darkorange',
-                linewidth=1.5, label='MA 30')
-        ax.legend()
-    ax.set_title("Avg Lifespan (steps)")
-    ax.grid(True, alpha=0.3)
-    # Show avg ep_max_steps per batch as dashed line
-    if ep_max_per_batch and len(ep_max_per_batch) > 0:
-        # Expand per-batch to per-episode by repeating each value
-        eps_per_b = max(1, len(lifespans) // max(1, len(ep_max_per_batch)))
-        ep_max_expanded = []
-        for v in ep_max_per_batch:
-            ep_max_expanded.extend([v] * eps_per_b)
-        ep_max_expanded = ep_max_expanded[:len(lifespans)]
-        ax.plot(ep_max_expanded, color='gray', linewidth=1.2, linestyle='--',
-                alpha=0.6, label='max steps')
-        ax.legend(loc='lower right', fontsize=7)
-
-    # Commander Std
-    ax = axes[1, 1]
-    if len(logstds) > 0 and hasattr(logstds[0], '__len__'):
-        arr = np.array(logstds)
-        for i, (lbl, col) in enumerate(zip(
-                ['dx', 'dy', 'Alt', 'Water'],
-                ['blue', 'green', 'red', 'orange'])):
-            ax.plot(arr[:, i], color=col, linewidth=1, label=lbl)
+    ax.bar(batches, reward_batches, color='steelblue', alpha=0.4, width=1.0)
+    mx, ma = _ma(reward_batches)
+    if ma is not None:
+        ax.plot(mx, ma, color='navy', linewidth=2, label='MA 10')
         ax.legend(fontsize=8)
-    ax.set_title("Commander Action Std")
+    ax.axhline(0, color='gray', linewidth=0.8, linestyle='-')
+    ax.set_title("Avg Reward per Batch")
+    ax.set_xlabel("Batch")
     ax.grid(True, alpha=0.3)
 
-    # Critic Value Loss (6th panel)
+    # (0,1) Scout PPO Loss
+    ax = axes[0, 1]
+    if loss_s:
+        ax.plot(range(1, len(loss_s) + 1), loss_s, color='green', linewidth=1)
+    ax.set_title("Scout PPO Loss")
+    ax.set_xlabel("Batch")
+    ax.grid(True, alpha=0.3)
+
+    # (0,2) Commander PPO Loss
+    ax = axes[0, 2]
+    if loss_c:
+        ax.plot(range(1, len(loss_c) + 1), loss_c, color='tomato', linewidth=1)
+    ax.set_title("Commander PPO Loss")
+    ax.set_xlabel("Batch")
+    ax.grid(True, alpha=0.3)
+
+    # (1,0) Lifespan % (scout + commander)
+    ax = axes[1, 0]
+    ax.plot(batches, scout_life_pct, color='green', linewidth=1, alpha=0.5)
+    ax.plot(batches, cmdr_life_pct, color='tomato', linewidth=1, alpha=0.5)
+    mx_s, ma_s = _ma(scout_life_pct)
+    mx_c, ma_c = _ma(cmdr_life_pct)
+    if ma_s is not None:
+        ax.plot(mx_s, ma_s, color='green', linewidth=2, label='Scout MA10')
+    if ma_c is not None:
+        ax.plot(mx_c, ma_c, color='tomato', linewidth=2, label='Cmdr MA10')
+    ax.axhline(100, color='gray', linewidth=1, linestyle='--', alpha=0.5, label='100%')
+    ax.set_ylim(0, 110)
+    ax.set_title("Lifespan (% of max_steps)")
+    ax.set_xlabel("Batch")
+    ax.set_ylabel("%")
+    ax.legend(fontsize=8, loc='lower right')
+    ax.grid(True, alpha=0.3)
+
+    # (1,1) Scout Death Causes (stacked area)
+    ax = axes[1, 1]
+    if scout_deaths:
+        all_causes = set()
+        for d in scout_deaths:
+            all_causes.update(d.keys())
+        all_causes = sorted(all_causes)
+        cause_colors = {
+            'boundary': '#e74c3c', 'ceiling': '#e67e22', 'ground_crash': '#8e44ad',
+            'survived': '#2ecc71', 'unknown': '#95a5a6', 'env_empty': '#7f8c8d'
+        }
+        stacks = {c: [] for c in all_causes}
+        for d in scout_deaths:
+            total = max(1, sum(d.values()))
+            for c in all_causes:
+                stacks[c].append(d.get(c, 0) / total * 100)
+        bottoms = np.zeros(len(scout_deaths))
+        for c in all_causes:
+            vals = np.array(stacks[c])
+            color = cause_colors.get(c, '#bdc3c7')
+            ax.bar(batches[:len(vals)], vals, bottom=bottoms[:len(vals)],
+                   color=color, alpha=0.8, width=1.0, label=c)
+            bottoms[:len(vals)] += vals
+        ax.set_ylim(0, 105)
+        ax.set_title("Scout Death Causes (%)")
+        ax.set_xlabel("Batch")
+        ax.set_ylabel("%")
+        ax.legend(fontsize=7, loc='upper right')
+    ax.grid(True, alpha=0.3)
+
+    # (1,2) Critic Value Loss
     ax = axes[1, 2]
     if critic_loss_s and len(critic_loss_s) > 0:
-        ax.plot(critic_loss_s, color='green', linewidth=1, label='Scout')
+        ax.plot(range(1, len(critic_loss_s) + 1), critic_loss_s,
+                color='green', linewidth=1, label='Scout')
     if critic_loss_c and len(critic_loss_c) > 0:
-        ax.plot(critic_loss_c, color='tomato', linewidth=1, label='Commander')
+        ax.plot(range(1, len(critic_loss_c) + 1), critic_loss_c,
+                color='tomato', linewidth=1, label='Commander')
     ax.set_title("Critic Value Loss (MSE)")
+    ax.set_xlabel("Batch")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
