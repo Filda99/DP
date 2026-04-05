@@ -28,6 +28,7 @@ QUAD = {
     "fire_flat_bonus":   0.5,   # flat bonus za detekci ohně (5× survival)
     "fire_intensity_k":  2.0,   # násobitel intenzity (max +2.0 při intensity=1.0)
     "fire_speed_pen":    0.05,  # penalizace za rychlost nad ohněm
+    "rubber_band_k":     0.4,   # continuous pull toward fire: -0.4 * (dist/1000) per step
 
     # Scale
     "reward_scale":      0.3,

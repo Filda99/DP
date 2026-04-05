@@ -1025,6 +1025,12 @@ class DroneFireEnv(ParallelEnv):
         pos = drone.get_position()
         reward = 0.0
 
+        # --- Rubber-band: continuous pull toward fire (always active) ---
+        # At 500m: -0.2/step, at 1000m: -0.4/step — comparable to survival(0.1)
+        # This gives a constant gradient so the scout never "forgets" where fire is.
+        dist_to_fire = np.sqrt((pos[0] - self.fire_x)**2 + (pos[1] - self.fire_y)**2)
+        reward -= QUAD["rubber_band_k"] * dist_to_fire / NORM_DIST
+
         reward_zone = self._extract_local_fire_map(pos)
         avg_fire_intensity = np.mean(reward_zone)
 
