@@ -102,7 +102,7 @@ def collect_scout_worker(num_eps, scout_w, critic_w, config, batch_start_idx):
         scout_lifespan = ep_max_steps
         death_cause = "survived"
 
-        for step in range(max_steps):
+        for step in range(ep_max_steps):
             actions = {}
 
             if scout_alive and q_agent in local_env.agents:
@@ -175,7 +175,7 @@ def collect_scout_worker(num_eps, scout_w, critic_w, config, batch_start_idx):
             d["ret"] = gae + v_t
 
         # Pack buffer
-        for i in range(max_steps):
+        for i in range(ep_max_steps):
             if i < len(scout_ep_data):
                 d = scout_ep_data[i]
                 if d["alive"]:
@@ -461,17 +461,17 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
         s_ret_std = alive_rets.std() + 1e-8
         s_returns_norm = (s_returns - s_ret_mean) / s_ret_std
 
-        eps = s_returns.numel() // max_steps
-        s_maps_seq = s_maps.view(eps, max_steps, 1, 32, 32)
-        s_self_seq = s_self.view(eps, max_steps, -1)
-        s_neigh_s_seq = s_neigh_s.view(eps, max_steps, s_neigh_s.size(-2), 3)
-        s_neigh_m_seq = s_neigh_m.view(eps, max_steps, -1)
-        s_actions_seq = s_actions.view(eps, max_steps, -1)
-        s_logprobs_seq = s_logprobs.view(eps, max_steps)
-        s_adv_seq = s_adv.view(eps, max_steps)
-        s_returns_norm_seq = s_returns_norm.view(eps, max_steps)
-        s_alive_seq = s_alive.view(eps, max_steps)
-        s_cstates_seq = s_cstates.view(eps, max_steps, -1)
+        eps = s_returns.numel() // batch_ep_max
+        s_maps_seq = s_maps.view(eps, batch_ep_max, 1, 32, 32)
+        s_self_seq = s_self.view(eps, batch_ep_max, -1)
+        s_neigh_s_seq = s_neigh_s.view(eps, batch_ep_max, s_neigh_s.size(-2), 3)
+        s_neigh_m_seq = s_neigh_m.view(eps, batch_ep_max, -1)
+        s_actions_seq = s_actions.view(eps, batch_ep_max, -1)
+        s_logprobs_seq = s_logprobs.view(eps, batch_ep_max)
+        s_adv_seq = s_adv.view(eps, batch_ep_max)
+        s_returns_norm_seq = s_returns_norm.view(eps, batch_ep_max)
+        s_alive_seq = s_alive.view(eps, batch_ep_max)
+        s_cstates_seq = s_cstates.view(eps, batch_ep_max, -1)
         h_scout_seq = h_scout.transpose(0, 1)
 
         num_minibatches = 4
