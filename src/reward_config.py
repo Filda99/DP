@@ -5,59 +5,58 @@
 # Importuj: from reward_config import QUAD, FIXED, SHARED
 
 # ─── Sdílené parametry ───────────────────────────────────────────────────────
+# Všechny hodnoty jsou FIXNÍ — nezávislé na velikosti mapy.
+# NORM_DIST = 1000 v env_core.py normalizuje pozice a vzdálenosti v observacích.
 SHARED = {
-    "survival_bonus":       0.1,   # per-krok bonus za přežití (oba agenti)
-    "boundary_penalty":     5.0,    # max penalizace při nárazu do hranice
-    "boundary_extra":       3.0,    # extra penalizace pro fixed-wing blízko hranice
-    "crash_penalty":        -200,   # must hurt relative to extinguish (+5/step)
-    "reward_clip_min":      -15.0,
-    "reward_clip_max":      15.0,   # extinguish max = 5/step, survival = 0.3
+    "survival_bonus":       0.02,  # malý per-krok bonus (fire reward musí dominovat)
+    "boundary_penalty":     0.5,   # max penalizace při nárazu do hranice (quadratic)
+    "boundary_extra":       0.3,   # extra penalizace pro fixed-wing blízko hranice
+    "crash_penalty":        -50,   # same as old — significant but not overwhelming
+    "reward_clip_min":      -10.0,
+    "reward_clip_max":       10.0,
 }
 
 # ─── Quadkoptéra (Scout) ─────────────────────────────────────────────────────
 QUAD = {
-    # Hranice mapy
-    "boundary_threshold_m":  150.0,   # fixní 150m od okraje — nezávislé na velikosti mapy
+    # Hranice mapy — fixní, nezávislé na map_bounds
+    "boundary_threshold_m":  150.0,
 
-    # Výška — sweet spot kde scout vidí dobře ale není v updraftu
-    "alt_ideal_min":    40.0,   # pod touto výškou je silný updraft → penalizace
-    "alt_ideal_max":   200.0,   # nad touto výškou je příliš daleko od ohně → penalizace
-    "alt_ceiling":     300.0,   # tvrdá smrt — 100m buffer (quadratic fills it well)
+    # Výška — fixní rozsah, nezávislý na mapě
+    "alt_ideal_min":    10.0,   # pod 10m → penalizace
+    "alt_ideal_max":   200.0,   # nad 200m → penalizace
+    "alt_ceiling":     300.0,   # tvrdá smrt
 
-    # Mise — hover nad ohněm
-    "fire_flat_bonus":   0.5,   # flat bonus za detekci ohně (5× survival)
-    "fire_intensity_k":  2.0,   # násobitel intenzity (max +2.0 při intensity=1.0)
+    # Mise — hover nad ohněm (SILNÉ, musí dominovat nad survival)
+    "fire_flat_bonus":   1.0,   # flat bonus za detekci ohně (50× survival)
+    "fire_intensity_k":  5.0,   # násobitel intenzity (max +5.0 při intensity=1.0)
     "fire_speed_pen":    0.05,  # penalizace za rychlost nad ohněm
-    "rubber_band_k":     0.4,   # continuous pull toward fire: -0.4 * (dist/1000) per step
 
-    # Scale
-    "reward_scale":      0.3,
+    # Alt penalty
+    "alt_penalty":       0.05,  # flat penalizace za létání mimo rozsah
 }
 
 # ─── Fixed-wing (Commander) ──────────────────────────────────────────────────
 FIXED = {
-    # Hranice mapy
-    "boundary_threshold_m":  300.0,   # fixní 300m od okraje — fixed-wing potřebuje víc prostoru na otáčení
-    "boundary_extra_frac":      0.35,   # extra penalizace pod 35 % prahu = 105m od okraje
+    # Hranice mapy — fixní
+    "boundary_threshold_m":  300.0,
+    "boundary_extra_frac":      0.35,
 
-    # Výška — sweet spot pro hašení
-    "alt_ideal_min":    40.0,   # pod touto výškou je nebezpečí srážky s terénem
-    "alt_ideal_max":   250.0,   # nad touto výškou voda nedopadne přesně
-    "alt_ceiling":     450.0,   # tvrdá smrt (zvýšeno z 400 — víc prostoru pro recovery)
-    "alt_penalty_k":     0.15,   # per 10m nad ideal_max (silnější penalizace)
-    "alt_ideal_target":  100.0,  # středová cílová výška (pro tah)
+    # Výška — fixní
+    "alt_ideal_min":    40.0,
+    "alt_ideal_max":   250.0,
+    "alt_ceiling":     450.0,
 
     # Survival donut
-    "donut_radius":    250.0,   # uvnitř = flat bonus (scaled for 1km map)
-    "donut_bonus":       0.05,  # bonus uvnitř donutu
-    "survival_base":     0.02,   # base survival bonus (navíc k SHARED)
-    "rubber_band_k":     0.02,  # síla tahu zpět do středu
+    "donut_radius":    250.0,
+    "donut_bonus":       0.05,
+    "survival_base":     0.02,
+    "rubber_band_k":     0.02,
 
     # Water trigger bonus
-    "water_trigger_dist":   150.0,   # max vzdálenost od ohně pro bonus (scaled for 1km map)
-    "water_trigger_alt":    150.0,   # max výška pro bonus
-    "water_trigger_bonus":    1.5,   # bonus za aktivaci triggeru
-    "water_trigger_thresh":   0.0,   # threshold last_action[3] pro "is_dropping"
+    "water_trigger_dist":   150.0,
+    "water_trigger_alt":    150.0,
+    "water_trigger_bonus":    1.5,
+    "water_trigger_thresh":   0.0,
     "water_waste_penalty": 8.0,  # Postih za vypouštění mimo cíl — zvýšeno z 5 → plýtvání musí bolet
 
     # Refill bonus

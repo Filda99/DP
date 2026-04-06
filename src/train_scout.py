@@ -232,6 +232,10 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
     print("  Standalone Scout Training (no commander)")
     print("=" * 70)
 
+    # Resolve resume path BEFORE chdir so relative paths work
+    if resume:
+        resume = os.path.abspath(resume)
+
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
     from env_core import DroneFireEnv
@@ -244,11 +248,11 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
 
     # ── Hyperparameters ──────────────────────────────────────────────────
     N_QUADS = 1
-    grid_size_m = 2000.0
-    map_size_range = (1000, 2000)
+    grid_size_m = 1000.0              # 1km map (bounds ±500m)
+    map_size_range = None             # Fixed size, no randomization
     num_episodes = 30_000
-    max_steps = 4000
-    steps_range = (1500, 4000)
+    max_steps = 500                   # Same as old version that converged
+    steps_range = None                # fixed length, no randomization
 
     gamma = 0.99
     gae_lambda = 0.95
@@ -258,11 +262,11 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
     eps_per_worker = 2
     episodes_per_batch = num_workers * eps_per_worker
 
-    lr_scout = 1e-4
+    lr_scout = 3e-4
     lr_critic = 3e-4
     hidden_dim = 128
     scout_msg_dim = 5
-    entropy_coef = 0.003
+    entropy_coef = 0.01
 
     # ── Dims ─────────────────────────────────────────────────────────────
     temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=0,

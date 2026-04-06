@@ -20,13 +20,13 @@ def run_demo():
     # 1. Konfigurace (Stejná jako při tréninku)
     N_QUADS = 1
     N_FIXED = 0
-    MAX_STEPS = 1000
+    MAX_STEPS = 600
     
     # Který model chceme načíst? (Změň číslo podle toho, který měl u tebe nejlepší Reward)
-    MODEL_PATH = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingQuad/08_QuadTrainedWithDemo/scout_ep24600.pt" 
+    MODEL_PATH = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_solo/scout_best.pt"
     
     # 2. Inicializace prostředí
-    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=1000.0)
+    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=1000.0, max_steps=MAX_STEPS)
     
     # Zjištění dimenzí (stejné jako v train.py)
     obs_q = env.observation_space("quad_0")
@@ -111,6 +111,10 @@ def run_demo():
         # Krok prostředí
         obs, rewards, terminations, truncations, infos = env.step(actions)
         total_reward += rewards.get(agent, 0.0)
+        
+        if agent not in obs or terminations.get(agent, False) or truncations.get(agent, False):
+            print(f"🏁 Agent ukončen na kroku {step}")
+            break
 
         # Výpočet viděného ohně (již v kódu máš jako fire_pixels)
         fire_pixels = np.sum(obs[agent]["local_map"])
