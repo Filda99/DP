@@ -248,11 +248,11 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
 
     # ── Hyperparameters ──────────────────────────────────────────────────
     N_QUADS = 1
-    grid_size_m = 1000.0              # 1km map (bounds ±500m)
-    map_size_range = None             # Fixed size, no randomization
+    grid_size_m = 1000.0
+    map_size_range = (1000.0, 2000.0)
     num_episodes = 30_000
     max_steps = 500                   # Same as old version that converged
-    steps_range = None                # fixed length, no randomization
+    steps_range = (300, 600)                # fixed length, no randomization
 
     gamma = 0.99
     gae_lambda = 0.95
@@ -351,6 +351,12 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
         batch_rewards = []
         batch_lifespans = []
         batch_deaths = []
+
+        if map_size_range is not None:
+            batch_grid_size = np.random.uniform(*map_size_range)
+        else:
+            batch_grid_size = grid_size_m
+        worker_config['grid_size_m'] = batch_grid_size
 
         # Pick episode length
         if steps_range is not None:

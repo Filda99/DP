@@ -218,12 +218,16 @@ class DroneFireEnv(ParallelEnv):
         norm_pos = pos / NORM_DIST
         norm_vel = vel / 20.0
 
-        # --- 2. Static fire start position (coarse compass) ---
-        # Even before the scout has visually found the fire it gets a
-        # normalised vector pointing toward the fire's *initial* spawn
-        # position.  This helps early exploration / curriculum learning.
-        rel_fire_start_x = (self.fire_x - pos[0]) / NORM_DIST
-        rel_fire_start_y = (self.fire_y - pos[1]) / NORM_DIST
+        # --- 2. Static fire start position (Unit Vector Compass) ---
+        vec_x = self.fire_x - pos[0]
+        vec_y = self.fire_y - pos[1]
+        dist_to_fire = np.hypot(vec_x, vec_y)
+        
+        if dist_to_fire > 0.1: # Ochrana proti dělení nulou
+            rel_fire_start_x = vec_x / dist_to_fire
+            rel_fire_start_y = vec_y / dist_to_fire
+        else:
+            rel_fire_start_x, rel_fire_start_y = 0.0, 0.0
 
         # --- 3. Normalised distances to each map boundary ---
         dist_measurements = self._get_boundary_measurements_norm(pos)
@@ -620,35 +624,28 @@ class DroneFireEnv(ParallelEnv):
             dt=0.1
         )
 
-        # --- Fire & spawn positions (4-phase curriculum) ---
-        # FOV = max(10, z*1.5). At z=40m → 60m window (±30m).
-        # Phases are short to avoid overtraining on easy setups.
-        # Phase 1 (ep < 500):  Scout near fire, always in FOV.
-        # Phase 2 (500-2000):  Scout within FOV range, sometimes edge.
-        # Phase 3 (2000-5000): Scout further, needs compass.
-        # Phase 4 (5000+):    Full random within map.
-        if epizode_number < 500:
-            self.fire_x = 0.0
-            self.fire_y = 0.0
-            start_x = random.uniform(-20, 20)
-            start_y = random.uniform(-20, 20)
+        # Oheň se vždy rodí na náhodné pozici (v bezpečné zóně, aby nebyl moc u kraje)
+        safe_zone_fire = self.map_bounds * 0.4
+        self.fire_x = random.uniform(-safe_zone_fire, safe_zone_fire)
+        self.fire_y = random.uniform(-safe_zone_fire, safe_zone_fire)
+
+        if epizode_number < 1500:
+            # Fáze 1: Dron se rodí velmi blízko ohně (v okruhu ±20m)
+            start_x = self.fire_x + random.uniform(-20, 20)
+            start_y = self.fire_y + random.uniform(-20, 20)
             start_z = random.uniform(30.0, 60.0)
-        elif epizode_number < 2000:
-            self.fire_x = 0.0
-            self.fire_y = 0.0
-            start_x = random.uniform(-50, 50)
-            start_y = random.uniform(-50, 50)
+        elif epizode_number < 3000:
+            # Fáze 2: Dron se rodí středně daleko (v okruhu ±50m)
+            start_x = self.fire_x + random.uniform(-50, 50)
+            start_y = self.fire_y + random.uniform(-50, 50)
             start_z = random.uniform(30.0, 80.0)
         elif epizode_number < 5000:
-            self.fire_x = 0.0
-            self.fire_y = 0.0
-            start_x = random.uniform(-100, 100)
-            start_y = random.uniform(-100, 100)
+            # Fáze 3: Dron se rodí daleko (v okruhu ±100m)
+            start_x = self.fire_x + random.uniform(-100, 100)
+            start_y = self.fire_y + random.uniform(-100, 100)
             start_z = random.uniform(30.0, 100.0)
         else:
-            safe_zone = self.map_bounds * 0.3
-            self.fire_x = random.uniform(-safe_zone, safe_zone)
-            self.fire_y = random.uniform(-safe_zone, safe_zone)
+            # Fáze 4: Plná generalizace. Dron se může narodit úplně kdekoli na mapě.
             start_x = random.uniform(-self.map_bounds * 0.5, self.map_bounds * 0.5)
             start_y = random.uniform(-self.map_bounds * 0.5, self.map_bounds * 0.5)
             start_z = random.uniform(30.0, 100.0)
@@ -1015,33 +1012,55 @@ class DroneFireEnv(ParallelEnv):
         return reward
 
     def _get_quad_reward(self, agent):
-        """Mission reward pro scouta — hover nad ohněm.
-
-        Silný reward za detekci ohně v local_map.
-        Žádný distance shaping — curriculum zajistí, že scout oheň vidí
-        ve svém FOV od začátku a postupně se učí navigovat.
         """
+        Compute the mission reward for a quadrotor scout.
+        Kombinuje 'Dense' odměnu (kompas) pro navigaci k ohni 
+        a 'Sparse' odměnu (kamera) pro hover přímo nad ním.
+        """
+        # Předpokládám import: from reward_config import QUAD
         drone = self.sim.drones[agent]
         pos = drone.get_position()
+        vel = drone.get_velocity()
         reward = 0.0
 
+        # 1. Získání informací o ohni z lokální mapy (kamera)
         reward_zone = self._extract_local_fire_map(pos)
         avg_fire_intensity = np.mean(reward_zone)
 
-        if avg_fire_intensity > 0.001:
-            # 1. Intensity reward — silnější -> musí být blíž a níž
-            reward += avg_fire_intensity * QUAD["fire_intensity_k"]
+        # 2. Distance Shaping (Dense odměna / kompas)
+        # Vektor od dronu k počáteční pozici ohně
+        vec_to_fire = np.array([self.fire_x - pos[0], self.fire_y - pos[1]])
+        dist_to_fire = np.linalg.norm(vec_to_fire)
 
-            # 2. Centering bonus — oheň uprostřed local_map = přímo pod dronem
-            #    dyn_x, dyn_y in [-1, 1]: 0,0 = centered, ±1 = edge
-            dyn_x, dyn_y, _ = self._calculate_fire_info(reward_zone)
-            center_dist = np.sqrt(dyn_x**2 + dyn_y**2)  # 0=center, ~1.4=corner
-            centering = max(0.0, 1.0 - center_dist)      # 1.0 centered, 0 at edge
-            reward += centering * QUAD["fire_flat_bonus"]
+        # Pokud dron oheň ještě nevidí, vedeme ho za ručičku kompasem
+        if avg_fire_intensity < 0.001:
+            if dist_to_fire > 5.0: # Prevence dělení nulou, když je dron už skoro tam
+                dir_to_fire = vec_to_fire / dist_to_fire
+                # Rychlost přibližování (kladná = letí k ohni, záporná = letí pryč)
+                approach_speed = np.dot(vel[:2], dir_to_fire)
+                
+                # Odměna za aktivní let směrem k ohni.
+                # (Např. při rychlosti 15 m/s přímo k ohni dostane +0.3 za krok)
+                reward += approach_speed * 0.02
+                
+            # Velmi jemná penalizace za to, že je daleko (nutí ho to neflákat se)
+            reward -= (dist_to_fire / self.grid_size_m) * 0.01
 
-            # 3. Speed penalty — hover nad ohněm
-            speed = np.linalg.norm(drone.get_velocity())
+        # 3. Mise splněna: Hover nad ohněm (Sparse odměna)
+        else:
+            # Dron oheň vidí -> dostane hlavní odměny z reward_config.py
+            reward += QUAD["fire_flat_bonus"]
+            reward += (avg_fire_intensity * QUAD["fire_intensity_k"])
+            
+            # Penalizace za rychlost ZDE konečně dává smysl!
+            # Chceme, aby dron zastavil a visel, až když je nad ohněm, 
+            # nikoliv aby se bál letět rychle, když ho teprve hledá.
+            speed = np.linalg.norm(vel)
             reward -= speed * QUAD["fire_speed_pen"]
+
+        # 4. Výšková penalizace z configu
+        if pos[2] < QUAD["alt_ideal_min"] or pos[2] > QUAD["alt_ideal_max"]:
+            reward -= QUAD["alt_penalty"]
 
         return reward
 
