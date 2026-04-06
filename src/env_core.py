@@ -945,7 +945,9 @@ class DroneFireEnv(ParallelEnv):
         # Tohle dává agentům motivaci jednat rychle — čím déle čekají, tím víc
         # oheň roste a tím víc bodů ztrácejí. Sdílená penalizace zarovnává
         # incentivy scoutů a commandera směrem k jedinému cíli.
-        if self.sim.environment.fire_grid is not None:
+        # SKIP when no fixed-wing agents exist — scouts can't extinguish fire,
+        # so penalising them for spread is pure noise that drowns the fire-finding signal.
+        if self.num_fixed > 0 and self.sim.environment.fire_grid is not None:
             current_burning = int(np.sum(self.sim.environment.fire_grid.B))
             delta_burned = max(0, current_burning - self._prev_burning_count)
             if delta_burned > 0:
