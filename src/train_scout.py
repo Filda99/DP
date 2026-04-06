@@ -252,7 +252,7 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
     map_size_range = (1000.0, 2000.0)
     num_episodes = 30_000
     max_steps = 500                   # Same as old version that converged
-    steps_range = (300, 600)                # fixed length, no randomization
+    steps_range = (1500, 3000)                # fixed length, no randomization
 
     gamma = 0.99
     gae_lambda = 0.95
@@ -335,7 +335,7 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
     print(f"Checkpoints → {save_dir}\n")
 
     best_avg = -1e9
-    episodes_played = 0
+    episodes_played = 4000
     num_batches = num_episodes // episodes_per_batch
 
     for batch_idx in range(1, num_batches + 1):
