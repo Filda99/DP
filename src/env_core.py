@@ -694,6 +694,11 @@ class DroneFireEnv(ParallelEnv):
         self.fire_discovered = False
         self.current_step = 0
 
+        # Dwell counter: tracks consecutive steps each quad spends over fire
+        self._dwell_counter = {}
+        # Jerk penalty: tracks previous actions for smoothness reward
+        self._last_actions_rw = {}
+
         # Potential-based shaping: track previous distance to fire per scout
         self._prev_fire_dists = {}
         for q in self.quad_agents:
@@ -1019,15 +1024,24 @@ class DroneFireEnv(ParallelEnv):
             elif pos[2] < QUAD["alt_ideal_min"]:
                 reward -= QUAD["alt_penalty"]
 
+            # Altitude sweet-spot bonus: odměna za let v optimálním pásmu (30-80m)
+            # Při z=50m je FOV 75×75m — dost malý na slušnou intensity, dost velký
+            # na nalezení ohně. Tlačí drona do výšky kde kamera vidí oheň detailně.
+            if QUAD["alt_sweet_min"] <= pos[2] <= QUAD["alt_sweet_max"]:
+                reward += QUAD["alt_sweet_bonus"]
+
         return reward
 
     def _get_quad_reward(self, agent):
         """
         Compute the mission reward for a quadrotor scout.
-        Kombinuje 'Dense' odměnu (kompas) pro navigaci k ohni 
+        Kombinuje 'Dense' odměnu (kompas) pro navigaci k ohni
         a 'Sparse' odměnu (kamera) pro hover přímo nad ním.
+
+        Dwell bonus: kumulativní odměna narůstající s časem stráveným
+        nad ohněm (max 30 kroků). Rozhoduje, že setrvání se vyplatí
+        víc než přelétávání.
         """
-        # Předpokládám import: from reward_config import QUAD
         drone = self.sim.drones[agent]
         pos = drone.get_position()
         vel = drone.get_velocity()
@@ -1041,55 +1055,51 @@ class DroneFireEnv(ParallelEnv):
         dyn_x, dyn_y, _ = self._calculate_fire_info(local_map)
 
         # 2. Distance Shaping (Dense odměna / kompas)
-        # Vektor od dronu k počáteční pozici ohně
         vec_to_fire = np.array([self.fire_x - pos[0], self.fire_y - pos[1]])
         dist_to_fire = np.linalg.norm(vec_to_fire)
 
-        # Pokud dron oheň ještě nevidí, vedeme ho za ručičku kompasem
+        # ── FÁZE 1: Hledání (nevidí oheň) ──────────────────────────
         if avg_fire_intensity < 0.001:
-            if dist_to_fire > 5.0: # Prevence dělení nulou, když je dron už skoro tam
+            # Reset dwell counteru — dron oheň opustil
+            self._dwell_counter[agent] = 0
+
+            if dist_to_fire > 5.0:
                 dir_to_fire = vec_to_fire / dist_to_fire
-                # Rychlost přibližování (kladná = letí k ohni, záporná = letí pryč)
                 approach_speed = np.dot(vel[:2], dir_to_fire)
-                
-                # Odměna za aktivní let směrem k ohni.
-                # (Např. při rychlosti 15 m/s přímo k ohni dostane +0.3 za krok)
-                reward += approach_speed * 0.04
-                
-            # Velmi jemná penalizace za to, že je daleko (nutí ho to neflákat se)
+                # Oslabený approach reward — hover musí dominovat
+                reward += approach_speed * QUAD["approach_k"]
+
+            # Velmi jemná penalizace za to, že je daleko
             reward -= (dist_to_fire / self.grid_size_m) * 0.01
 
-        # 3. Mise splněna: Hover nad ohněm (Sparse odměna)
+        # ── FÁZE 2: Hover nad ohněm (vidí oheň) ────────────────────
         else:
+            # Flat bonus + intensity bonus
             reward += QUAD["fire_flat_bonus"]
-            reward += (avg_fire_intensity * QUAD["fire_intensity_k"])
-            
-            # --- Centrovací odměna ---
-            # Čím blíž je oheň středu kamery (dyn_x=0, dyn_y=0), tím větší bonus (max +0.5)
+            reward += avg_fire_intensity * QUAD["fire_intensity_k"]
+
+            # Centrovací odměna — čím blíž je oheň středu kamery, tím líp
             center_error = np.linalg.norm([dyn_x, dyn_y])
-            reward += (1.0 - center_error) * 0.5
-            
+            reward += (1.0 - center_error) * QUAD["fire_center_bonus"]
+
+            # Dwell bonus — roste s časem stráveným nad ohněm (max 30 kroků)
+            # Při 30 krocích: 30 × 0.3 = +9.0/krok — masivní odměna za setrvání.
+            # Rozbíjí fly-by strategii: přelétávání se nevyplatí.
+            self._dwell_counter[agent] = min(self._dwell_counter.get(agent, 0) + 1, 30)
+            reward += self._dwell_counter[agent] * QUAD["fire_dwell_k"]
+
             # Penalizace za rychlost (nutí ho to zastavit nad ohněm)
             speed = np.linalg.norm(vel)
             reward -= speed * QUAD["fire_speed_pen"]
 
-       # 4. Jerk penalty (Penalizace za trhavé pohyby)
-        if not hasattr(self, 'last_actions'):
-            self.last_actions = {}
-            
-        if agent not in self.last_actions:
-            self.last_actions[agent] = np.zeros(4) # Bezpečná inicializace pro kvadrokoptéru
-            
+        # 4. Jerk penalty (Penalizace za trhavé pohyby)
         if hasattr(drone, 'last_applied_action') and drone.last_applied_action is not None:
             action = np.array(drone.last_applied_action)
-            prev_action = self.last_actions[agent]
-            
-            # Euklidovská vzdálenost mezi akcemi
+            prev_action = self._last_actions_rw.get(agent, np.zeros(4))
             action_diff = np.linalg.norm(action - prev_action)
-            reward -= action_diff * 0.02 # Uklidní divoké výkyvy páček
-            
-            self.last_actions[agent] = action
-            
+            reward -= action_diff * 0.02
+            self._last_actions_rw[agent] = action
+
         return reward
 
     def _get_fixed_reward_patrol(self, agent):

@@ -23,13 +23,21 @@ QUAD = {
 
     # Výška — fixní rozsah, nezávislý na mapě
     "alt_ideal_min":    10.0,   # pod 10m → penalizace
-    "alt_ideal_max":   200.0,   # nad 200m → penalizace
+    "alt_ideal_max":   120.0,   # sníženo z 200 → nutí drona níž (lepší fire_intensity v local_map)
     "alt_ceiling":     300.0,   # tvrdá smrt
+    "alt_sweet_min":    30.0,   # ideální operační pásmo — spodní hranice
+    "alt_sweet_max":    80.0,   # ideální operační pásmo — horní hranice
+    "alt_sweet_bonus":   0.01,  # per-krok bonus za let ve sweet-spotu
 
-    # Mise — hover nad ohněm (SILNÉ, musí dominovat nad survival)
-    "fire_flat_bonus":   0.5, 
-    "fire_intensity_k":  5.0,   # násobitel intenzity (max +5.0 při intensity=1.0)
-    "fire_speed_pen":    0.05,  # penalizace za rychlost nad ohněm
+    # Mise — hover nad ohněm (musí dominovat nad approach, ale rozumné magnitude)
+    "fire_flat_bonus":   0.2,   # base hover reward (vše /10 oproti předchozí verzi)
+    "fire_intensity_k":  0.8,   # násobitel intenzity — nízký let → víc intensity → víc reward
+    "fire_speed_pen":    0.015, # brzda nad ohněm
+    "fire_center_bonus": 0.1,   # bonus za centrování ohně v kameře
+    "fire_dwell_k":      0.03,  # kumulativní bonus za setrvání (max 30 kroků → +0.9/step)
+
+    # Approach — slabší než hover
+    "approach_k":        0.001, # kompas reward (15 m/s → +0.015/step)
 
     # Alt penalty
     "alt_penalty":       0.05,  # flat penalizace za létání mimo rozsah
