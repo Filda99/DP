@@ -624,36 +624,40 @@ class DroneFireEnv(ParallelEnv):
             dt=0.1
         )
 
-        # Oheň se vždy rodí na náhodné pozici (v bezpečné zóně, aby nebyl moc u kraje)
+        # Oheň na náhodné pozici v bezpečné zóně
         safe_zone_fire = self.map_bounds * 0.4
         self.fire_x = random.uniform(-safe_zone_fire, safe_zone_fire)
         self.fire_y = random.uniform(-safe_zone_fire, safe_zone_fire)
 
-        if epizode_number < 1500:
-            # Fáze 1: Dron se rodí velmi blízko ohně (v okruhu ±20m)
-            start_x = self.fire_x + random.uniform(-20, 20)
-            start_y = self.fire_y + random.uniform(-20, 20)
-            start_z = random.uniform(30.0, 60.0)
-        elif epizode_number < 3000:
-            # Fáze 2: Dron se rodí středně daleko (v okruhu ±50m)
-            start_x = self.fire_x + random.uniform(-50, 50)
-            start_y = self.fire_y + random.uniform(-50, 50)
-            start_z = random.uniform(30.0, 80.0)
-        elif epizode_number < 5000:
-            # Fáze 3: Dron se rodí daleko (v okruhu ±100m)
-            start_x = self.fire_x + random.uniform(-100, 100)
-            start_y = self.fire_y + random.uniform(-100, 100)
-            start_z = random.uniform(30.0, 100.0)
+        # =========================================================
+        # PROBABILISTIC CURRICULUM (Smíšená obtížnost bez útesů)
+        # =========================================================
+        rand_diff = random.random()
+        
+        if rand_diff < 0.20:
+            # 20 % šance: SNADNÁ MISE (Zrodí se ±20m od ohně)
+            # Udržuje "svalovou paměť" pro visení, centruje oheň a drží výšku.
+            # Kritik díky tomuto vždy vidí nějaké vysoké odměny a neexploduje.
+            spawn_radius = 20.0
+            
+        elif rand_diff < 0.50:
+            # 30 % šance: STŘEDNÍ MISE (Zrodí se ±150m od ohně)
+            # Učí drona hledat oheň v okolí a hrubě používat kompas.
+            spawn_radius = 150.0
+            
         else:
-            # Fáze 4: Plná generalizace. Dron se může narodit úplně kdekoli na mapě.
-            start_x = random.uniform(-self.map_bounds * 0.5, self.map_bounds * 0.5)
-            start_y = random.uniform(-self.map_bounds * 0.5, self.map_bounds * 0.5)
-            start_z = random.uniform(30.0, 100.0)
+            # 50 % šance: TĚŽKÁ MISE (Zrodí se kdekoli na mapě)
+            # Učí drona vytrvalosti, letu přes půl mapy a maximální důvěře v kompas.
+            spawn_radius = self.map_bounds * 0.8
 
+        # Oheň na náhodné pozici v bezpečné zóně
+        safe_zone_fire = self.map_bounds * 0.4
+        self.fire_x = random.uniform(-safe_zone_fire, safe_zone_fire)
+        self.fire_y = random.uniform(-safe_zone_fire, safe_zone_fire)
         self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
         self.current_episode = epizode_number
 
-        # --- Refill zone: na opačné straně od ohně ---
+        # Refill zona na náhodné pozici, ale s jistou korelací k ohni (aby nebyla úplně mimo mapu)
         refill_x = float(np.clip(-self.fire_x + random.uniform(-50, 50), -self.map_bounds * 0.8, self.map_bounds * 0.8))
         refill_y = float(np.clip(-self.fire_y + random.uniform(-50, 50), -self.map_bounds * 0.8, self.map_bounds * 0.8))
         self.sim.environment.create_refill_zone(center_pos=[refill_x, refill_y, 0.0])
@@ -661,24 +665,29 @@ class DroneFireEnv(ParallelEnv):
         # --- 4. Spawn every agent at its starting position ---
         for agent in self.agents:
             if "fixed" in agent:
-            
-                # Normální spawn: uvnitř 60% mapy (±30% map_bounds), náhodný heading
-                spawn_radius = random.uniform(0.0, self.map_bounds * 0.30)
+                # Normální spawn pro fixed-wing
+                fw_spawn_radius = random.uniform(0.0, self.map_bounds * 0.30)
                 spawn_angle  = random.uniform(0, 2 * np.pi)
-                fw_start_x   = float(spawn_radius * np.cos(spawn_angle))
-                fw_start_y   = float(spawn_radius * np.sin(spawn_angle))
+                fw_start_x   = float(fw_spawn_radius * np.cos(spawn_angle))
+                fw_start_y   = float(fw_spawn_radius * np.sin(spawn_angle))
                 fw_yaw       = random.uniform(-np.pi, np.pi)
 
                 self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 100.0], water_capacity=200.0, yaw=fw_yaw)
 
-                # Set a meaningful initial airspeed
                 drone = self.sim.drones[agent]
                 drone.state_va = 15.0
 
             else:
-                # Quads spawn at a lower altitude — they hover in place so
-                # altitude at start doesn't matter much.
-                self.sim.add_quadcopter(agent, position=[start_x, start_y, start_z])
+                # Quads: Tady vygenerujeme unikátní pozici pro KAŽDÉHO scouta zvlášť!
+                quad_start_x = self.fire_x + random.uniform(-spawn_radius, spawn_radius)
+                quad_start_y = self.fire_y + random.uniform(-spawn_radius, spawn_radius)
+                
+                # Pojistka proti spawnu za mapou
+                quad_start_x = float(np.clip(quad_start_x, -self.map_bounds * 0.9, self.map_bounds * 0.9))
+                quad_start_y = float(np.clip(quad_start_y, -self.map_bounds * 0.9, self.map_bounds * 0.9))
+                quad_start_z = random.uniform(30.0, 60.0)
+                
+                self.sim.add_quadcopter(agent, position=[quad_start_x, quad_start_y, quad_start_z])
 
         # --- 5. Initialise per-episode tracking variables ---
         self.visited_cells = set()   # tracks which grid cells have been overflown
@@ -1004,9 +1013,10 @@ class DroneFireEnv(ParallelEnv):
             if pos[2] > alt_max or pos[2] < alt_min:
                 reward -= 0.05
         else:
-            alt_min = QUAD["alt_ideal_min"]
-            alt_max = QUAD["alt_ideal_max"]
-            if pos[2] > alt_max or pos[2] < alt_min:
+            if pos[2] > QUAD["alt_ideal_max"]:
+                excess_alt = pos[2] - QUAD["alt_ideal_max"]
+                reward -= (excess_alt * 0.05) # Např. 20m nad limit = penalizace 1.0 (vyruší bonus)
+            elif pos[2] < QUAD["alt_ideal_min"]:
                 reward -= QUAD["alt_penalty"]
 
         return reward
@@ -1024,8 +1034,11 @@ class DroneFireEnv(ParallelEnv):
         reward = 0.0
 
         # 1. Získání informací o ohni z lokální mapy (kamera)
-        reward_zone = self._extract_local_fire_map(pos)
-        avg_fire_intensity = np.mean(reward_zone)
+        local_map = self._extract_local_fire_map(pos)
+        avg_fire_intensity = np.mean(local_map)
+
+        # Získáme přesné těžiště ohně pro centrovací odměnu (v rozsahu [-1, 1])
+        dyn_x, dyn_y, _ = self._calculate_fire_info(local_map)
 
         # 2. Distance Shaping (Dense odměna / kompas)
         # Vektor od dronu k počáteční pozici ohně
@@ -1041,27 +1054,42 @@ class DroneFireEnv(ParallelEnv):
                 
                 # Odměna za aktivní let směrem k ohni.
                 # (Např. při rychlosti 15 m/s přímo k ohni dostane +0.3 za krok)
-                reward += approach_speed * 0.02
+                reward += approach_speed * 0.04
                 
             # Velmi jemná penalizace za to, že je daleko (nutí ho to neflákat se)
             reward -= (dist_to_fire / self.grid_size_m) * 0.01
 
         # 3. Mise splněna: Hover nad ohněm (Sparse odměna)
         else:
-            # Dron oheň vidí -> dostane hlavní odměny z reward_config.py
             reward += QUAD["fire_flat_bonus"]
             reward += (avg_fire_intensity * QUAD["fire_intensity_k"])
             
-            # Penalizace za rychlost ZDE konečně dává smysl!
-            # Chceme, aby dron zastavil a visel, až když je nad ohněm, 
-            # nikoliv aby se bál letět rychle, když ho teprve hledá.
+            # --- Centrovací odměna ---
+            # Čím blíž je oheň středu kamery (dyn_x=0, dyn_y=0), tím větší bonus (max +0.5)
+            center_error = np.linalg.norm([dyn_x, dyn_y])
+            reward += (1.0 - center_error) * 0.5
+            
+            # Penalizace za rychlost (nutí ho to zastavit nad ohněm)
             speed = np.linalg.norm(vel)
             reward -= speed * QUAD["fire_speed_pen"]
 
-        # 4. Výšková penalizace z configu
-        if pos[2] < QUAD["alt_ideal_min"] or pos[2] > QUAD["alt_ideal_max"]:
-            reward -= QUAD["alt_penalty"]
-
+       # 4. Jerk penalty (Penalizace za trhavé pohyby)
+        if not hasattr(self, 'last_actions'):
+            self.last_actions = {}
+            
+        if agent not in self.last_actions:
+            self.last_actions[agent] = np.zeros(4) # Bezpečná inicializace pro kvadrokoptéru
+            
+        if hasattr(drone, 'last_applied_action') and drone.last_applied_action is not None:
+            action = np.array(drone.last_applied_action)
+            prev_action = self.last_actions[agent]
+            
+            # Euklidovská vzdálenost mezi akcemi
+            action_diff = np.linalg.norm(action - prev_action)
+            reward -= action_diff * 0.02 # Uklidní divoké výkyvy páček
+            
+            self.last_actions[agent] = action
+            
         return reward
 
     def _get_fixed_reward_patrol(self, agent):

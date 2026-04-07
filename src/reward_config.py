@@ -27,7 +27,7 @@ QUAD = {
     "alt_ceiling":     300.0,   # tvrdá smrt
 
     # Mise — hover nad ohněm (SILNÉ, musí dominovat nad survival)
-    "fire_flat_bonus":   1.0,   # flat bonus za detekci ohně (50× survival)
+    "fire_flat_bonus":   0.5, 
     "fire_intensity_k":  5.0,   # násobitel intenzity (max +5.0 při intensity=1.0)
     "fire_speed_pen":    0.05,  # penalizace za rychlost nad ohněm
 

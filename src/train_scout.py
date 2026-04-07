@@ -251,8 +251,8 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
     grid_size_m = 1000.0
     map_size_range = (1000.0, 2000.0)
     num_episodes = 30_000
-    max_steps = 500                   # Same as old version that converged
-    steps_range = (1500, 3000)                # fixed length, no randomization
+    max_steps = 500
+    steps_range = (1000, 2000)
 
     gamma = 0.99
     gae_lambda = 0.95
@@ -266,7 +266,7 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
     lr_critic = 3e-4
     hidden_dim = 128
     scout_msg_dim = 5
-    entropy_coef = 0.01
+    entropy_coef = 0.1
 
     # ── Dims ─────────────────────────────────────────────────────────────
     temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=0,
@@ -335,7 +335,7 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
     print(f"Checkpoints → {save_dir}\n")
 
     best_avg = -1e9
-    episodes_played = 4000
+    episodes_played = 5000
     num_batches = num_episodes // episodes_per_batch
 
     for batch_idx in range(1, num_batches + 1):
