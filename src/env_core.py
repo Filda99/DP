@@ -634,14 +634,14 @@ class DroneFireEnv(ParallelEnv):
         # =========================================================
         rand_diff = random.random()
         
-        if rand_diff < 0.20:
-            # 20 % šance: SNADNÁ MISE (Zrodí se ±20m od ohně)
+        if rand_diff < 0.30:
+            # 30 % šance: SNADNÁ MISE (Zrodí se ±20m od ohně)
             # Udržuje "svalovou paměť" pro visení, centruje oheň a drží výšku.
             # Kritik díky tomuto vždy vidí nějaké vysoké odměny a neexploduje.
             spawn_radius = 20.0
             
         elif rand_diff < 0.50:
-            # 30 % šance: STŘEDNÍ MISE (Zrodí se ±150m od ohně)
+            # 20 % šance: STŘEDNÍ MISE (Zrodí se ±150m od ohně)
             # Učí drona hledat oheň v okolí a hrubě používat kompas.
             spawn_radius = 150.0
             
@@ -1017,18 +1017,18 @@ class DroneFireEnv(ParallelEnv):
             alt_max = FIXED["alt_ideal_max"]
             if pos[2] > alt_max or pos[2] < alt_min:
                 reward -= 0.05
-        else:
-            if pos[2] > QUAD["alt_ideal_max"]:
-                excess_alt = pos[2] - QUAD["alt_ideal_max"]
-                reward -= (excess_alt * 0.05) # Např. 20m nad limit = penalizace 1.0 (vyruší bonus)
-            elif pos[2] < QUAD["alt_ideal_min"]:
-                reward -= QUAD["alt_penalty"]
+        # else:
+        #     if pos[2] > QUAD["alt_ideal_max"]:
+        #         excess_alt = pos[2] - QUAD["alt_ideal_max"]
+        #         reward -= (excess_alt * 0.05) # Např. 20m nad limit = penalizace 1.0 (vyruší bonus)
+        #     elif pos[2] < QUAD["alt_ideal_min"]:
+        #         reward -= QUAD["alt_penalty"]
 
-            # Altitude sweet-spot bonus: odměna za let v optimálním pásmu (30-80m)
-            # Při z=50m je FOV 75×75m — dost malý na slušnou intensity, dost velký
-            # na nalezení ohně. Tlačí drona do výšky kde kamera vidí oheň detailně.
-            if QUAD["alt_sweet_min"] <= pos[2] <= QUAD["alt_sweet_max"]:
-                reward += QUAD["alt_sweet_bonus"]
+        #     # Altitude sweet-spot bonus: odměna za let v optimálním pásmu (30-80m)
+        #     # Při z=50m je FOV 75×75m — dost malý na slušnou intensity, dost velký
+        #     # na nalezení ohně. Tlačí drona do výšky kde kamera vidí oheň detailně.
+        #     if QUAD["alt_sweet_min"] <= pos[2] <= QUAD["alt_sweet_max"]:
+        #         reward += QUAD["alt_sweet_bonus"]
 
         return reward
 
@@ -1060,6 +1060,10 @@ class DroneFireEnv(ParallelEnv):
 
         # ── FÁZE 1: Hledání (nevidí oheň) ──────────────────────────
         if avg_fire_intensity < 0.001:
+            # Penalizace za opuštění ohně — fly-through strategie se nevyplácí
+            prev_dwell = self._dwell_counter.get(agent, 0)
+            if prev_dwell > 3:
+                reward -= 0.5  # jednorázový trest za ztrátu ohně
             # Reset dwell counteru — dron oheň opustil
             self._dwell_counter[agent] = 0
 
@@ -1074,21 +1078,20 @@ class DroneFireEnv(ParallelEnv):
 
         # ── FÁZE 2: Hover nad ohněm (vidí oheň) ────────────────────
         else:
-            # Flat bonus + intensity bonus
+            # 1. Záchranný kruh: Okamžitý bonus za to, že oheň vůbec má v kameře
             reward += QUAD["fire_flat_bonus"]
+            
+            # 2. Tvůj nápad: Čím víc ohně v kameře (nižší výška + přímo nad ním), tím masivnější odměna
             reward += avg_fire_intensity * QUAD["fire_intensity_k"]
 
-            # Centrovací odměna — čím blíž je oheň středu kamery, tím líp
+            # 3. Odměna za centrování
             center_error = np.linalg.norm([dyn_x, dyn_y])
             reward += (1.0 - center_error) * QUAD["fire_center_bonus"]
 
-            # Dwell bonus — roste s časem stráveným nad ohněm (max 30 kroků)
-            # Při 30 krocích: 30 × 0.3 = +9.0/krok — masivní odměna za setrvání.
-            # Rozbíjí fly-by strategii: přelétávání se nevyplatí.
+            # Dwell bonus a speed penalty nech jak máš...
             self._dwell_counter[agent] = min(self._dwell_counter.get(agent, 0) + 1, 30)
             reward += self._dwell_counter[agent] * QUAD["fire_dwell_k"]
 
-            # Penalizace za rychlost (nutí ho to zastavit nad ohněm)
             speed = np.linalg.norm(vel)
             reward -= speed * QUAD["fire_speed_pen"]
 
@@ -1097,7 +1100,7 @@ class DroneFireEnv(ParallelEnv):
             action = np.array(drone.last_applied_action)
             prev_action = self._last_actions_rw.get(agent, np.zeros(4))
             action_diff = np.linalg.norm(action - prev_action)
-            reward -= action_diff * 0.02
+            reward -= action_diff * 0.01
             self._last_actions_rw[agent] = action
 
         return reward
