@@ -30,12 +30,12 @@ QUAD = {
     "alt_sweet_bonus":   0.02,  # per-krok bonus za let ve sweet-spotu
 
     # Mise — starý jednoduchý design (hodnoty odpovídají originálu po *0.1)
-    "fire_flat_bonus":   0,   # starý: 1.0 * 0.1
+    "fire_flat_bonus":   0.5,   # starý: 1.0 * 0.1
     "fire_intensity_k":  10.0,   # starý: 10.0 * 0.1
     "fire_speed_pen":    0.005, # starý: 0.05 * 0.1
 
     # Approach — kompas k ohni (nové, starý design to neměl)
-    "approach_k":        0.005,
+    "approach_k":        0.02,
 
     # Alt penalty
     "alt_penalty":       0.05,  # flat penalizace za létání mimo rozsah
