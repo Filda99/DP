@@ -8,8 +8,8 @@
 # Všechny hodnoty jsou FIXNÍ — nezávislé na velikosti mapy.
 # NORM_DIST = 1000 v env_core.py normalizuje pozice a vzdálenosti v observacích.
 SHARED = {
-    "survival_bonus":       0.02,  # malý per-krok bonus (fire reward musí dominovat)
-    "boundary_penalty":     0.5,   # max penalizace při nárazu do hranice (quadratic)
+    "survival_bonus":       0.01,  # starý design: 0.01 (před *0.1 = 0.001)
+    "boundary_penalty":     0.3,   # starý design: 0.3 (před *0.1 = 0.03)
     "boundary_extra":       0.3,   # extra penalizace pro fixed-wing blízko hranice
     "crash_penalty":        -50,   # same as old — significant but not overwhelming
     "reward_clip_min":      -10.0,
@@ -22,22 +22,20 @@ QUAD = {
     "boundary_threshold_m":  150.0,
 
     # Výška — fixní rozsah, nezávislý na mapě
-    "alt_ideal_min":    10.0,   # pod 10m → penalizace
-    "alt_ideal_max":   100.0,   # sníženo z 200 → nutí drona níž (lepší fire_intensity v local_map)
+    "alt_ideal_min":    30.0,   # pod 10m → penalizace
+    "alt_ideal_max":   150.0,   # starý design: 150m
     "alt_ceiling":     300.0,   # tvrdá smrt
-    "alt_sweet_min":    30.0,   # ideální operační pásmo — spodní hranice
-    "alt_sweet_max":    80.0,   # ideální operační pásmo — horní hranice
-    "alt_sweet_bonus":   0.01,  # per-krok bonus za let ve sweet-spotu
+    "alt_sweet_min":    50.0,   # ideální operační pásmo — spodní hranice
+    "alt_sweet_max":    100.0,   # ideální operační pásmo — horní hranice
+    "alt_sweet_bonus":   0.02,  # per-krok bonus za let ve sweet-spotu
 
-    # Mise — hover nad ohněm (musí dominovat nad approach, ale rozumné magnitude)
-    "fire_flat_bonus":   0.5,
-    "fire_intensity_k":  1.2, 
-    "fire_speed_pen":    0.05, 
-    "fire_center_bonus": 0.2,   
-    "fire_dwell_k":      0.03,
+    # Mise — starý jednoduchý design (hodnoty odpovídají originálu po *0.1)
+    "fire_flat_bonus":   0.1,   # starý: 1.0 * 0.1
+    "fire_intensity_k":  5.0,   # starý: 10.0 * 0.1
+    "fire_speed_pen":    0.005, # starý: 0.05 * 0.1
 
-    # Approach — slabší než hover
-    "approach_k":        0.005, # kompas reward (15 m/s → +0.015/step)
+    # Approach — kompas k ohni (nové, starý design to neměl)
+    "approach_k":        0.005,
 
     # Alt penalty
     "alt_penalty":       0.05,  # flat penalizace za létání mimo rozsah

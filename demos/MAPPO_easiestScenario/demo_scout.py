@@ -23,7 +23,7 @@ def run_demo():
     MAX_STEPS = 1000
     
     # Který model chceme načíst? (Změň číslo podle toho, který měl u tebe nejlepší Reward)
-    MODEL_PATH = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_solo/scout_best.pt"
+    MODEL_PATH = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_solo/scout_b0590.pt"
     
     # 2. Inicializace prostředí
     env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=1000.0, max_steps=MAX_STEPS)
@@ -49,7 +49,7 @@ def run_demo():
 
     # 4. Spuštění Epizody
     # Zvolíme seed, aby oheň byl na nějakém pěkném místě pro ukázku
-    obs, _ = env.reset(seed=42, epizode_number=2000) 
+    obs, _ = env.reset(seed=102, epizode_number=2000) 
     hidden_state = torch.zeros(1, 1, scout_hidden_dim)
     
     frames = []
