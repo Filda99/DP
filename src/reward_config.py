@@ -23,15 +23,15 @@ QUAD = {
 
     # Výška — fixní rozsah, nezávislý na mapě
     "alt_ideal_min":    30.0,   # pod 10m → penalizace
-    "alt_ideal_max":   150.0,   # starý design: 150m
+    "alt_ideal_max":   80.0,   # starý design: 150m
     "alt_ceiling":     300.0,   # tvrdá smrt
     "alt_sweet_min":    50.0,   # ideální operační pásmo — spodní hranice
     "alt_sweet_max":    100.0,   # ideální operační pásmo — horní hranice
     "alt_sweet_bonus":   0.02,  # per-krok bonus za let ve sweet-spotu
 
     # Mise — starý jednoduchý design (hodnoty odpovídají originálu po *0.1)
-    "fire_flat_bonus":   0.1,   # starý: 1.0 * 0.1
-    "fire_intensity_k":  5.0,   # starý: 10.0 * 0.1
+    "fire_flat_bonus":   0,   # starý: 1.0 * 0.1
+    "fire_intensity_k":  10.0,   # starý: 10.0 * 0.1
     "fire_speed_pen":    0.005, # starý: 0.05 * 0.1
 
     # Approach — kompas k ohni (nové, starý design to neměl)
