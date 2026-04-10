@@ -32,8 +32,8 @@ from src.models import ScoutActor, CommanderActor
 # ============================================================
 # KONFIGURACE
 # ============================================================
-MODEL_SCOUT     = os.path.join(project_root, "saved_models", "multi", "scout_b0050.pt")
-MODEL_COMMANDER = os.path.join(project_root, "saved_models", "multi", "cmdr_b0050.pt")
+MODEL_SCOUT     = os.path.join(project_root, "saved_models", "multi", "scout_b0090.pt")
+MODEL_COMMANDER = os.path.join(project_root, "saved_models", "multi", "cmdr_b0090.pt")
 
 N_QUADS    = 1
 N_FIXED    = 1
@@ -41,7 +41,7 @@ MAX_STEPS  = 2000
 GRID_SIZE  = 1000.0
 GIF_EVERY  = 3
 GIF_FPS    = 15
-EPISODE_SEED = 108
+EPISODE_SEED = 109
 
 # Commander waypoint parameters (must match training)
 WAYPOINT_RANGE  = 200.0   # metres per unit of dx/dy

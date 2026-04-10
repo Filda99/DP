@@ -666,7 +666,12 @@ class DroneFireEnv(ParallelEnv):
         safe_zone_fire = self.map_bounds * 0.4
         self.fire_x = random.uniform(-safe_zone_fire, safe_zone_fire)
         self.fire_y = random.uniform(-safe_zone_fire, safe_zone_fire)
-        self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
+        # self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
+        num_ignitions = random.randint(3, 6)
+        for _ in range(num_ignitions):
+            offset_x = random.uniform(-40, 40)
+            offset_y = random.uniform(-40, 40)
+            self.sim.start_fire([self.fire_x + offset_x, self.fire_y + offset_y], intensity=0.5)
         self.current_episode = epizode_number
 
         # Refill zona na náhodné pozici, ale s jistou korelací k ohni (aby nebyla úplně mimo mapu)
@@ -985,7 +990,7 @@ class DroneFireEnv(ParallelEnv):
                     rewards[f_agent] += 2.0  # dense: +2/krok za správné hašení
                 else:
                     # Penalty for wasting water far from fire
-                    rewards[f_agent] -= 1.0
+                    rewards[f_agent] -= 3.0
 
         # --- 7. Fire spread penalty — penalizace za šíření ohně (urgence) ---
         # Každý krok kde se oheň rozšíří o nové buňky, oba agenti dostanou trest.
@@ -1094,31 +1099,40 @@ class DroneFireEnv(ParallelEnv):
         return reward
     
     def _get_fixed_reward_nav(self, agent):
-        """Phase 1: navigační reward — leť k ohni."""
         drone = self.sim.drones[agent]
         pos = drone.get_position()
+        water_lvl = drone.current_water / drone.water_capacity if drone.water_capacity > 0 else 0.0
 
-        # Potential-based: odměna za zmenšení vzdálenosti k ohni
+        # Potential-based
         dist_to_fire = np.hypot(pos[0] - self.fire_x, pos[1] - self.fire_y)
         prev_dist = self._prev_fire_dists.get(agent, dist_to_fire)
-        delta = prev_dist - dist_to_fire  # kladné = přibližuje se
+        delta = prev_dist - dist_to_fire
         self._prev_fire_dists[agent] = dist_to_fire
 
-        reward = delta * 0.01  # ~0.2/step při 20 m/s přímém letu
+        reward = delta * 0.01
 
-        # Zónové bonusy (per step)
-        if dist_to_fire < 300:
-            reward += 0.3
-        if dist_to_fire < 150:
-            reward += 0.5
-            
-        # Phase 2: added altitude
-        if dist_to_fire < 300:
-            alt = pos[2]
-            if 60 < alt < 120:
-                reward += 0.1
-            elif alt > 200 or alt < 30:
-                reward -= 0.1
+        if water_lvl > 0.05:
+            # MÁ VODU → zónové bonusy za blízkost k ohni
+            if dist_to_fire < 300:
+                reward += 0.3
+            if dist_to_fire < 150:
+                reward += 0.5
+            # Altitude sweet spot
+            if dist_to_fire < 300:
+                alt = pos[2]
+                if 60 < alt < 120:
+                    reward += 0.1
+                elif alt > 200 or alt < 30:
+                    reward -= 0.1
+        else:
+            # PRÁZDNÝ TANK → gradient k refill zóně
+            if self.sim.environment.refill_zone is not None:
+                rz = self.sim.environment.refill_zone['position']
+                dist_to_refill = np.hypot(pos[0] - rz[0], pos[1] - rz[1])
+                # Normalizovaný gradient: max +0.3/step when heading to refill
+                reward += max(0.0, 0.3 * (1.0 - dist_to_refill / 500.0))
+                if dist_to_refill < 100:
+                    reward += 0.5  # blízko refill zóny = velký bonus
 
         return reward
 
