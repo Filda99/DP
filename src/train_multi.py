@@ -305,7 +305,10 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         "h": cmdr_h,
                         "act": act_c,
                         # TODO: only consider logprobs of the 2 action dimensions, not water and altitude
-                        "lp": dist_c.log_prob(act_c)[:, :2].sum(1),
+                        # Phase 1
+                        # "lp": dist_c.log_prob(act_c)[:, :2].sum(1),
+                        # Phase 2
+                        "lp": dist_c.log_prob(act_c)[:, :3].sum(1),
                         # "lp": dist_c.log_prob(act_c).sum(1),
                         "reward": 0.0,
                         "value": v_c.item(),
@@ -317,10 +320,11 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     act_np = act_c.squeeze(0).numpy()
                     dx_raw = float(act_np[0])
                     dy_raw = float(act_np[1])
-                    # target_alt_raw = float(act_np[2])
                     # water_raw = float(act_np[3])
                     # Phase 1: fixed altitude, auto water
-                    target_alt_raw = 0.0  # maps to ~145m via controller
+                    # target_alt_raw = 0.0  # maps to ~145m via controller
+                    # Phase 2: NN controls altitude, but water is still auto
+                    target_alt_raw = float(act_np[2])
 
                     drone = local_env.sim.drones.get(f_agent)
                     cur_pos = drone.get_position() if drone else np.zeros(3)
@@ -740,8 +744,8 @@ def train_multi(resume_scout="", resume_cmdr="",
         print(f"  Loaded commander from {resume_cmdr}")
 
     # ── Optimizers (fully separate) ──────────────────────────────────────
-    # for param in scout_actor.parameters():
-    #     param.requires_grad = False         # start with frozen actors, then unfreeze after some batches
+    for param in scout_actor.parameters():
+        param.requires_grad = False         # start with frozen actors, then unfreeze after some batches
     optimizer_scout = optim.Adam(scout_actor.parameters(), lr=lr_scout)
     cmdr_main_params = [p for n, p in cmdr_actor.named_parameters()
                         if n != 'action_logstd']
@@ -1085,8 +1089,12 @@ def train_multi(resume_scout="", resume_cmdr="",
                 flat_acts = mb_acts.view(-1, 4)
                 # new_lp = dist.log_prob(flat_acts).sum(1)
                 # entropy = dist.entropy().sum(1)
-                new_lp = dist.log_prob(flat_acts)[:, :2].sum(1)
-                entropy = dist.entropy()[:, :2].sum(1)
+                # Phase 1
+                # new_lp = dist.log_prob(flat_acts)[:, :2].sum(1)
+                # entropy = dist.entropy()[:, :2].sum(1)
+                # Phase 2
+                new_lp = dist.log_prob(flat_acts)[:, :3].sum(1)
+                entropy = dist.entropy()[:, :3].sum(1)
                 
 
                 log_ratio = (new_lp - mb_old_lp).clamp(-10.0, 10.0)

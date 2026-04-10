@@ -1111,6 +1111,14 @@ class DroneFireEnv(ParallelEnv):
             reward += 0.3
         if dist_to_fire < 150:
             reward += 0.5
+            
+        # Phase 2: added altitude
+        if dist_to_fire < 300:
+            alt = pos[2]
+            if 60 < alt < 120:
+                reward += 0.1
+            elif alt > 200 or alt < 30:
+                reward -= 0.1
 
         return reward
 
