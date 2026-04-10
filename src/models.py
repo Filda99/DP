@@ -205,10 +205,10 @@ class ScoutActor(nn.Module):
         # Commander tak VŽDY ví kde scout je (dim 0-1) a co vidí (dim 2),
         # nemusí to od nuly odpozorovat z gradientů. Dimenze 3-4 zůstávají
         # volné pro cokoli dalšího co se scout naučí sdělovat.
-        self.msg_head = nn.Sequential(
-            nn.Linear(hidden_dim, msg_dim - 3),  # pouze 2 naučené dimy
-            nn.Tanh()
-        )
+        # self.msg_head = nn.Sequential(
+        #     nn.Linear(hidden_dim, msg_dim - 3),  # pouze 2 naučené dimy
+        #     nn.Tanh()
+        # ) REMOVED: fixed explicit messages now
 
     def forward(self, local_map, self_state, neighbor_states, neighbor_mask, hidden_state):
         # ------------------------------------------------------------------
@@ -297,9 +297,13 @@ class ScoutActor(nn.Module):
         # Outbound message for the commander:
         #   dims 0-2: strukturovaná část — přímo z observace (vždy interpretovatelná)
         #   dims 3-4: naučená část — latentní kontext
-        explicit_msg = self_state[:, [0, 1, 14]]           # (B*S, 3) — norm_pos_x, norm_pos_y, intenzita
-        learned_msg  = self.msg_head(features)              # (B*S, 2)
-        message = torch.cat([explicit_msg, learned_msg], dim=1)  # (B*S, 5)
+        # explicit_msg = self_state[:, [0, 1, 14]]           # (B*S, 3) — norm_pos_x, norm_pos_y, intenzita
+        # learned_msg  = self.msg_head(features)              # (B*S, 2)
+        # message = torch.cat([explicit_msg, learned_msg], dim=1)  # (B*S, 5)
+        
+        # Zpráva obsahuje: [norm_pos_x, norm_pos_y, intensity, rel_x, rel_y]
+        # Indexy v self_state: 0=x, 1=y, 14=intensity, 12=rel_x, 13=rel_y
+        message = self_state[:, [0, 1, 14, 12, 13]]
 
         return dist, message, new_hidden
 

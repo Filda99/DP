@@ -26,8 +26,8 @@ def run_demo_both():
     GRID_SIZE = 2000.0  # Nastaveno na tvou novou velikost mapy
     
     # Cesty k modelům
-    MODEL_PATH_QUAD = "saved_models/scout_ep3980.pt" 
-    MODEL_PATH_FIXED = "saved_models/commander_ep3980.pt" 
+    MODEL_PATH_QUAD = "saved_models/scout_b0180.pt" 
+    MODEL_PATH_FIXED = "saved_models/cmdr_b0180.pt" 
     
     # 2. Inicializace prostředí
     env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=GRID_SIZE, max_steps=MAX_STEPS)

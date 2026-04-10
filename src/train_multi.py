@@ -304,7 +304,9 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         "msg_mask": msgs_m,
                         "h": cmdr_h,
                         "act": act_c,
-                        "lp": dist_c.log_prob(act_c).sum(1),
+                        # TODO: only consider logprobs of the 2 action dimensions, not water and altitude
+                        "lp": dist_c.log_prob(act_c)[:, :2].sum(1),
+                        # "lp": dist_c.log_prob(act_c).sum(1),
                         "reward": 0.0,
                         "value": v_c.item(),
                         "critic_state": priv_c,
@@ -315,8 +317,10 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     act_np = act_c.squeeze(0).numpy()
                     dx_raw = float(act_np[0])
                     dy_raw = float(act_np[1])
-                    target_alt_raw = float(act_np[2])
-                    water_raw = float(act_np[3])
+                    # target_alt_raw = float(act_np[2])
+                    # water_raw = float(act_np[3])
+                    # Phase 1: fixed altitude, auto water
+                    target_alt_raw = 0.0  # maps to ~145m via controller
 
                     drone = local_env.sim.drones.get(f_agent)
                     cur_pos = drone.get_position() if drone else np.zeros(3)
@@ -336,9 +340,9 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                             [step, target_x, target_y, target_alt_raw, water_raw])
 
                 # Heading controller
-                drone = local_env.sim.drones.get(f_agent)
-                if drone is not None:
-                    pos = drone.get_position()
+                fw = local_env.sim.drones.get(f_agent)
+                if fw is not None:
+                    pos = fw.get_position()
 
                     # Emergency boundary override: if near kill zone, steer to center
                     if (abs(pos[0]) > boundary_emergency or
@@ -356,11 +360,15 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
                     if dist_to > 1.0:
                         desired_heading = np.arctan2(dy_to, dx_to)
-                        cur_yaw = drone.get_orientation_rpy()[2]
+                        cur_yaw = fw.get_orientation_rpy()[2]
                         heading_error = _wrap_angle(desired_heading - cur_yaw)
                         heading_cmd = np.clip(heading_error / np.pi, -1.0, 1.0)
                     else:
                         heading_cmd = 0.0
+
+                    fire_dist = np.hypot(pos[0] - local_env.fire_x, pos[1] - local_env.fire_y)
+                    has_water = fw.current_water > 0.01 * fw.water_capacity
+                    water_raw = 1.0 if (fire_dist < 200.0 and has_water) else -1.0
 
                     inner_action = np.array(
                         [heading_cmd, target_alt_raw, water_raw],
@@ -638,28 +646,27 @@ def train_multi(resume_scout="", resume_cmdr="",
     num_episodes = 30_000
     max_steps = 4000              # buffer size (upper bound)
     steps_range = (1500, 4000)     # actual ep length randomized per episode
-    waypoint_steps = 50
-    waypoint_range = 100.0
+    waypoint_steps = 30
+    waypoint_range = 200.0
     num_decisions_cmdr = max_steps // waypoint_steps  # 80
 
     gamma = 0.99
     gamma_cmdr = 0.95          # shorter horizon for 40 decisions
     gae_lambda = 0.95
     clip_coef = 0.2
-    vf_coef = 0.5              # value loss weight
     update_epochs = 4
     num_workers = 15
     eps_per_worker = 2
     episodes_per_batch = num_workers * eps_per_worker
 
-    lr_scout = 1e-4
-    lr_cmdr = 3e-4
+    lr_scout = 5e-5
+    lr_cmdr = 5e-4
     lr_critic = 3e-4
     hidden_dim_scout = 128
     hidden_dim_cmdr = 64
     scout_msg_dim = 5
 
-    entropy_scout = 0.003
+    entropy_scout = 0.005
     entropy_cmdr = 0.01        # prevent premature std collapse
 
     # ── Dims ─────────────────────────────────────────────────────────────
@@ -733,6 +740,8 @@ def train_multi(resume_scout="", resume_cmdr="",
         print(f"  Loaded commander from {resume_cmdr}")
 
     # ── Optimizers (fully separate) ──────────────────────────────────────
+    # for param in scout_actor.parameters():
+    #     param.requires_grad = False         # start with frozen actors, then unfreeze after some batches
     optimizer_scout = optim.Adam(scout_actor.parameters(), lr=lr_scout)
     cmdr_main_params = [p for n, p in cmdr_actor.named_parameters()
                         if n != 'action_logstd']
@@ -984,10 +993,11 @@ def train_multi(resume_scout="", resume_cmdr="",
                           - entropy_scout * (entropy * mb_alive_s).sum() / n_alive_s)
 
                 if torch.isfinite(loss_s):
-                    optimizer_scout.zero_grad()
-                    loss_s.backward()
-                    nn.utils.clip_grad_norm_(scout_actor.parameters(), max_norm=0.5)
-                    optimizer_scout.step()
+                    if loss_s.requires_grad:
+                        optimizer_scout.zero_grad()
+                        loss_s.backward()
+                        nn.utils.clip_grad_norm_(scout_actor.parameters(), max_norm=0.5)
+                        optimizer_scout.step()
                     scout_loss_total += loss_s.item()
 
                 # Critic value loss (separate optimizer, masked by alive)
@@ -1073,8 +1083,11 @@ def train_multi(resume_scout="", resume_cmdr="",
                 dist, _, _ = cmdr_actor(mb_states, mb_msgs, mb_mm, mb_h)
 
                 flat_acts = mb_acts.view(-1, 4)
-                new_lp = dist.log_prob(flat_acts).sum(1)
-                entropy = dist.entropy().sum(1)
+                # new_lp = dist.log_prob(flat_acts).sum(1)
+                # entropy = dist.entropy().sum(1)
+                new_lp = dist.log_prob(flat_acts)[:, :2].sum(1)
+                entropy = dist.entropy()[:, :2].sum(1)
+                
 
                 log_ratio = (new_lp - mb_old_lp).clamp(-10.0, 10.0)
                 ratio = torch.exp(log_ratio)
