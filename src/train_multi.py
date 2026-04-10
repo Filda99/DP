@@ -308,8 +308,9 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         # Phase 1
                         # "lp": dist_c.log_prob(act_c)[:, :2].sum(1),
                         # Phase 2
-                        "lp": dist_c.log_prob(act_c)[:, :3].sum(1),
-                        # "lp": dist_c.log_prob(act_c).sum(1),
+                        # "lp": dist_c.log_prob(act_c)[:, :3].sum(1),
+                        # Phase 3
+                        "lp": dist_c.log_prob(act_c).sum(1),
                         "reward": 0.0,
                         "value": v_c.item(),
                         "critic_state": priv_c,
@@ -320,11 +321,12 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     act_np = act_c.squeeze(0).numpy()
                     dx_raw = float(act_np[0])
                     dy_raw = float(act_np[1])
-                    # water_raw = float(act_np[3])
                     # Phase 1: fixed altitude, auto water
                     # target_alt_raw = 0.0  # maps to ~145m via controller
                     # Phase 2: NN controls altitude, but water is still auto
                     target_alt_raw = float(act_np[2])
+                    # Phase 3: NN controls everything
+                    water_raw = float(act_np[3])
 
                     drone = local_env.sim.drones.get(f_agent)
                     cur_pos = drone.get_position() if drone else np.zeros(3)
@@ -370,9 +372,10 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     else:
                         heading_cmd = 0.0
 
-                    fire_dist = np.hypot(pos[0] - local_env.fire_x, pos[1] - local_env.fire_y)
-                    has_water = fw.current_water > 0.01 * fw.water_capacity
-                    water_raw = 1.0 if (fire_dist < 200.0 and has_water) else -1.0
+                    # Phase 3: NN controlls this
+                    # fire_dist = np.hypot(pos[0] - local_env.fire_x, pos[1] - local_env.fire_y)
+                    # has_water = fw.current_water > 0.01 * fw.water_capacity
+                    # water_raw = 1.0 if (fire_dist < 200.0 and has_water) else -1.0
 
                     inner_action = np.array(
                         [heading_cmd, target_alt_raw, water_raw],
@@ -1087,16 +1090,16 @@ def train_multi(resume_scout="", resume_cmdr="",
                 dist, _, _ = cmdr_actor(mb_states, mb_msgs, mb_mm, mb_h)
 
                 flat_acts = mb_acts.view(-1, 4)
-                # new_lp = dist.log_prob(flat_acts).sum(1)
-                # entropy = dist.entropy().sum(1)
                 # Phase 1
                 # new_lp = dist.log_prob(flat_acts)[:, :2].sum(1)
                 # entropy = dist.entropy()[:, :2].sum(1)
                 # Phase 2
-                new_lp = dist.log_prob(flat_acts)[:, :3].sum(1)
-                entropy = dist.entropy()[:, :3].sum(1)
+                # new_lp = dist.log_prob(flat_acts)[:, :3].sum(1)
+                # entropy = dist.entropy()[:, :3].sum(1)
+                # Phase 3 (full)
+                new_lp = dist.log_prob(flat_acts).sum(1)
+                entropy = dist.entropy().sum(1)
                 
-
                 log_ratio = (new_lp - mb_old_lp).clamp(-10.0, 10.0)
                 ratio = torch.exp(log_ratio)
                 pg1 = -mb_adv * ratio

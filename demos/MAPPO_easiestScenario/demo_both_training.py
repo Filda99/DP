@@ -41,11 +41,11 @@ MAX_STEPS  = 2000
 GRID_SIZE  = 1000.0
 GIF_EVERY  = 3
 GIF_FPS    = 15
-EPISODE_SEED = 105
+EPISODE_SEED = 108
 
 # Commander waypoint parameters (must match training)
-WAYPOINT_RANGE  = 100.0   # metres per unit of dx/dy
-WAYPOINT_STEPS  = 50      # physics steps per waypoint segment
+WAYPOINT_RANGE  = 200.0   # metres per unit of dx/dy
+WAYPOINT_STEPS  = 30      # physics steps per waypoint segment
 WP_REACHED_DIST = 30.0    # metres
 SAFE_LIMIT_BUF  = 250.0   # boundary buffer
 # ============================================================
