@@ -914,33 +914,6 @@ class DroneFireEnv(ParallelEnv):
             else:
                 rewards[agent] += self._apply_physics_shaping(agent)
 
-                # Agent-type-specific mission reward
-                # if "fixed" in agent:
-                #     # Najdi oheň skrz zprávy od scoutů
-                #     max_seen_intensity = 0.0
-                #     best_fire_pos = np.array([self.fire_x, self.fire_y])  # fallback
-                #     for q_name in self.quad_agents:
-                #         if q_name in self.sim.drones:
-                #             q_obs = self._get_quad_obs(q_name)
-                #             q_intensity = q_obs["self_state"][14]
-                #             if q_intensity > max_seen_intensity:
-                #                 max_seen_intensity = q_intensity
-                #                 rel_x = q_obs["self_state"][12]
-                #                 rel_y = q_obs["self_state"][13]
-                #                 q_pos = self.sim.drones[q_name].get_position()
-                #                 fov_size = max(10.0, q_pos[2] * 1.5)
-                #                 best_fire_pos = np.array([
-                #                     q_pos[0] + rel_x * (fov_size / 2.0),
-                #                     q_pos[1] + rel_y * (fov_size / 2.0)
-                #                 ])
-
-                #     if max_seen_intensity > 0.005:
-                #         # MISSION: letět k ohni, hasit
-                #         # Threshold 0.005 = oheň zabírá ~1% FOV při intensity 0.5
-                #         rewards[agent] += self._get_fixed_reward(agent, best_fire_pos)
-                #     else:
-                #         # PATROL: zůstat blízko středu
-                #         rewards[agent] += self._get_fixed_reward_patrol(agent)
                 if "fixed" in agent:
                     rewards[agent] += self._get_fixed_reward_nav(agent)
                 else:
@@ -999,6 +972,16 @@ class DroneFireEnv(ParallelEnv):
                 else:
                     # Penalty for wasting water far from fire
                     rewards[f_agent] -= 3.0
+             
+        if self.sim.environment.fire_grid is not None:
+            total_burning = int(np.sum(self.sim.environment.fire_grid.B))
+            if total_burning == 0 and self._prev_burning_count > 0:
+                # Všechen oheň uhašen!
+                for agent in rewards:
+                    if "fixed" in agent:
+                        rewards[agent] += 10.0
+                    else:
+                        rewards[agent] += 5.0  # scout pomohl
 
         # --- 7. Fire spread penalty — penalizace za šíření ohně (urgence) ---
         # Každý krok kde se oheň rozšíří o nové buňky, oba agenti dostanou trest.
@@ -1007,21 +990,20 @@ class DroneFireEnv(ParallelEnv):
         # incentivy scoutů a commandera směrem k jedinému cíli.
         # SKIP when no fixed-wing agents exist — scouts can't extinguish fire,
         # so penalising them for spread is pure noise that drowns the fire-finding signal.
-        # if self.num_fixed > 0 and self.sim.environment.fire_grid is not None:
-        #     current_burning = int(np.sum(self.sim.environment.fire_grid.B))
-        #     delta_burned = max(0, current_burning - self._prev_burning_count)
-        #     if delta_burned > 0:
-        #         spread_penalty = delta_burned * 0.02  # ~0.5/krok when fire grows by 25 cells
-        #         for agent in rewards:
-        #             if "fixed" not in agent:
-        #                 rewards[agent] -= spread_penalty
-        #     self._prev_burning_count = current_burning
+        if self.sim.environment.fire_grid is not None:
+            current_burning = int(np.sum(self.sim.environment.fire_grid.B))
+            delta_burned = max(0, current_burning - self._prev_burning_count)
+            if delta_burned > 0:
+                spread_penalty = min(delta_burned * 0.05, 2.0)
+                for agent in rewards:
+                    if "fixed" in agent:
+                        rewards[agent] -= spread_penalty
+            self._prev_burning_count = current_burning
 
         for agent in rewards:
             rewards[agent] = np.clip(rewards[agent], SHARED["reward_clip_min"], SHARED["reward_clip_max"])
 
         return observations, rewards, terminations, truncations, infos
-
 
 
     # =========================================================================
@@ -1143,33 +1125,6 @@ class DroneFireEnv(ParallelEnv):
                     reward += 0.5  # blízko refill zóny = velký bonus
 
         return reward
-
-    def _get_fixed_reward_patrol(self, agent):
-        """Patrol reward — malý tah ke středu mapy když scout nevidí oheň.
-
-        Boundary penalty v _apply_physics_shaping už řeší okraje.
-        Zde jen přidáme mírný gradient ke středu, aby commander nebloudil
-        po mapě bez cíle.
-        """
-        pos = self.sim.drones[agent].get_position()
-        dist_from_center = np.linalg.norm(pos[:2])
-        # Lineárně klesá od 0.05 ve středu na 0.0 na hranici mapy
-        return max(0.0, 0.05 * (1.0 - dist_from_center / self.map_bounds))
-
-    def _get_fixed_reward(self, agent, best_fire_pos):
-        """Mission reward pro commandera — přibližovací gradient k ohni.
-
-        Lineární tah od 1500 m (0.0) až k 200 m (0.43), pak flat 0.5 uvnitř
-        200 m — žádná dead zone, commander je vždy odměněn za to že je blízko
-        ohni. Extinguish bonus (sekce 6) přidává další odměnu za skutečné hašení.
-        """
-        drone = self.sim.drones[agent]
-        pos = drone.get_position()
-        dist_to_fire = np.linalg.norm(pos[:2] - best_fire_pos)
-        close_radius = max(100.0, self.map_bounds * 0.13)   # at least 100m
-        if dist_to_fire <= close_radius:
-            return 0.5 + 0.5 * (1.0 - dist_to_fire / close_radius)
-        return max(0.0, 0.5 * (1.0 - dist_to_fire / self.map_bounds))
 
     def _check_death(self, agent):
         """Detekce pádu agenta.
