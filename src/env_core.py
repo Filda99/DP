@@ -375,14 +375,18 @@ class DroneFireEnv(ParallelEnv):
         danger_flag = 1.0 if min(self._get_boundary_measurements(pos)) < danger_threshold else 0.0
         
         # --- Fire compass (unit vector from drone toward fire) ---
-        vec_fire_x = self.fire_x - pos[0]
-        vec_fire_y = self.fire_y - pos[1]
-        dist_to_fire = np.hypot(vec_fire_x, vec_fire_y)
-        if dist_to_fire > 1.0:
-            fire_dir_x = vec_fire_x / dist_to_fire
-            fire_dir_y = vec_fire_y / dist_to_fire
-        else:
-            fire_dir_x, fire_dir_y = 0.0, 0.0
+        # Phase 1-4
+        # vec_fire_x = self.fire_x - pos[0]
+        # vec_fire_y = self.fire_y - pos[1]
+        # dist_to_fire = np.hypot(vec_fire_x, vec_fire_y)
+        # if dist_to_fire > 1.0:
+        #     fire_dir_x = vec_fire_x / dist_to_fire
+        #     fire_dir_y = vec_fire_y / dist_to_fire
+        # else:
+        #     fire_dir_x, fire_dir_y = 0.0, 0.0
+        
+        # Phase 5
+        fire_dir_x, fire_dir_y = 0.0, 0.0
 
         self_state = np.array([
             norm_pos[0], norm_pos[1], norm_pos[2],                            # 0-2  : position
@@ -688,7 +692,9 @@ class DroneFireEnv(ParallelEnv):
                 # fw_start_x   = float(fw_spawn_radius * np.cos(spawn_angle))
                 # fw_start_y   = float(fw_spawn_radius * np.sin(spawn_angle))
                 # Phase 1: spawn 150-400m od ohně
-                fw_spawn_dist = random.uniform(150.0, 400.0)
+                # fw_spawn_dist = random.uniform(150.0, 400.0)
+                # Phase 5: spawn kdekoli na mapě, ale dale od ohně než scouti (aby je nespawnul přímo nad ohněm)
+                fw_spawn_dist = random.uniform(400.0, self.map_bounds * 0.7)
                 spawn_angle = random.uniform(0, 2 * np.pi)
                 fw_start_x = float(np.clip(
                     self.fire_x + fw_spawn_dist * np.cos(spawn_angle),
