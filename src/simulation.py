@@ -15,12 +15,12 @@ from scipy.ndimage import gaussian_filter
 try:
     from .environment import Environment
     from .drones import Quadcopter, FixedWing
-    from .visualizer import SimulationVisualizer
+    from ..tools.visualizer import SimulationVisualizer
     from .map_importer import load_environment_from_osm
 except ImportError:
     from src.environment import Environment
     from src.drones import Quadcopter, FixedWing
-    from src.visualizer import SimulationVisualizer
+    from tools.visualizer import SimulationVisualizer
     from src.map_importer import load_environment_from_osm
 
 class Simulation:

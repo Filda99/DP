@@ -12,7 +12,7 @@ import datetime, time
 from env_core import DroneFireEnv
 from models import ScoutActor, CommanderActor, MAPPOCritic
 from concurrent.futures import ProcessPoolExecutor
-from worker import collect_episodes_per_worker
+from src.old.worker import collect_episodes_per_worker
 
 
 # =============================================================================
