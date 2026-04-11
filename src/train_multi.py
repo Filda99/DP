@@ -373,9 +373,9 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         heading_cmd = 0.0
 
                     # Phase 3: NN controlls this
-                    # fire_dist = np.hypot(pos[0] - local_env.fire_x, pos[1] - local_env.fire_y)
-                    # has_water = fw.current_water > 0.01 * fw.water_capacity
-                    # water_raw = 1.0 if (fire_dist < 200.0 and has_water) else -1.0
+                    fire_dist = np.hypot(pos[0] - local_env.fire_x, pos[1] - local_env.fire_y)
+                    has_water = fw.current_water > 0.01 * fw.water_capacity
+                    water_raw = 1.0 if (fire_dist < 80.0 and has_water) else -1.0
 
                     inner_action = np.array(
                         [heading_cmd, target_alt_raw, water_raw],

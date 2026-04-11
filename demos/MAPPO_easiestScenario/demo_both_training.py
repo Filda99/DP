@@ -32,16 +32,16 @@ from src.models import ScoutActor, CommanderActor
 # ============================================================
 # KONFIGURACE
 # ============================================================
-MODEL_SCOUT     = os.path.join(project_root, "saved_models", "multi", "scout_b0290.pt")
-MODEL_COMMANDER = os.path.join(project_root, "saved_models", "multi", "cmdr_b0290.pt")
+MODEL_SCOUT     = os.path.join(project_root, "saved_models", "multi", "scout_b0040.pt")
+MODEL_COMMANDER = os.path.join(project_root, "saved_models", "multi", "cmdr_b0040.pt")
 
 N_QUADS    = 1
 N_FIXED    = 1
-MAX_STEPS  = 2000
+MAX_STEPS  = 1000
 GRID_SIZE  = 1000.0
 GIF_EVERY  = 3
 GIF_FPS    = 15
-EPISODE_SEED = 101
+EPISODE_SEED = 102
 
 # Commander waypoint parameters (must match training)
 WAYPOINT_RANGE  = 200.0   # metres per unit of dx/dy
@@ -267,6 +267,12 @@ def run_demo():
                     heading_cmd = np.clip(heading_error / np.pi, -1.0, 1.0)
                 else:
                     heading_cmd = 0.0
+
+                # Todo: zmenit pak
+                fire_dist = np.hypot(pos[0] - env.fire_x, pos[1] - env.fire_y)
+                has_water = drone.current_water > 0.01 * drone.water_capacity
+                water_raw = 1.0 if (fire_dist < 80.0 and has_water) else -1.0
+
                 actions["fixed_0"] = np.array(
                     [heading_cmd, target_alt_raw, water_raw], dtype=np.float32)
 
