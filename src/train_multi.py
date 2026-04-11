@@ -297,6 +297,12 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                             local_env.get_privileged_state(f_agent)).unsqueeze(0)
                         v_c, critic_cmdr_h = local_critic_cmdr(priv_c, critic_cmdr_h)
 
+                    c_pos = local_env.sim.drones[f_agent].get_position()
+                    vec_x = local_env.fire_x - c_pos[0]
+                    vec_y = local_env.fire_y - c_pos[1]
+                    dist_to_f = np.hypot(vec_x, vec_y)
+                    true_dir = [vec_x/dist_to_f, vec_y/dist_to_f] if dist_to_f > 1.0 else [0.0, 0.0]
+
                     cmdr_ep_data.append({
                         "alive": True,
                         "state": s_st_f,
@@ -314,6 +320,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         "reward": 0.0,
                         "value": v_c.item(),
                         "critic_state": priv_c,
+                        "aux_target": torch.FloatTensor([true_dir]),
                     })
                     cmdr_h = h_out_c
 
@@ -555,6 +562,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                 cmdr_buf["alive"].append(1.0)
                 cmdr_buf["values"].append(d["value"])
                 cmdr_buf["critic_states"].append(d["critic_state"])
+                cmdr_buf["aux_targets"].append(d["aux_target"])
             else:
                 cmdr_buf["states"].append(
                     torch.zeros(1, config['fixed_self_dim']))
@@ -569,6 +577,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                 cmdr_buf["values"].append(0.0)
                 cmdr_buf["critic_states"].append(
                     torch.zeros(1, cmdr_priv_dim))
+                cmdr_buf["aux_targets"].append(torch.zeros(1, 2))
 
         ep_reward_total = ep_reward_scout + ep_reward_cmdr
         all_rewards.append(ep_reward_total)
@@ -806,7 +815,7 @@ def train_multi(resume_scout="", resume_cmdr="",
         ]}
         agg_cmdr = {k: [] for k in [
             "states", "messages", "msg_masks",
-            "actions", "logprobs", "returns", "alive", "values", "critic_states"
+            "actions", "logprobs", "returns", "alive", "values", "critic_states", "aux_targets"
         ]}
         agg_h = {"scout": [], "cmdr": []}
         batch_rewards = []
@@ -1087,7 +1096,8 @@ def train_multi(resume_scout="", resume_cmdr="",
                 mb_cs = c_cstates_seq[mb]
                 mb_h = h_cmdr_seq[mb].transpose(0, 1)
 
-                dist, _, _ = cmdr_actor(mb_states, mb_msgs, mb_mm, mb_h)
+                # dist, _, _ = cmdr_actor(mb_states, mb_msgs, mb_mm, mb_h)
+                dist, mb_aux_pred, _ = cmdr_actor(mb_states, mb_msgs, mb_mm, mb_h)
 
                 flat_acts = mb_acts.view(-1, 4)
                 # Phase 1
@@ -1107,8 +1117,16 @@ def train_multi(resume_scout="", resume_cmdr="",
                 surr = torch.max(pg1, pg2)
 
                 n_alive = mb_alive.sum().clamp(min=1.0)
-                loss_c = ((surr * mb_alive).sum() / n_alive
-                          - entropy_cmdr * (entropy * mb_alive).sum() / n_alive)
+                policy_loss = (surr * mb_alive).sum() / n_alive
+                entropy_loss = (entropy * mb_alive).sum() / n_alive
+
+                # Výpočet Auxiliary Loss (Chyba predikce ohně)
+                aux_error = (mb_aux_pred - mb_aux_targets)**2 # MSE
+                # Průměrujeme jen přes živé kroky
+                aux_loss = (aux_error.sum(dim=-1) * mb_alive).sum() / n_alive 
+
+                # Přičteme aux_loss k celkové ztrátě (s váhou např. 0.5, aby to nepřebilo PPO)
+                loss_c = policy_loss - entropy_cmdr * entropy_loss + 0.5 * aux_loss
 
                 if torch.isfinite(loss_c):
                     optimizer_cmdr.zero_grad()

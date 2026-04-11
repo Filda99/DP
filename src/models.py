@@ -356,6 +356,9 @@ class CommanderActor(nn.Module):
         self.action_mean = nn.Linear(hidden_dim, action_dim)
         self.action_logstd = nn.Parameter(torch.full((1, action_dim), -0.5))
 
+        # Pomocná hlava pro predikci polohy ohně
+        self.aux_head = nn.Linear(hidden_dim, 2)
+
     def forward(self, self_state, incoming_messages=None, message_mask=None,
                 hidden_state=None):
         is_sequential = (self_state.dim() == 3)
@@ -409,7 +412,10 @@ class CommanderActor(nn.Module):
         log_std = self.action_logstd.clamp(-3.0, 0.0)
         dist = Normal(action_mean, torch.exp(log_std))
 
-        return dist, None, new_hidden
+        # Predikce polohy ohně pro pomocnou odměnu
+        aux_pred = self.aux_head(features) # (B*S, 2)
+
+        return dist, aux_pred, new_hidden
 
 
 # =============================================================================
