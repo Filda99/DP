@@ -1,27 +1,41 @@
 graph TD
     %% Definice vstupů (Žlutá)
-    FireMap["16x16 Downsampled Fire Map<br>(256 values)"]
-    QuadStates["N x 15d Quad States"]
-    FixedStates["M x 17d Fixed-Wing States"]
+    LocalObs["Agent's Local Observation<br>(Decentralized State)"]
+    Privileged["Privileged Extras<br>(True Fire X, Y, Intensity)<br>(Other Agents' X, Y, Z)"]
 
-    %% Agregace a vrstvy (Červená)
+    %% Agregace
     Concat{"Concatenation"}
-    MLP["MLP Encoder<br>(Linear + ReLU)"]
-    GRU["Gated Recurrent Unit (GRU)<br>128d Hidden State"]
+
+    %% Zpracování a vrstvy (Červená)
+    MLP["MLP Encoder<br>(Linear + ReLU + Linear + ReLU)"]
+    GRU["Gated Recurrent Unit (GRU)<br>Temporal Memory"]
     ValueHead["Value Head (Linear)"]
 
     %% Mezistavy a vektory (Modrá)
-    GlobalState["Global State Vector<br>(256 + 15N + 17M dimensions)"]
-    EncodedFeatures["128d Encoded Features"]
+    GlobalState["Global State Vector<br>(1D Flattened Array)"]
+    EncodedFeatures["Encoded Features"]
 
-    %% Finální výstup (Bílá/Zelená)
+    %% Finální výstup (Zelená)
     Value["Value Function V(s)<br>(Single Scalar)"]
 
-    %% Propojení - Tvorba globálního stavu
-    FireMap --> Concat
-    QuadStates --> Concat
-    FixedStates --> Concat
-    
-    %% Propojení - Zpracování sítí
+    %% Propojení
+    LocalObs --> Concat
+    Privileged --> Concat
     Concat --> GlobalState
-    GlobalState --> MLP --> EncodedFeatures --> GRU --> ValueHead --> Value
+    
+    GlobalState --> MLP
+    MLP --> EncodedFeatures
+    EncodedFeatures --> GRU
+    GRU --> ValueHead
+    ValueHead --> Value
+
+    %% Styling
+    style LocalObs fill:#fff2cc,stroke:#d6b656
+    style Privileged fill:#fff2cc,stroke:#d6b656
+    style Concat fill:#f5f5f5,stroke:#666666
+    style MLP fill:#f8cecc,stroke:#b85450
+    style GRU fill:#f8cecc,stroke:#b85450
+    style ValueHead fill:#f8cecc,stroke:#b85450
+    style GlobalState fill:#dae8fc,stroke:#6c8ebf
+    style EncodedFeatures fill:#dae8fc,stroke:#6c8ebf
+    style Value fill:#d5e8d4,stroke:#82b366
