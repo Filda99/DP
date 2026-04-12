@@ -1,41 +1,61 @@
 graph TD
-    %% Definice vstupů (Žlutá)
-    SelfState["17-element self_state vector"]
-    ScoutMsgs["N x 5d Scout Messages"]
+    %% =====================================================================
+    %% CommanderActor — Fixed-Wing Network Architecture (Phase 6)
+    %% Source: src/models.py — class CommanderActor
+    %% =====================================================================
 
-    %% Definice procesů (Červená)
-    MLPEnc["MLP Encoder"]
-    MsgEmb["Message Embedding (Linear)"]
-    CrossAttn["Cross-Attention Mechanism"]
-    Concat{"Concatenation<br>(128d vector)"}
-    LayerNorm["Layer Normalization"]
-    GRU["Gated Recurrent Unit (GRU)<br>128d Hidden State"]
-    ActHead["Action Head (MLP)"]
+    %% ── Vstupy ──
+    SelfState["19d self_state vector<br><i>pos(3) vel(3) edges(4) water(1)<br>refill_compass(2) rpy(3) danger(1) fire_compass(2)</i>"]
+    ScoutMsgs["2 × 5d Scout Messages<br><i>latest + best_fire per scout</i><br><i>[pos_x, pos_y, intensity, rel_fire_x, rel_fire_y]</i>"]
+    MsgMask["2d Message Mask<br><i>True = ignore (scout dead / no msg)</i>"]
+    PrevHidden["Previous GRU Hidden State<br><i>(1, B, 64)</i>"]
 
-    %% Definice mezivýstupů (Modrá)
-    EncState["64d Encoded ego-state"]
-    EmbMsgs["64d Embedded Messages"]
+    %% ── Encoder větev ──
+    MLPEnc["MLP Encoder<br><i>Linear(19→64) → Tanh<br>Linear(64→64) → Tanh</i>"]
+    EncState["64d Encoded Ego-State"]
+
+    %% ── Message větev ──
+    MsgEmb["Message Embedding<br><i>Linear(5→64) → ReLU</i>"]
+    EmbMsgs["2 × 64d Embedded Messages"]
+
+    %% ── Cross-Attention ──
+    CrossAttn["Cross-Attention<br><i>nn.MultiheadAttention<br>embed_dim=64, num_heads=2</i>"]
     Context["64d Attention Context"]
 
-    %% Finální výstupy (Bílá/Zelená)
-    ActDist["Action Distribution<br>N(μ, σ)"]
-    ActionOut["4d Continuous Control<br>(Roll, Pitch, Throttle, Trigger)"]
+    %% ── Fúze ──
+    Concat{"Concatenation<br><i>[enc_out ‖ ctx] → 128d</i>"}
 
-    %% Propojení - Vlastní stav
+    %% ── Paměť ──
+    GRU["GRU Cell<br><i>input=128d → hidden=64d</i>"]
+    Features["64d GRU Output"]
+
+    %% ── Výstupní hlavy ──
+    ActHead["Action Head<br><i>Linear(64→4) → Tanh</i>"]
+    ActDist["Action Distribution<br><i>N(μ, σ)  σ = exp(log_std)<br>log_std ∈ [−3, 0] (learnable)</i>"]
+    ActionOut["4d Action<br><i>[heading_Δ, target_alt, water_trigger, (dim4)]</i>"]
+
+    AuxHead["Auxiliary Head<br><i>Linear(64→2)</i>"]
+    AuxOut["2d Fire Position Prediction<br><i>[fire_x, fire_y] normalised</i>"]
+
+    %% ── Propojení: Encoder ──
     SelfState --> MLPEnc --> EncState
 
-    %% Propojení - Zprávy
+    %% ── Propojení: Zprávy ──
     ScoutMsgs --> MsgEmb --> EmbMsgs
+    MsgMask -.->|key_padding_mask| CrossAttn
 
-    %% Cross-Attention logika
-    EncState -->|Query| CrossAttn
-    EmbMsgs -->|Keys / Values| CrossAttn
+    %% ── Cross-Attention ──
+    EncState -->|"Query (1×64)"| CrossAttn
+    EmbMsgs -->|"Key & Value (2×64)"| CrossAttn
     CrossAttn --> Context
 
-    %% Fúze a Paměť (Obojí jde do Concat)
+    %% ── Fúze a GRU ──
     EncState --> Concat
     Context --> Concat
-    Concat --> LayerNorm --> GRU
+    Concat --> GRU
+    PrevHidden -.-> GRU
+    GRU --> Features
 
-    %% Výstup
-    GRU --> ActHead --> ActDist --> ActionOut
+    %% ── Výstupní hlavy ──
+    Features --> ActHead --> ActDist --> ActionOut
+    Features --> AuxHead --> AuxOut
