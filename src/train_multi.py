@@ -127,7 +127,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     cmdr_buf = {k: [] for k in [
         "states", "messages", "msg_masks",
         "actions", "logprobs", "returns", "alive", "values",
-        "critic_states"
+        "critic_states", "aux_targets"
     ]}
 
     scout_h0_list = []
@@ -1046,6 +1046,7 @@ def train_multi(resume_scout="", resume_cmdr="",
         c_alive = torch.cat(agg_cmdr["alive"]).to(device)
         c_values = torch.cat(agg_cmdr["values"]).to(device)
         c_cstates = torch.cat(agg_cmdr["critic_states"]).to(device)
+        c_aux_targets = torch.cat(agg_cmdr["aux_targets"]).to(device)
 
         h_cmdr = (torch.cat(agg_h["cmdr"], dim=0)
                   .squeeze(1).unsqueeze(0).to(device))
@@ -1076,6 +1077,7 @@ def train_multi(resume_scout="", resume_cmdr="",
         c_returns_norm_seq = c_returns_norm.view(eps, nd)
         c_cstates_seq = c_cstates.view(eps, nd, -1)
         h_cmdr_seq = h_cmdr.transpose(0, 1)
+        c_aux_targets_seq = c_aux_targets.view(eps, nd, -1)
 
         mb_size_c = max(1, eps // num_minibatches)
 
@@ -1095,6 +1097,7 @@ def train_multi(resume_scout="", resume_cmdr="",
                 mb_rets = c_returns_norm_seq[mb].reshape(-1)
                 mb_cs = c_cstates_seq[mb]
                 mb_h = h_cmdr_seq[mb].transpose(0, 1)
+                mb_aux_targets = c_aux_targets_seq[mb].reshape(-1, 2)
 
                 # dist, _, _ = cmdr_actor(mb_states, mb_msgs, mb_mm, mb_h)
                 dist, mb_aux_pred, _ = cmdr_actor(mb_states, mb_msgs, mb_mm, mb_h)
