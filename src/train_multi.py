@@ -380,9 +380,9 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         heading_cmd = 0.0
 
                     # Phase 3: NN controlls this
-                    fire_dist = np.hypot(pos[0] - local_env.fire_x, pos[1] - local_env.fire_y)
-                    has_water = fw.current_water > 0.01 * fw.water_capacity
-                    water_raw = 1.0 if (fire_dist < 80.0 and has_water) else -1.0
+                    # fire_dist = np.hypot(pos[0] - local_env.fire_x, pos[1] - local_env.fire_y)
+                    # has_water = fw.current_water > 0.01 * fw.water_capacity
+                    # water_raw = 1.0 if (fire_dist < 80.0 and has_water) else -1.0
 
                     inner_action = np.array(
                         [heading_cmd, target_alt_raw, water_raw],
@@ -675,14 +675,14 @@ def train_multi(resume_scout="", resume_cmdr="",
     eps_per_worker = 2
     episodes_per_batch = num_workers * eps_per_worker
 
-    lr_scout = 5e-5
+    lr_scout = 1e-5             # Phase 7: unfrozen but conservative
     lr_cmdr = 5e-4
     lr_critic = 3e-4
     hidden_dim_scout = 128
     hidden_dim_cmdr = 64
     scout_msg_dim = 5
 
-    entropy_scout = 0.005
+    entropy_scout = 0.003       # Phase 7: tighter — scout already knows how to fly
     entropy_cmdr = 0.01        # prevent premature std collapse
 
     # ── Dims ─────────────────────────────────────────────────────────────
@@ -757,8 +757,8 @@ def train_multi(resume_scout="", resume_cmdr="",
 
     # ── Optimizers (fully separate) ──────────────────────────────────────
     for param in scout_actor.parameters():
-        param.requires_grad = False         # start with frozen actors, then unfreeze after some batches
-    optimizer_scout = optim.Adam(scout_actor.parameters(), lr=lr_scout)
+        param.requires_grad = True          # Phase 7: unfrozen for joint fine-tuning
+    optimizer_scout = optim.Adam(filter(lambda p: p.requires_grad, scout_actor.parameters()), lr=lr_scout)
     cmdr_main_params = [p for n, p in cmdr_actor.named_parameters()
                         if n != 'action_logstd']
     optimizer_cmdr = optim.Adam([
