@@ -8,8 +8,8 @@
 # Všechny hodnoty jsou FIXNÍ — nezávislé na velikosti mapy.
 # NORM_DIST = 1000 v env_core.py normalizuje pozice a vzdálenosti v observacích.
 SHARED = {
-    "survival_bonus":       0.01,  # starý design: 0.01 (před *0.1 = 0.001)
-    "boundary_penalty":     0.3,   # starý design: 0.3 (před *0.1 = 0.03)
+    "survival_bonus":       0.03,  # zpět na 0.03 — přežívání je základ, NN se učí od ohně přes observaci
+    "boundary_penalty":     0.5,   # zvýšeno z 0.3 — silnější odpuzování od hrany
     "boundary_extra":       0.3,   # extra penalizace pro fixed-wing blízko hranice
     "crash_penalty":        -50,   # same as old — significant but not overwhelming
     "reward_clip_min":      -10.0,
@@ -29,16 +29,19 @@ QUAD = {
     "alt_sweet_max":    100.0,   # ideální operační pásmo — horní hranice
     "alt_sweet_bonus":   0.02,  # per-krok bonus za let ve sweet-spotu
 
-    # Mise — starý jednoduchý design (hodnoty odpovídají originálu po *0.1)
-    "fire_flat_bonus":   0.5,   # starý: 1.0 * 0.1
-    "fire_intensity_k":  10.0,   # starý: 10.0 * 0.1
-    "fire_speed_pen":    0.005, # starý: 0.05 * 0.1
-
-    # Approach — kompas k ohni (nové, starý design to neměl)
-    "approach_k":        0.02,
+    # Mise — čistý binární design (vidí oheň / nevidí)
+    "fire_flat_bonus":   0.5,    # zpět na původní — stabilní signál
+    "fire_intensity_k":  10.0,
+    "fire_speed_pen":    0.005,
 
     # Alt penalty
     "alt_penalty":       0.05,  # flat penalizace za létání mimo rozsah
+
+    # Approach shaping — VYPNUTO, scout se učí směr z kompasu v observaci
+    "approach_shaping_k": 0.0,
+
+    # First discovery bonus — jednorázová odměna za první nalezení ohně v epizodě
+    "first_discovery_bonus": 5.0,   # jednorázový bonus, ale ne přehnaný
 }
 
 # ─── Fixed-wing (Commander) ──────────────────────────────────────────────────

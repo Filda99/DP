@@ -646,25 +646,29 @@ class DroneFireEnv(ParallelEnv):
         self.fire_y = random.uniform(-safe_zone_fire, safe_zone_fire)
 
         # =========================================================
-        # PROBABILISTIC CURRICULUM (Smíšená obtížnost bez útesů)
+        # PROBABILISTIC CURRICULUM (fázový — závisí na episode čísle)
         # =========================================================
+        # Fáze 1 (prvních 10k epizod): 70% easy, 15% medium, 15% hard
+        #   → scout se naučí: vidím oheň → velká odměna
+        # Fáze 2 (po 10k): třetiny — rovnoměrná obtížnost
         rand_diff = random.random()
-        
-        if rand_diff < 0.30:
-            # 30 % šance: SNADNÁ MISE (Zrodí se ±20m od ohně)
-            # Udržuje "svalovou paměť" pro visení, centruje oheň a drží výšku.
-            # Kritik díky tomuto vždy vidí nějaké vysoké odměny a neexploduje.
-            spawn_radius = 20.0
-            
-        elif rand_diff < 0.50:
-            # 20 % šance: STŘEDNÍ MISE (Zrodí se ±150m od ohně)
-            # Učí drona hledat oheň v okolí a hrubě používat kompas.
-            spawn_radius = 150.0
-            
+
+        if epizode_number < 10_000:
+            # Fáze 1: převážně blízko ohně
+            if rand_diff < 0.70:
+                spawn_radius = 20.0
+            elif rand_diff < 0.85:
+                spawn_radius = 150.0
+            else:
+                spawn_radius = self.map_bounds * 0.8
         else:
-            # 50 % šance: TĚŽKÁ MISE (Zrodí se kdekoli na mapě)
-            # Učí drona vytrvalosti, letu přes půl mapy a maximální důvěře v kompas.
-            spawn_radius = self.map_bounds * 0.8
+            # Fáze 2: rovnoměrné třetiny
+            if rand_diff < 0.33:
+                spawn_radius = 20.0
+            elif rand_diff < 0.66:
+                spawn_radius = 150.0
+            else:
+                spawn_radius = self.map_bounds * 0.8
 
         # Oheň na náhodné pozici v bezpečné zóně
         safe_zone_fire = self.map_bounds * 0.4
@@ -710,15 +714,22 @@ class DroneFireEnv(ParallelEnv):
                 drone.state_va = 15.0
 
             else:
-                # Quads: Tady vygenerujeme unikátní pozici pro KAŽDÉHO scouta zvlášť!
-                quad_start_x = self.fire_x + random.uniform(-spawn_radius, spawn_radius)
-                quad_start_y = self.fire_y + random.uniform(-spawn_radius, spawn_radius)
-                # quad_start_x = self.fire_x + random.uniform(-20, 20)
-                # quad_start_y = self.fire_y + random.uniform(-20, 20)
+                # Phase 8: Scout spawn — víc těžkých misí, méně zadarmo
+                # 15% blízko (20-50m), 25% střed (50-200m), 60% daleko (200-600m)
+                r = random.random()
+                if r < 0.15:
+                    scout_spawn_dist = random.uniform(20.0, 50.0)
+                elif r < 0.40:
+                    scout_spawn_dist = random.uniform(50.0, 200.0)
+                else:
+                    scout_spawn_dist = random.uniform(200.0, 600.0)
+                scout_angle = random.uniform(0, 2 * np.pi)
+                quad_start_x = self.fire_x + scout_spawn_dist * np.cos(scout_angle)
+                quad_start_y = self.fire_y + scout_spawn_dist * np.sin(scout_angle)
                 
-                # Pojistka proti spawnu za mapou
-                quad_start_x = float(np.clip(quad_start_x, -self.map_bounds * 0.9, self.map_bounds * 0.9))
-                quad_start_y = float(np.clip(quad_start_y, -self.map_bounds * 0.9, self.map_bounds * 0.9))
+                # Pojistka proti spawnu za mapou (s větším marginem)
+                quad_start_x = float(np.clip(quad_start_x, -self.map_bounds * 0.8, self.map_bounds * 0.8))
+                quad_start_y = float(np.clip(quad_start_y, -self.map_bounds * 0.8, self.map_bounds * 0.8))
                 quad_start_z = random.uniform(30.0, 60.0)
                 
                 self.sim.add_quadcopter(agent, position=[quad_start_x, quad_start_y, quad_start_z])
@@ -733,17 +744,12 @@ class DroneFireEnv(ParallelEnv):
         # Jerk penalty: tracks previous actions for smoothness reward
         self._last_actions_rw = {}
 
-        # Potential-based shaping: track previous distance to fire per scout/fw
+        # Potential-based shaping: track previous distance to fire per scout
         self._prev_fire_dists = {}
         for q in self.quad_agents:
             if q in self.sim.drones:
                 pos = self.sim.drones[q].get_position()
                 self._prev_fire_dists[q] = np.sqrt((pos[0] - self.fire_x)**2 + (pos[1] - self.fire_y)**2)
-                
-        for f in self.fixed_agents:
-            if f in self.sim.drones:
-                pos = self.sim.drones[f].get_position()
-                self._prev_fire_dists[f] = np.hypot(pos[0] - self.fire_x, pos[1] - self.fire_y)
 
         # Fire spread tracking: how many cells are burning at episode start
         if self.sim.environment.fire_grid is not None:
@@ -959,9 +965,10 @@ class DroneFireEnv(ParallelEnv):
                 fire_bonus = min(eff * 50.0, 3.0)  # cap per-step bonus
                 rewards[f_agent] += fire_bonus
 
-                # Scouts get 20% of the extinguish bonus — their messages guided commander
-                for q_agent in [a for a in self.quad_agents if a in rewards]:
-                    rewards[q_agent] += fire_bonus * 0.2
+                # NOTE: scouts no longer receive team extinguish bonus.
+                # The 20% share created unattributable reward noise that
+                # destroyed the scout's fire-seeking policy via PPO.
+                # Scout credit comes purely from its own mission reward.
 
             elif is_dropping and f_agent in self.sim.drones:
                 # Dense reward: dropping water near fire
@@ -1057,16 +1064,22 @@ class DroneFireEnv(ParallelEnv):
     def _get_quad_reward(self, agent):
         """Compute the mission reward for a quadrotor scout.
 
-        Jednoduchý design (osvědčený z commitu e571a46):
+        Design:
+          - Approach shaping → malý gradient k ohni (potential-based)
           - Vidí oheň → masivní odměna (flat + intensity)
-          - Nevidí oheň → kompas k ohni (approach speed)
           - Speed penalty nad ohněm → nutí zastavit
-        Žádné dwell, center, jerk, fire-lost — jen čistý silný signál.
         """
         drone = self.sim.drones[agent]
         pos = drone.get_position()
         vel = drone.get_velocity()
         reward = 0.0
+
+        # ── Approach potential shaping (vždy aktivní) ──
+        dist_to_fire = np.hypot(pos[0] - self.fire_x, pos[1] - self.fire_y)
+        prev_dist = self._prev_fire_dists.get(agent, dist_to_fire)
+        delta = prev_dist - dist_to_fire  # kladné = přiblížení
+        reward += delta * QUAD["approach_shaping_k"]
+        self._prev_fire_dists[agent] = dist_to_fire
 
         local_map = self._extract_local_fire_map(pos)
         avg_fire_intensity = np.mean(local_map)
@@ -1077,44 +1090,30 @@ class DroneFireEnv(ParallelEnv):
             reward += avg_fire_intensity * QUAD["fire_intensity_k"]
             speed = np.linalg.norm(vel)
             reward -= speed * QUAD["fire_speed_pen"]
-        else:
-            # ── Nevidí oheň → kompas ──
-            vec_to_fire = np.array([self.fire_x - pos[0], self.fire_y - pos[1]])
-            dist_to_fire = np.linalg.norm(vec_to_fire)
-            if dist_to_fire > 5.0:
-                dir_to_fire = vec_to_fire / dist_to_fire
-                approach_speed = np.dot(vel[:2], dir_to_fire)
-                reward += approach_speed * QUAD["approach_k"]
+
+            # ── First discovery bonus (jednorázový per epizoda) ──
+            if not self.fire_discovered:
+                self.fire_discovered = True
+                reward += QUAD["first_discovery_bonus"]
 
         return reward
     
     def _get_fixed_reward_nav(self, agent):
+        """FW navigation reward — BEZ ground-truth fire pozice.
+
+        FW musí se naučit navigovat k ohni čistě přes scout zprávy
+        (cross-attention v CommanderActor). Reward zde jen:
+          - Extinguish efektivita (řešena v step() team reward)
+          - Refill gradient když je prázdný tank
+          - Altitude sweet spot když je blízko ohně (ví z extinguish feedback)
+        """
         drone = self.sim.drones[agent]
         pos = drone.get_position()
         water_lvl = drone.current_water / drone.water_capacity if drone.water_capacity > 0 else 0.0
 
-        # Potential-based
-        dist_to_fire = np.hypot(pos[0] - self.fire_x, pos[1] - self.fire_y)
-        prev_dist = self._prev_fire_dists.get(agent, dist_to_fire)
-        delta = prev_dist - dist_to_fire
-        self._prev_fire_dists[agent] = dist_to_fire
+        reward = 0.0
 
-        reward = delta * 0.01
-
-        if water_lvl > 0.05:
-            # MÁ VODU → zónové bonusy za blízkost k ohni
-            if dist_to_fire < 300:
-                reward += 0.3
-            if dist_to_fire < 150:
-                reward += 0.5
-            # Altitude sweet spot
-            if dist_to_fire < 300:
-                alt = pos[2]
-                if 60 < alt < 120:
-                    reward += 0.1
-                elif alt > 200 or alt < 30:
-                    reward -= 0.1
-        else:
+        if water_lvl < 0.05:
             # PRÁZDNÝ TANK → gradient k refill zóně
             if self.sim.environment.refill_zone is not None:
                 rz = self.sim.environment.refill_zone['position']
