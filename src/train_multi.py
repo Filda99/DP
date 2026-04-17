@@ -660,14 +660,15 @@ def train_multi(resume_scout="", resume_cmdr="",
     grid_size_m = 2000.0
     map_size_range = (1000, 2000)  # random map size per episode [m]
     num_episodes = 30_000
-    max_steps = 4000              # buffer size (upper bound)
-    steps_range = (1500, 4000)     # actual ep length randomized per episode
+    max_steps = 4000              # buffer size — full episode length
+    steps_range = (1500, 4000)    # long episodes; BPTT chunked to 128 steps
+    bptt_chunk = 128              # GRU backprop limit per chunk
     waypoint_steps = 30
     waypoint_range = 200.0
-    num_decisions_cmdr = max_steps // waypoint_steps  # 80
+    num_decisions_cmdr = max_steps // waypoint_steps  # 133
 
     gamma = 0.99
-    gamma_cmdr = 0.95          # shorter horizon for 40 decisions
+    gamma_cmdr = 0.95          # shorter horizon for commander decisions
     gae_lambda = 0.95
     clip_coef = 0.2
     update_epochs = 4
@@ -675,14 +676,14 @@ def train_multi(resume_scout="", resume_cmdr="",
     eps_per_worker = 2
     episodes_per_batch = num_workers * eps_per_worker
 
-    lr_scout = 1e-5             # Phase 7: unfrozen but conservative
+    lr_scout = 1e-4             # zvýšeno z 1e-5; approach shaping vypnuto, čistý fire reward je stabilní
     lr_cmdr = 5e-4
     lr_critic = 3e-4
     hidden_dim_scout = 128
     hidden_dim_cmdr = 64
     scout_msg_dim = 5
 
-    entropy_scout = 0.003       # Phase 7: tighter — scout already knows how to fly
+    entropy_scout = 0.01        # Phase 8: higher entropy to allow re-exploration after policy drift
     entropy_cmdr = 0.01        # prevent premature std collapse
 
     # ── Dims ─────────────────────────────────────────────────────────────
@@ -756,8 +757,8 @@ def train_multi(resume_scout="", resume_cmdr="",
         print(f"  Loaded commander from {resume_cmdr}")
 
     # ── Optimizers (fully separate) ──────────────────────────────────────
-    for param in scout_actor.parameters():
-        param.requires_grad = True          # Phase 7: unfrozen for joint fine-tuning
+    # for param in scout_actor.parameters():
+    #     param.requires_grad = True          # Phase 8: unfrozen, pure fire reward
     optimizer_scout = optim.Adam(filter(lambda p: p.requires_grad, scout_actor.parameters()), lr=lr_scout)
     cmdr_main_params = [p for n, p in cmdr_actor.named_parameters()
                         if n != 'action_logstd']
@@ -918,6 +919,10 @@ def train_multi(resume_scout="", resume_cmdr="",
                        os.path.join(save_dir, "scout_best.pt"))
             torch.save(cmdr_actor.state_dict(),
                        os.path.join(save_dir, "cmdr_best.pt"))
+            torch.save(critic_scout.state_dict(),
+                       os.path.join(save_dir, "critic_scout_best.pt"))
+            torch.save(critic_cmdr.state_dict(),
+                       os.path.join(save_dir, "critic_cmdr_best.pt"))
             print(f"   ⭐ New best! rolling avg = {best_avg:.1f}")
 
         if batch_idx % 10 == 0:
@@ -925,6 +930,10 @@ def train_multi(resume_scout="", resume_cmdr="",
                        os.path.join(save_dir, f"scout_b{batch_idx:04d}.pt"))
             torch.save(cmdr_actor.state_dict(),
                        os.path.join(save_dir, f"cmdr_b{batch_idx:04d}.pt"))
+            torch.save(critic_scout.state_dict(),
+                       os.path.join(save_dir, f"critic_scout_b{batch_idx:04d}.pt"))
+            torch.save(critic_cmdr.state_dict(),
+                       os.path.join(save_dir, f"critic_cmdr_b{batch_idx:04d}.pt"))
 
         # ==============================================================
         # PPO UPDATE — SCOUT
@@ -986,27 +995,50 @@ def train_multi(resume_scout="", resume_cmdr="",
                 mb_ns = s_neigh_s_seq[mb]
                 mb_nm = s_neigh_m_seq[mb]
                 mb_acts = s_actions_seq[mb]
-                mb_old_lp = s_logprobs_seq[mb].view(-1)
-                mb_adv = s_adv_seq[mb].reshape(-1)
-                mb_alive_s = s_alive_seq[mb].reshape(-1)
-                mb_rets = s_returns_norm_seq[mb].reshape(-1)
+                mb_old_lp = s_logprobs_seq[mb]
+                mb_adv = s_adv_seq[mb]
+                mb_alive_s = s_alive_seq[mb]
+                mb_rets = s_returns_norm_seq[mb]
                 mb_cs = s_cstates_seq[mb]
                 mb_h = h_scout_seq[mb].transpose(0, 1)
 
-                dist, _, _ = scout_actor(mb_maps, mb_self, mb_ns, mb_nm, mb_h)
-                flat_acts = mb_acts.view(-1, 4)
-                new_lp = dist.log_prob(flat_acts).sum(1)
-                entropy = dist.entropy().sum(1)
+                # ── Chunked BPTT: process sequence in bptt_chunk-size windows ──
+                # GRU hidden state is detached between chunks so gradients
+                # only flow back ~bptt_chunk steps (not the full episode).
+                chunk_new_lps = []
+                chunk_entropies = []
+                h_chunk = mb_h.detach()
+                T = mb_maps.size(1)  # actual sequence length (= max_steps)
 
-                log_ratio = (new_lp - mb_old_lp).clamp(-10.0, 10.0)
+                for t0 in range(0, T, bptt_chunk):
+                    t1 = min(t0 + bptt_chunk, T)
+                    c_maps = mb_maps[:, t0:t1]
+                    c_self = mb_self[:, t0:t1]
+                    c_ns = mb_ns[:, t0:t1]
+                    c_nm = mb_nm[:, t0:t1]
+                    c_acts = mb_acts[:, t0:t1].reshape(-1, 4)
+
+                    dist_c, _, h_chunk = scout_actor(c_maps, c_self, c_ns, c_nm, h_chunk)
+                    chunk_new_lps.append(dist_c.log_prob(c_acts).sum(1))
+                    chunk_entropies.append(dist_c.entropy().sum(1))
+                    h_chunk = h_chunk.detach()  # cut gradient flow between chunks
+
+                new_lp = torch.cat(chunk_new_lps)
+                entropy = torch.cat(chunk_entropies)
+                flat_old_lp = mb_old_lp.reshape(-1)
+                flat_adv = mb_adv.reshape(-1)
+                flat_alive_s = mb_alive_s.reshape(-1)
+                flat_rets = mb_rets.reshape(-1)
+
+                log_ratio = (new_lp - flat_old_lp).clamp(-10.0, 10.0)
                 ratio = torch.exp(log_ratio)
-                pg1 = -mb_adv * ratio
-                pg2 = -mb_adv * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
+                pg1 = -flat_adv * ratio
+                pg2 = -flat_adv * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
                 surr = torch.max(pg1, pg2)
 
-                n_alive_s = mb_alive_s.sum().clamp(min=1.0)
-                loss_s = ((surr * mb_alive_s).sum() / n_alive_s
-                          - entropy_scout * (entropy * mb_alive_s).sum() / n_alive_s)
+                n_alive_s = flat_alive_s.sum().clamp(min=1.0)
+                loss_s = ((surr * flat_alive_s).sum() / n_alive_s
+                          - entropy_scout * (entropy * flat_alive_s).sum() / n_alive_s)
 
                 if torch.isfinite(loss_s):
                     if loss_s.requires_grad:
@@ -1018,8 +1050,8 @@ def train_multi(resume_scout="", resume_cmdr="",
 
                 # Critic value loss (separate optimizer, masked by alive)
                 v_pred, _ = critic_scout(mb_cs, None)
-                v_err = (v_pred - mb_rets) ** 2
-                v_loss = (v_err * mb_alive_s).sum() / n_alive_s
+                v_err = (v_pred - flat_rets) ** 2
+                v_loss = (v_err * flat_alive_s).sum() / n_alive_s
                 if torch.isfinite(v_loss):
                     optimizer_critic_scout.zero_grad()
                     v_loss.backward()
