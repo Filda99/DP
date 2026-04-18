@@ -90,120 +90,130 @@ def collect_scout_worker(num_eps, scout_w, critic_w, config, batch_start_idx):
         local_env.max_steps = ep_max_steps
         obs, _ = local_env.reset(epizode_number=batch_start_idx + ep_off)
 
-        q_agent = local_env.quad_agents[0]
-        scout_h = torch.zeros(1, 1, hidden_dim)
-        critic_h = torch.zeros(1, 1, hidden_dim)
+        # Per-scout state tracking
+        quad_agents = local_env.quad_agents
+        scout_h = {q: torch.zeros(1, 1, hidden_dim) for q in quad_agents}
+        critic_h = {q: torch.zeros(1, 1, hidden_dim) for q in quad_agents}
+        scout_ep_data = {q: [] for q in quad_agents}
+        scout_alive = {q: True for q in quad_agents}
+        scout_lifespan = {q: ep_max_steps for q in quad_agents}
+        death_cause_q = {q: "survived" for q in quad_agents}
+        ep_reward = {q: 0.0 for q in quad_agents}
 
-        scout_h0_list.append(scout_h.clone())
-
-        scout_ep_data = []
-        ep_reward = 0.0
-        scout_alive = True
-        scout_lifespan = ep_max_steps
-        death_cause = "survived"
+        for q in quad_agents:
+            scout_h0_list.append(scout_h[q].clone())
 
         for step in range(ep_max_steps):
             actions = {}
 
-            if scout_alive and q_agent in local_env.agents:
-                with torch.no_grad():
-                    l_map = torch.FloatTensor(obs[q_agent]["local_map"]).unsqueeze(0)
-                    s_st = torch.FloatTensor(obs[q_agent]["self_state"]).unsqueeze(0)
-                    n_s = torch.FloatTensor(obs[q_agent]["neighbor_states"]).unsqueeze(0)
-                    n_m = torch.BoolTensor(obs[q_agent]["neighbor_mask"]).unsqueeze(0)
+            for q in quad_agents:
+                if scout_alive[q] and q in local_env.agents:
+                    with torch.no_grad():
+                        l_map = torch.FloatTensor(obs[q]["local_map"]).unsqueeze(0)
+                        s_st = torch.FloatTensor(obs[q]["self_state"]).unsqueeze(0)
+                        n_s = torch.FloatTensor(obs[q]["neighbor_states"]).unsqueeze(0)
+                        n_m = torch.BoolTensor(obs[q]["neighbor_mask"]).unsqueeze(0)
 
-                    dist_s, msg_s, h_out = local_scout(l_map, s_st, n_s, n_m, scout_h)
-                    act_s = dist_s.sample()
+                        dist_s, msg_s, h_out = local_scout(l_map, s_st, n_s, n_m, scout_h[q])
+                        act_s = dist_s.sample()
 
-                    priv_s = torch.FloatTensor(
-                        local_env.get_privileged_state(q_agent)).unsqueeze(0)
-                    v_s, critic_h = local_critic(priv_s, critic_h)
+                        priv_s = torch.FloatTensor(
+                            local_env.get_privileged_state(q)).unsqueeze(0)
+                        v_s, c_h_out = local_critic(priv_s, critic_h[q])
 
-                scout_ep_data.append({
-                    "alive": True,
-                    "map": l_map, "self": s_st, "n_s": n_s, "n_m": n_m,
-                    "h": scout_h, "act": act_s,
-                    "lp": dist_s.log_prob(act_s).sum(1),
-                    "reward": 0.0,
-                    "value": v_s.item(),
-                    "critic_state": priv_s,
-                })
-                scout_h = h_out
-                actions[q_agent] = act_s.squeeze(0).numpy()
-            else:
-                scout_alive = False
-                scout_ep_data.append({
-                    "alive": False, "reward": 0.0, "value": 0.0,
-                    "critic_state": torch.zeros(1, scout_priv_dim),
-                })
+                    scout_ep_data[q].append({
+                        "alive": True,
+                        "map": l_map, "self": s_st, "n_s": n_s, "n_m": n_m,
+                        "h": scout_h[q], "act": act_s,
+                        "lp": dist_s.log_prob(act_s).sum(1),
+                        "reward": 0.0,
+                        "value": v_s.item(),
+                        "critic_state": priv_s,
+                    })
+                    scout_h[q] = h_out
+                    critic_h[q] = c_h_out
+                    actions[q] = act_s.squeeze(0).numpy()
+                else:
+                    scout_alive[q] = False
+                    scout_ep_data[q].append({
+                        "alive": False, "reward": 0.0, "value": 0.0,
+                        "critic_state": torch.zeros(1, scout_priv_dim),
+                    })
 
             # ENV STEP
             if local_env.agents:
                 obs, rewards, terms, truncs, infos = local_env.step(actions)
 
-                r = rewards.get(q_agent, 0.0)
-                if scout_alive and q_agent in local_env.agents:
-                    scout_ep_data[-1]["reward"] = r
-                    ep_reward += r
-                if terms.get(q_agent, False) or truncs.get(q_agent, False):
-                    scout_alive = False
-                    scout_lifespan = step + 1
-                    if terms.get(q_agent, False):
-                        death_cause = infos.get(q_agent, {}).get("death_cause", "unknown")
-                    else:
-                        death_cause = "survived"
+                for q in quad_agents:
+                    r = rewards.get(q, 0.0)
+                    if scout_alive[q] and q in local_env.agents:
+                        scout_ep_data[q][-1]["reward"] = r
+                        ep_reward[q] += r
+                    if terms.get(q, False) or truncs.get(q, False):
+                        scout_alive[q] = False
+                        scout_lifespan[q] = step + 1
+                        if terms.get(q, False):
+                            death_cause_q[q] = infos.get(q, {}).get("death_cause", "unknown")
+                        else:
+                            death_cause_q[q] = "survived"
             else:
-                if scout_alive:
-                    scout_alive = False
-                    scout_lifespan = step + 1
-                    death_cause = "env_empty"
+                for q in quad_agents:
+                    if scout_alive[q]:
+                        scout_alive[q] = False
+                        scout_lifespan[q] = step + 1
+                        death_cause_q[q] = "env_empty"
 
-            if not scout_alive:
+            if not any(scout_alive.values()):
                 break
 
-        # GAE
+        # GAE + buffer packing for EACH scout independently
         gamma = config['gamma']
         gae_lam = config['gae_lambda']
-        gae = 0.0
-        for i in reversed(range(len(scout_ep_data))):
-            d = scout_ep_data[i]
-            r_t = d["reward"]
-            v_t = d["value"]
-            v_next = scout_ep_data[i + 1]["value"] if i + 1 < len(scout_ep_data) else 0.0
-            delta = r_t + gamma * v_next - v_t
-            gae = delta + gamma * gae_lam * gae
-            d["ret"] = gae + v_t
 
-        # Pack buffer
-        for i in range(ep_max_steps):
-            if i < len(scout_ep_data):
-                d = scout_ep_data[i]
-                if d["alive"]:
-                    scout_buf["maps"].append(d["map"])
-                    scout_buf["self_states"].append(d["self"])
-                    scout_buf["neighbor_states"].append(d["n_s"])
-                    scout_buf["neighbor_masks"].append(d["n_m"])
-                    scout_buf["actions"].append(d["act"])
-                    scout_buf["logprobs"].append(d["lp"])
-                    scout_buf["returns"].append(d["ret"])
-                    scout_buf["values"].append(d["value"])
-                    scout_buf["critic_states"].append(d["critic_state"])
-                    scout_buf["alive"].append(1.0)
-                    continue
-            scout_buf["maps"].append(d_map)
-            scout_buf["self_states"].append(d_scout_self)
-            scout_buf["neighbor_states"].append(d_neigh_s)
-            scout_buf["neighbor_masks"].append(d_neigh_m)
-            scout_buf["actions"].append(torch.zeros(1, 4))
-            scout_buf["logprobs"].append(torch.tensor([0.0]))
-            scout_buf["returns"].append(0.0)
-            scout_buf["values"].append(0.0)
-            scout_buf["critic_states"].append(torch.zeros(1, scout_priv_dim))
-            scout_buf["alive"].append(0.0)
+        for q in quad_agents:
+            ep_data = scout_ep_data[q]
+            gae = 0.0
+            for i in reversed(range(len(ep_data))):
+                d = ep_data[i]
+                r_t = d["reward"]
+                v_t = d["value"]
+                v_next = ep_data[i + 1]["value"] if i + 1 < len(ep_data) else 0.0
+                delta = r_t + gamma * v_next - v_t
+                gae = delta + gamma * gae_lam * gae
+                d["ret"] = gae + v_t
 
-        all_rewards.append(ep_reward)
-        all_lifespans.append(scout_lifespan)
-        all_deaths.append(death_cause)
+            # Pack buffer
+            for i in range(ep_max_steps):
+                if i < len(ep_data):
+                    d = ep_data[i]
+                    if d["alive"]:
+                        scout_buf["maps"].append(d["map"])
+                        scout_buf["self_states"].append(d["self"])
+                        scout_buf["neighbor_states"].append(d["n_s"])
+                        scout_buf["neighbor_masks"].append(d["n_m"])
+                        scout_buf["actions"].append(d["act"])
+                        scout_buf["logprobs"].append(d["lp"])
+                        scout_buf["returns"].append(d["ret"])
+                        scout_buf["values"].append(d["value"])
+                        scout_buf["critic_states"].append(d["critic_state"])
+                        scout_buf["alive"].append(1.0)
+                        continue
+                scout_buf["maps"].append(d_map)
+                scout_buf["self_states"].append(d_scout_self)
+                scout_buf["neighbor_states"].append(d_neigh_s)
+                scout_buf["neighbor_masks"].append(d_neigh_m)
+                scout_buf["actions"].append(torch.zeros(1, 4))
+                scout_buf["logprobs"].append(torch.tensor([0.0]))
+                scout_buf["returns"].append(0.0)
+                scout_buf["values"].append(0.0)
+                scout_buf["critic_states"].append(torch.zeros(1, scout_priv_dim))
+                scout_buf["alive"].append(0.0)
+
+        # Track per-episode average reward + per-scout lifespans/deaths
+        all_rewards.append(sum(ep_reward.values()) / N_QUADS)
+        for q in quad_agents:
+            all_lifespans.append(scout_lifespan[q])
+            all_deaths.append(death_cause_q[q])
 
     local_env.sim.stop_simulation()
 
@@ -247,7 +257,7 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
     print(f"Device: {device}\n")
 
     # ── Hyperparameters ──────────────────────────────────────────────────
-    N_QUADS = 1
+    N_QUADS = 2
     grid_size_m = 1000.0
     map_size_range = None          # fixed map size during training (08_Quad used 500 fixed)
     num_episodes = 30_000
