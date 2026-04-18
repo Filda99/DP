@@ -190,7 +190,7 @@ class ScoutActor(nn.Module):
         # Using nn.Parameter means log_std is optimised directly by the PPO
         # objective alongside all other network weights.
         self.action_mean    = nn.Linear(hidden_dim, action_dim)
-        self.action_logstd  = nn.Parameter(torch.full((1, action_dim), -2.0))  # std ≈ 0.135 at init
+        self.action_logstd  = nn.Parameter(torch.full((1, action_dim), -0.5))  # std ≈ 0.135 at init
 
         # ------------------------------------------------------------------
         # Output head 2 -- Outbound message (communication)
@@ -302,8 +302,8 @@ class ScoutActor(nn.Module):
         # message = torch.cat([explicit_msg, learned_msg], dim=1)  # (B*S, 5)
         
         # Zpráva obsahuje: [norm_pos_x, norm_pos_y, intensity, rel_x, rel_y]
-        # Indexy v self_state: 0=x, 1=y, 14=intensity, 12=rel_x, 13=rel_y
-        message = self_state[:, [0, 1, 14, 12, 13]]
+        # Indexy v self_state (16-dim): 0=x, 1=y, 15=intensity, 13=rel_x, 14=rel_y
+        message = self_state[:, [0, 1, 15, 13, 14]]
 
         return dist, message, new_hidden
 

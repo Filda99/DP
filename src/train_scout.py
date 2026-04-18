@@ -248,12 +248,11 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
 
     # ── Hyperparameters ──────────────────────────────────────────────────
     N_QUADS = 1
-    grid_size_m = 2000.0
-    map_size_range = (1000.0, 2000.0)
+    grid_size_m = 1000.0
+    map_size_range = None          # fixed map size during training (08_Quad used 500 fixed)
     num_episodes = 30_000
-    max_steps = 4000              # buffer size — full episode length
-    steps_range = (1500, 4000)    # long episodes; BPTT chunked to 128 steps
-    bptt_chunk = 128              # GRU backprop limit per chunk
+    max_steps = 500                # fixed 500 steps like 08_Quad
+    steps_range = None             # no random episode length — curriculum handles difficulty
 
     gamma = 0.99
     gae_lambda = 0.95
@@ -263,11 +262,12 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
     eps_per_worker = 2
     episodes_per_batch = num_workers * eps_per_worker
 
-    lr_scout = 1e-4               # aggressive at start, but not destroy-policy levels
+    lr_scout = 3e-4
     lr_critic = 3e-4
     hidden_dim = 128
     scout_msg_dim = 5
-    entropy_coef = 0.05           # sníženo z 0.1 — scout má jasnou misi, nepotřebuje tolik explorace
+    entropy_coef = 0.01       # start low like 08_Quad (0.01) — fast convergence
+    entropy_coef_max = 0.05   # ramp up after basic behavior is locked in
 
     # ── Dims ─────────────────────────────────────────────────────────────
     temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=0,
@@ -336,10 +336,14 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
     print(f"Checkpoints → {save_dir}\n")
 
     best_avg = -1e9
-    episodes_played = 5000
+    episodes_played = 0
     num_batches = num_episodes // episodes_per_batch
 
     for batch_idx in range(1, num_batches + 1):
+        # ── Entropy scheduling: low early (fast convergence) → higher later ──
+        progress = min(1.0, episodes_played / 10_000)
+        current_entropy_coef = entropy_coef + (entropy_coef_max - entropy_coef) * progress
+
         scout_w = {k: v.cpu() for k, v in scout_actor.state_dict().items()}
         critic_w = {k: v.cpu() for k, v in critic.state_dict().items()}
         t0 = time.time()
@@ -490,50 +494,27 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
                 mb_ns = s_neigh_s_seq[mb]
                 mb_nm = s_neigh_m_seq[mb]
                 mb_acts = s_actions_seq[mb]
-                mb_old_lp = s_logprobs_seq[mb]
-                mb_adv = s_adv_seq[mb]
-                mb_alive = s_alive_seq[mb]
-                mb_rets = s_returns_norm_seq[mb]
+                mb_old_lp = s_logprobs_seq[mb].view(-1)
+                mb_adv = s_adv_seq[mb].reshape(-1)
+                mb_alive = s_alive_seq[mb].reshape(-1)
+                mb_rets = s_returns_norm_seq[mb].reshape(-1)
                 mb_cs = s_cstates_seq[mb]
                 mb_h = h_scout_seq[mb].transpose(0, 1)
 
-                # ── Chunked BPTT: process sequence in bptt_chunk-size windows ──
-                # GRU hidden state is detached between chunks so gradients
-                # only flow back ~bptt_chunk steps (not the full episode).
-                chunk_new_lps = []
-                chunk_entropies = []
-                h_chunk = mb_h.detach()
-                T = mb_maps.size(1)  # actual sequence length (= batch_ep_max)
+                dist, _, _ = scout_actor(mb_maps, mb_self, mb_ns, mb_nm, mb_h)
+                flat_acts = mb_acts.view(-1, 4)
+                new_lp = dist.log_prob(flat_acts).sum(1)
+                entropy = dist.entropy().sum(1)
 
-                for t0 in range(0, T, bptt_chunk):
-                    t1 = min(t0 + bptt_chunk, T)
-                    c_maps = mb_maps[:, t0:t1]
-                    c_self = mb_self[:, t0:t1]
-                    c_ns = mb_ns[:, t0:t1]
-                    c_nm = mb_nm[:, t0:t1]
-                    c_acts = mb_acts[:, t0:t1].reshape(-1, 4)
-
-                    dist_c, _, h_chunk = scout_actor(c_maps, c_self, c_ns, c_nm, h_chunk)
-                    chunk_new_lps.append(dist_c.log_prob(c_acts).sum(1))
-                    chunk_entropies.append(dist_c.entropy().sum(1))
-                    h_chunk = h_chunk.detach()  # cut gradient flow between chunks
-
-                new_lp = torch.cat(chunk_new_lps)       # (mb_eps * T,)
-                entropy = torch.cat(chunk_entropies)     # (mb_eps * T,)
-                flat_old_lp = mb_old_lp.reshape(-1)
-                flat_adv = mb_adv.reshape(-1)
-                flat_alive = mb_alive.reshape(-1)
-                flat_rets = mb_rets.reshape(-1)
-
-                log_ratio = (new_lp - flat_old_lp).clamp(-10.0, 10.0)
+                log_ratio = (new_lp - mb_old_lp).clamp(-10.0, 10.0)
                 ratio = torch.exp(log_ratio)
-                pg1 = -flat_adv * ratio
-                pg2 = -flat_adv * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
+                pg1 = -mb_adv * ratio
+                pg2 = -mb_adv * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
                 surr = torch.max(pg1, pg2)
 
-                n_alive = flat_alive.sum().clamp(min=1.0)
-                loss = ((surr * flat_alive).sum() / n_alive
-                        - entropy_coef * (entropy * flat_alive).sum() / n_alive)
+                n_alive = mb_alive.sum().clamp(min=1.0)
+                loss = ((surr * mb_alive).sum() / n_alive
+                        - current_entropy_coef * (entropy * mb_alive).sum() / n_alive)
 
                 if torch.isfinite(loss):
                     optimizer_scout.zero_grad()
@@ -543,8 +524,8 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
                     total_loss += loss.item()
 
                 v_pred, _ = critic(mb_cs, None)
-                v_err = (v_pred - flat_rets) ** 2
-                v_loss = (v_err * flat_alive).sum() / n_alive
+                v_err = (v_pred - mb_rets) ** 2
+                v_loss = (v_err * mb_alive).sum() / n_alive
                 if torch.isfinite(v_loss):
                     optimizer_critic.zero_grad()
                     v_loss.backward()

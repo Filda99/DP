@@ -23,10 +23,10 @@ def run_demo():
     MAX_STEPS = 500
     
     # Který model chceme načíst? (Změň číslo podle toho, který měl u tebe nejlepší Reward)
-    MODEL_PATH = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_solo/scout_b0100.pt"
+    MODEL_PATH = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_solo/scout_b0190.pt"
     
     # 2. Inicializace prostředí
-    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=1000.0, max_steps=MAX_STEPS)
+    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=600.0, max_steps=MAX_STEPS)
     
     # Zjištění dimenzí (stejné jako v train.py)
     obs_q = env.observation_space("quad_0")
@@ -38,7 +38,7 @@ def run_demo():
     scout_actor = ScoutActor(self_state_dim=scout_self_dim, msg_dim=scout_msg_dim, hidden_dim=scout_hidden_dim)
     
     if os.path.exists(MODEL_PATH):
-        scout_actor.load_state_dict(torch.load(MODEL_PATH))
+        scout_actor.load_state_dict(torch.load(MODEL_PATH), strict=False)
         print(f"✅ Model {MODEL_PATH} úspěšně načten!")
     else:
         print(f"❌ CHYBA: Model {MODEL_PATH} neexistuje! Zkontroluj název souboru.")
@@ -49,7 +49,7 @@ def run_demo():
 
     # 4. Spuštění Epizody
     # Zvolíme seed, aby oheň byl na nějakém pěkném místě pro ukázku
-    obs, _ = env.reset(seed=102, epizode_number=2000) 
+    obs, _ = env.reset(seed=102, epizode_number=20000) 
     hidden_state = torch.zeros(1, 1, scout_hidden_dim)
     
     frames = []

@@ -105,16 +105,14 @@ class DroneFireEnv(ParallelEnv):
         # which is why we store them in a dict keyed by agent name.
         #
         # --- 1. Scout (Quad) observation ---
-        # self_state vector (15 floats):
-        #   0-2  : normalised position  x, y, z   (divided by map_bounds)
+        # self_state vector (16 floats):
+        #   0-2  : normalised position  x, y, z   (divided by NORM_DIST)
         #   3-5  : normalised velocity  vx, vy, vz (divided by 20 m/s)
         #   6-9  : normalised distances to the four map edges
-        #           (north, south, east, west — divided by grid_size_m)
-        #   10-11: static fire start position relative to drone
-        #           (used as a coarse compass pointing to the fire origin)
-        #   12-14: dynamic fire info extracted from the local map:
-        #           rel_x, rel_y (centroid in [-1,1]), intensity (mean)
-        self.quad_self_dim = 15
+        #   10-11: fire compass direction (unit vector toward fire)
+        #   12   : normalised distance to fire (dist / NORM_DIST, capped at 2.0)
+        #   13-15: dynamic fire info: rel_x, rel_y (centroid), intensity (mean)
+        self.quad_self_dim = 16
         # max_neighbors is the number of *other* quads whose relative
         # position the attention mechanism can attend to.
         # Guard against num_quads == 1 so we never get a zero-sized tensor.
@@ -219,16 +217,21 @@ class DroneFireEnv(ParallelEnv):
         norm_pos = pos / NORM_DIST
         norm_vel = vel / 20.0
 
-        # --- 2. Static fire start position (Unit Vector Compass) ---
+        # --- 2. Static fire start position (Direction + Distance Compass) ---
+        # Unit vector (direction) + normalised distance so the network knows
+        # both WHERE the fire is and HOW FAR.  The old 08_Quad model that
+        # successfully crossed the map used distance-encoded compass.
         vec_x = self.fire_x - pos[0]
         vec_y = self.fire_y - pos[1]
         dist_to_fire = np.hypot(vec_x, vec_y)
         
-        if dist_to_fire > 0.1: # Ochrana proti dělení nulou
+        if dist_to_fire > 0.1:
             rel_fire_start_x = vec_x / dist_to_fire
             rel_fire_start_y = vec_y / dist_to_fire
         else:
             rel_fire_start_x, rel_fire_start_y = 0.0, 0.0
+        # Normalised distance: 0 = on top of fire, 1 = ~1 km away
+        norm_dist_to_fire = min(dist_to_fire / NORM_DIST, 2.0)
 
         # --- 3. Normalised distances to each map boundary ---
         dist_measurements = self._get_boundary_measurements_norm(pos)
@@ -239,14 +242,15 @@ class DroneFireEnv(ParallelEnv):
         local_map = self._extract_local_fire_map(pos)
         dyn_x, dyn_y, dyn_intensity = self._calculate_fire_info(local_map)
 
-        # --- 5. Assemble the 15-element self_state vector ---
+        # --- 5. Assemble the 16-element self_state vector ---
         self_state = np.array([
             norm_pos[0], norm_pos[1], norm_pos[2],                             # 0-2  : normalised position
             norm_vel[0], norm_vel[1], norm_vel[2],                             # 3-5  : normalised velocity
             dist_measurements[0], dist_measurements[1],                        # 6-7  : distance to north / south edge
             dist_measurements[2], dist_measurements[3],                        # 8-9  : distance to east / west edge
-            rel_fire_start_x, rel_fire_start_y,                                # 10-11: static fire compass
-            dyn_x, dyn_y, dyn_intensity                                        # 12-14: dynamic fire centroid + intensity
+            rel_fire_start_x, rel_fire_start_y,                                # 10-11: static fire compass (direction)
+            norm_dist_to_fire,                                                 # 12   : normalised distance to fire
+            dyn_x, dyn_y, dyn_intensity                                        # 13-15: dynamic fire centroid + intensity
         ], dtype=np.float32)
 
         # --- 6. Build neighbour tensors for self-attention ---
@@ -433,7 +437,7 @@ class DroneFireEnv(ParallelEnv):
         Contains the agent's own obs + privileged extras that the actor
         never sees: fire position, fire intensity, other agent's position.
 
-        Scout  critic input: 15 (self) + 6 (priv) = 21
+        Scout  critic input: 16 (self) + 6 (priv) = 22
         Cmdr   critic input: 17 (self) + 6 (priv) = 23
         """
         own_obs = self._get_obs(agent_name)
@@ -640,46 +644,44 @@ class DroneFireEnv(ParallelEnv):
             dt=0.1
         )
 
-        # Oheň na náhodné pozici v bezpečné zóně
-        safe_zone_fire = self.map_bounds * 0.4
-        self.fire_x = random.uniform(-safe_zone_fire, safe_zone_fire)
-        self.fire_y = random.uniform(-safe_zone_fire, safe_zone_fire)
-
         # =========================================================
-        # PROBABILISTIC CURRICULUM (fázový — závisí na episode čísle)
+        # EPISODE-DEPENDENT CURRICULUM — plynulá interpolace
         # =========================================================
-        # Fáze 1 (prvních 10k epizod): 70% easy, 15% medium, 15% hard
-        #   → scout se naučí: vidím oheň → velká odměna
-        # Fáze 2 (po 10k): třetiny — rovnoměrná obtížnost
-        rand_diff = random.random()
+        # Lineární nárůst obtížnosti místo skokových fází.
+        # Agent se postupně učí navigovat na stále větší vzdálenosti.
+        #
+        # ep 0–3000:      warmup — spawn 20m, oheň u centra (naučí se: oheň=dobro)
+        # ep 3000–25000:  lineární ramp — spawn i fire zone plynule rostou
+        # ep 25000+:      plná obtížnost
+        #
+        # Navíc 15% epizod je vždy easy (refresher) → zabraňuje catastrophic forgetting.
+        ep = epizode_number
 
-        if epizode_number < 10_000:
-            # Fáze 1: převážně blízko ohně
-            if rand_diff < 0.70:
-                spawn_radius = 20.0
-            elif rand_diff < 0.85:
-                spawn_radius = 150.0
-            else:
-                spawn_radius = self.map_bounds * 0.8
+        WARMUP_END = 3000
+        RAMP_END = 25000
+
+        # Vždy 15% šance na easy episode (refresher)
+        is_easy = random.random() < 0.15
+
+        if ep < WARMUP_END or is_easy:
+            safe_zone_fire = self.map_bounds * 0.1
+            spawn_radius = 20.0
+        elif ep < RAMP_END:
+            # Lineární interpolace: t goes 0→1
+            t = (ep - WARMUP_END) / (RAMP_END - WARMUP_END)
+            safe_zone_fire = self.map_bounds * (0.1 + 0.3 * t)   # 0.1 → 0.4
+            spawn_radius_min = 20.0 + 80.0 * t                   # 20 → 100
+            spawn_radius_max = 100.0 + (self.map_bounds * 0.8 - 100.0) * t  # 100 → 400
+            spawn_radius = random.uniform(spawn_radius_min, spawn_radius_max)
         else:
-            # Fáze 2: rovnoměrné třetiny
-            if rand_diff < 0.33:
-                spawn_radius = 20.0
-            elif rand_diff < 0.66:
-                spawn_radius = 150.0
-            else:
-                spawn_radius = self.map_bounds * 0.8
+            # Plná obtížnost
+            safe_zone_fire = self.map_bounds * 0.4
+            spawn_radius = random.uniform(50.0, self.map_bounds * 0.8)
 
         # Oheň na náhodné pozici v bezpečné zóně
-        safe_zone_fire = self.map_bounds * 0.4
         self.fire_x = random.uniform(-safe_zone_fire, safe_zone_fire)
         self.fire_y = random.uniform(-safe_zone_fire, safe_zone_fire)
-        # self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
-        num_ignitions = random.randint(3, 6)
-        for _ in range(num_ignitions):
-            offset_x = random.uniform(-40, 40)
-            offset_y = random.uniform(-40, 40)
-            self.sim.start_fire([self.fire_x + offset_x, self.fire_y + offset_y], intensity=0.5)
+        self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
         self.current_episode = epizode_number
 
         # Refill zona na náhodné pozici, ale s jistou korelací k ohni (aby nebyla úplně mimo mapu)
@@ -691,21 +693,10 @@ class DroneFireEnv(ParallelEnv):
         for agent in self.agents:
             if "fixed" in agent:
                 # Normální spawn pro fixed-wing
-                # fw_spawn_radius = random.uniform(0.0, self.map_bounds * 0.30)
-                # spawn_angle  = random.uniform(0, 2 * np.pi)
-                # fw_start_x   = float(fw_spawn_radius * np.cos(spawn_angle))
-                # fw_start_y   = float(fw_spawn_radius * np.sin(spawn_angle))
-                # Phase 1: spawn 150-400m od ohně
-                # fw_spawn_dist = random.uniform(150.0, 400.0)
-                # Phase 5: spawn kdekoli na mapě, ale dale od ohně než scouti (aby je nespawnul přímo nad ohněm)
-                fw_spawn_dist = random.uniform(400.0, self.map_bounds * 0.7)
-                spawn_angle = random.uniform(0, 2 * np.pi)
-                fw_start_x = float(np.clip(
-                    self.fire_x + fw_spawn_dist * np.cos(spawn_angle),
-                    -self.map_bounds * 0.85, self.map_bounds * 0.85))
-                fw_start_y = float(np.clip(
-                    self.fire_y + fw_spawn_dist * np.sin(spawn_angle),
-                    -self.map_bounds * 0.85, self.map_bounds * 0.85))
+                fw_spawn_radius = random.uniform(0.0, self.map_bounds * 0.30)
+                spawn_angle  = random.uniform(0, 2 * np.pi)
+                fw_start_x   = float(fw_spawn_radius * np.cos(spawn_angle))
+                fw_start_y   = float(fw_spawn_radius * np.sin(spawn_angle))
                 fw_yaw       = random.uniform(-np.pi, np.pi)
 
                 self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 100.0], water_capacity=200.0, yaw=fw_yaw)
@@ -714,22 +705,13 @@ class DroneFireEnv(ParallelEnv):
                 drone.state_va = 15.0
 
             else:
-                # Phase 8: Scout spawn — víc těžkých misí, méně zadarmo
-                # 15% blízko (20-50m), 25% střed (50-200m), 60% daleko (200-600m)
-                r = random.random()
-                if r < 0.15:
-                    scout_spawn_dist = random.uniform(20.0, 50.0)
-                elif r < 0.40:
-                    scout_spawn_dist = random.uniform(50.0, 200.0)
-                else:
-                    scout_spawn_dist = random.uniform(200.0, 600.0)
-                scout_angle = random.uniform(0, 2 * np.pi)
-                quad_start_x = self.fire_x + scout_spawn_dist * np.cos(scout_angle)
-                quad_start_y = self.fire_y + scout_spawn_dist * np.sin(scout_angle)
+                # Quads: Tady vygenerujeme unikátní pozici pro KAŽDÉHO scouta zvlášť!
+                quad_start_x = self.fire_x + random.uniform(-spawn_radius, spawn_radius)
+                quad_start_y = self.fire_y + random.uniform(-spawn_radius, spawn_radius)
                 
-                # Pojistka proti spawnu za mapou (s větším marginem)
-                quad_start_x = float(np.clip(quad_start_x, -self.map_bounds * 0.8, self.map_bounds * 0.8))
-                quad_start_y = float(np.clip(quad_start_y, -self.map_bounds * 0.8, self.map_bounds * 0.8))
+                # Pojistka proti spawnu za mapou
+                quad_start_x = float(np.clip(quad_start_x, -self.map_bounds * 0.9, self.map_bounds * 0.9))
+                quad_start_y = float(np.clip(quad_start_y, -self.map_bounds * 0.9, self.map_bounds * 0.9))
                 quad_start_z = random.uniform(30.0, 60.0)
                 
                 self.sim.add_quadcopter(agent, position=[quad_start_x, quad_start_y, quad_start_z])
@@ -1042,7 +1024,7 @@ class DroneFireEnv(ParallelEnv):
         if dist_to_edge < threshold:
             reward -= SHARED["boundary_penalty"] * (1.0 - dist_to_edge / threshold) ** 2
 
-        # --- Altitude penalty (flat, like old version) ---
+        # --- Altitude penalty ---
         if "fixed" in agent:
             alt_min = FIXED["alt_ideal_min"]
             alt_max = FIXED["alt_ideal_max"]
@@ -1059,26 +1041,37 @@ class DroneFireEnv(ParallelEnv):
             if QUAD["alt_sweet_min"] <= pos[2] <= QUAD["alt_sweet_max"]:
                 reward += QUAD["alt_sweet_bonus"]
 
+            # --- Ground proximity: exponenciální penalizace pod danger_alt ---
+            # Zabraňuje dive-crash strategii: čím níž, tím tvrdší trest.
+            # Na 20m: 0, na 10m: -0.15, na 5m: -0.35, na 0m: -0.5
+            danger_alt = QUAD["ground_danger_alt"]
+            if pos[2] < danger_alt:
+                frac = 1.0 - pos[2] / danger_alt  # 0 na hranici, 1 na zemi
+                reward -= QUAD["ground_danger_pen"] * (frac ** 2)
+
         return reward
 
     def _get_quad_reward(self, agent):
         """Compute the mission reward for a quadrotor scout.
 
-        Design:
-          - Approach shaping → malý gradient k ohni (potential-based)
+        Kombinace osvědčeného designu z 08_Quad + potential-based shaping:
+          - Potential shaping → hustý gradient k ohni (vždy aktivní)
           - Vidí oheň → masivní odměna (flat + intensity)
           - Speed penalty nad ohněm → nutí zastavit
+          - First discovery bonus
         """
         drone = self.sim.drones[agent]
         pos = drone.get_position()
         vel = drone.get_velocity()
         reward = 0.0
 
-        # ── Approach potential shaping (vždy aktivní) ──
+        # ── Potential-based approach shaping (vždy aktivní) ──
+        # Odměna za to, že se dronu ZMENŠILA vzdálenost k ohni oproti
+        # minulému kroku. Potential-based → nemění optimální politiku.
         dist_to_fire = np.hypot(pos[0] - self.fire_x, pos[1] - self.fire_y)
         prev_dist = self._prev_fire_dists.get(agent, dist_to_fire)
         delta = prev_dist - dist_to_fire  # kladné = přiblížení
-        reward += delta * QUAD["approach_shaping_k"]
+        reward += delta * QUAD["approach_k"]
         self._prev_fire_dists[agent] = dist_to_fire
 
         local_map = self._extract_local_fire_map(pos)

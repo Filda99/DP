@@ -103,7 +103,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     local_cmdr.eval()
 
     # Critics (privileged — see global state)
-    scout_priv_dim = config['scout_self_dim'] + 6   # 15 + 6 = 21
+    scout_priv_dim = config['scout_self_dim'] + 6   # 16 + 6 = 22
     cmdr_priv_dim = config['fixed_self_dim'] + 6    # 17 + 6 = 23
     local_critic_scout = PrivilegedCritic(scout_priv_dim, hidden_dim=hidden_dim_scout)
     local_critic_scout.load_state_dict(critic_scout_w)
@@ -486,7 +486,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         ep_reward_cmdr = sum(d["reward"] for d in cmdr_ep_data)
 
         # ==================================================================
-        # SCOUT GAE (per step, over max_steps)
+        # SCOUT GAE (per step, over max_steps), recursive calculation (gae)
         # ==================================================================
         gamma = config['gamma']
         gae_lam = config['gae_lambda']
@@ -768,7 +768,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     ])
 
     # ── Critics (privileged, CTDE) ───────────────────────────────────────
-    scout_priv_dim = scout_self_dim + 6   # 15 + 6 = 21
+    scout_priv_dim = scout_self_dim + 6   # 16 + 6 = 22
     cmdr_priv_dim = fixed_self_dim + 6    # 17 + 6 = 23
 
     critic_scout = PrivilegedCritic(scout_priv_dim, hidden_dim=hidden_dim_scout).to(device)
@@ -952,7 +952,7 @@ def train_multi(resume_scout="", resume_cmdr="",
         h_scout = (torch.cat(agg_h["scout"], dim=0)
                    .squeeze(1).unsqueeze(0).to(device))
 
-        # Advantages = returns - values (GAE already computed correctly)
+        # Advantages = returns - values (GAE already computed on workers)
         s_adv = s_returns - s_values
         alive_bool_s = s_alive > 0.5
         if alive_bool_s.sum() > 1:

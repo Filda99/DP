@@ -8,12 +8,12 @@
 # Všechny hodnoty jsou FIXNÍ — nezávislé na velikosti mapy.
 # NORM_DIST = 1000 v env_core.py normalizuje pozice a vzdálenosti v observacích.
 SHARED = {
-    "survival_bonus":       0.03,  # zpět na 0.03 — přežívání je základ, NN se učí od ohně přes observaci
-    "boundary_penalty":     0.5,   # zvýšeno z 0.3 — silnější odpuzování od hrany
-    "boundary_extra":       0.3,   # extra penalizace pro fixed-wing blízko hranice
-    "crash_penalty":        -50,   # same as old — significant but not overwhelming
-    "reward_clip_min":      -10.0,
-    "reward_clip_max":       10.0,
+    "survival_bonus":       0.02,  # zvýšeno — přežívání musí být cítit i bez ohně
+    "boundary_penalty":     0.3,
+    "boundary_extra":       0.3,
+    "crash_penalty":        -10,   # sníženo z -50 — crash nesmí dominovat learning signál
+    "reward_clip_min":      -5.0,
+    "reward_clip_max":       5.0,
 }
 
 # ─── Quadkoptéra (Scout) ─────────────────────────────────────────────────────
@@ -29,19 +29,25 @@ QUAD = {
     "alt_sweet_max":    100.0,   # ideální operační pásmo — horní hranice
     "alt_sweet_bonus":   0.02,  # per-krok bonus za let ve sweet-spotu
 
-    # Mise — čistý binární design (vidí oheň / nevidí)
-    "fire_flat_bonus":   0.5,    # zpět na původní — stabilní signál
-    "fire_intensity_k":  10.0,
-    "fire_speed_pen":    0.005,
+    # Mise — silnější signál, agent musí CÍTIT rozdíl mezi "nad ohněm" a "jinde"
+    "fire_flat_bonus":   0.5,    # výrazný per-step bonus za viditelnost ohně
+    "fire_intensity_k":  2.0,    # proporcionální k intenzitě
+    "fire_speed_pen":    0.01,   # penalizace za rychlost nad ohněm
+
+    # Approach — potential-based shaping (hustý gradient k ohni)
+    # Musí být dostatečně silný aby agent CÍTIL odlet od ohně.
+    # Při 10 m/s odletu: 10 * 0.03 = -0.3/step penalizace → za 50 kroků -15.0
+    "approach_k":        0.03,
+
+    # First discovery bonus
+    "first_discovery_bonus": 1.0,
+
+    # Ground proximity — exponenciální penalizace pod 20m zabraňuje dive-crashům
+    "ground_danger_alt":  20.0,   # pod touto výškou se aktivuje tvrdá penalizace
+    "ground_danger_pen":  0.5,    # max penalizace na zemi (exponenciální)
 
     # Alt penalty
     "alt_penalty":       0.05,  # flat penalizace za létání mimo rozsah
-
-    # Approach shaping — VYPNUTO, scout se učí směr z kompasu v observaci
-    "approach_shaping_k": 0.0,
-
-    # First discovery bonus — jednorázová odměna za první nalezení ohně v epizodě
-    "first_discovery_bonus": 5.0,   # jednorázový bonus, ale ne přehnaný
 }
 
 # ─── Fixed-wing (Commander) ──────────────────────────────────────────────────

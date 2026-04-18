@@ -25,7 +25,7 @@ def run_demo():
     MAX_STEPS = 1000
     
     # !!! ZMĚŇ CESTU K MODELU PODLE POTŘEBY !!!
-    MODEL_PATH = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingQuad/08_QuadTrainedWithDemo/scout_ep24600.pt" 
+    MODEL_PATH = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_solo/scout_b0610.pt" 
     
     # 2. Inicializace prostředí
     env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=1000.0)
