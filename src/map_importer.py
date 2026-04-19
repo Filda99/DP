@@ -71,6 +71,11 @@ def _process_osm_features(environment, gdf_proj, default_height_m=10.0, distance
     
     print("    Processing map data...")
 
+    # Ensure expected columns exist (concat of different categories may omit some)
+    for col in ('natural', 'waterway', 'landuse', 'building'):
+        if col not in gdf_proj.columns:
+            gdf_proj[col] = None
+
     # --- 1. DATA PREPARATION & FILTERING (For Fire Physics) ---
     
     # A. WATER (High priority - Firebreak)
@@ -81,9 +86,8 @@ def _process_osm_features(environment, gdf_proj, default_height_m=10.0, distance
         (gdf_proj['waterway'].isin(['river', 'canal', 'dock', 'riverbank'])) |
         (gdf_proj['landuse'].isin(['reservoir', 'basin']))
     )
-    if 'waterway' in gdf_proj.columns:
-        # Explicitly remove small streams
-        mask_water = mask_water & (~gdf_proj['waterway'].isin(['stream', 'ditch', 'drain']))
+    # Explicitly remove small streams
+    mask_water = mask_water & (~gdf_proj['waterway'].isin(['stream', 'ditch', 'drain']))
         
     gdf_water = gdf_proj[mask_water].copy()
 

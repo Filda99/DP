@@ -42,7 +42,8 @@ class DroneFireEnv(ParallelEnv):
     # -------------------------------------------------------------------------
     # __init__
     # -------------------------------------------------------------------------
-    def __init__(self, num_quads=1, num_fixed=1, grid_size_m=2000.0, local_map_size=32, max_steps=500):
+    def __init__(self, num_quads=1, num_fixed=1, grid_size_m=2000.0, local_map_size=32, max_steps=500,
+                 use_osm=False, osm_lat=49.35, osm_lon=16.42, osm_cache_dir="data"):
         """Initialise the environment configuration.
 
         Parameters
@@ -57,6 +58,15 @@ class DroneFireEnv(ParallelEnv):
             Width/height (in pixels) of each scout's local fire map.
         max_steps : int
             Maximum number of RL steps per episode before truncation.
+        use_osm : bool
+            If True, load real-world terrain from cached OSM GeoPackage files
+            and rasterize it into the fire grid (water=firebreak, forest=fuel).
+        osm_lat : float
+            Latitude of the OSM cache centre (filename prefix).
+        osm_lon : float
+            Longitude of the OSM cache centre (filename prefix).
+        osm_cache_dir : str
+            Directory containing ``{lat}_{lon}_{category}_0.gpkg`` files.
         """
         super().__init__()
 
@@ -67,6 +77,12 @@ class DroneFireEnv(ParallelEnv):
         self.grid_size_m = grid_size_m
         # map_bounds is the coordinate of each edge: x ∈ [-map_bounds, +map_bounds]
         self.map_bounds = self.grid_size_m / 2.0
+
+        # OSM terrain
+        self.use_osm = use_osm
+        self.osm_lat = osm_lat
+        self.osm_lon = osm_lon
+        self.osm_cache_dir = osm_cache_dir
 
         # -----------------------------------------------------------------
         # Agent lists
@@ -640,6 +656,22 @@ class DroneFireEnv(ParallelEnv):
             dt=0.1
         )
 
+        # --- 3b. Inject OSM terrain into fire physics (if enabled) ---
+        if self.use_osm:
+            try:
+                from src.map_importer import load_environment_from_osm_cache
+                prefix = f"{self.osm_lat}_{self.osm_lon}"
+                load_environment_from_osm_cache(
+                    self.sim.environment,
+                    cache_dir=self.osm_cache_dir,
+                    region_prefix=prefix,
+                    center_lat=self.osm_lat,
+                    center_lon=self.osm_lon,
+                    radius_m=self.grid_size_m / 2.0,
+                )
+            except Exception as exc:
+                print(f"Warning: OSM terrain injection failed: {exc}")
+
         # Oheň na náhodné pozici v bezpečné zóně
         safe_zone_fire = self.map_bounds * 0.4
         self.fire_x = random.uniform(-safe_zone_fire, safe_zone_fire)
@@ -671,10 +703,10 @@ class DroneFireEnv(ParallelEnv):
         self.fire_x = random.uniform(-safe_zone_fire, safe_zone_fire)
         self.fire_y = random.uniform(-safe_zone_fire, safe_zone_fire)
         # self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
-        num_ignitions = random.randint(3, 6)
+        num_ignitions = random.randint(5, 10)
         for _ in range(num_ignitions):
-            offset_x = random.uniform(-40, 40)
-            offset_y = random.uniform(-40, 40)
+            offset_x = random.uniform(-60, 60)
+            offset_y = random.uniform(-60, 60)
             self.sim.start_fire([self.fire_x + offset_x, self.fire_y + offset_y], intensity=0.5)
         self.current_episode = epizode_number
 

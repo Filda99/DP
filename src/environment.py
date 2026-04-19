@@ -93,6 +93,11 @@ class Environment:
         
         H, W = self.fire_grid.H, self.fire_grid.W
         
+        # Pre-calculate mapping constants
+        origin_x = self.grid_mapper.origin_x
+        origin_y = self.grid_mapper.origin_y
+        cell_size = self.grid_mapper.cell_size_m
+        
         # Fuel properties: (fuel_level, burn_rate_per_sq_meter)
         # Burn rate per square meter - stejný burn rate na m2 bez ohledu na cell size
         
@@ -118,11 +123,6 @@ class Environment:
         # 1. BASE LAYER: GRASS/OPEN (Default)
         self.fire_grid.F[:] = FUEL_GRASS[0]
         self.fire_grid.fuel_burn_rate[:] = FUEL_GRASS[1]
-        
-        # Pre-calculate mapping constants to speed up loop
-        origin_x = self.grid_mapper.origin_x
-        origin_y = self.grid_mapper.origin_y
-        cell_size = self.grid_mapper.cell_size_m
         
         def burn_polygons_to_grid(gdf, fuel_val, rate_val, label):
             """Helper to burn polygons into the grid using vectorized checks."""
