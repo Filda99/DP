@@ -23,10 +23,10 @@ def run_demo():
     MAX_STEPS = 500
     
     # Který model chceme načíst? (Změň číslo podle toho, který měl u tebe nejlepší Reward)
-    MODEL_PATH = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_solo/scout_best.pt"
+    MODEL_PATH = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_solo/scout_b1000.pt"
     
     # 2. Inicializace prostředí
-    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=600.0, max_steps=MAX_STEPS)
+    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=800.0, max_steps=MAX_STEPS)
     
     # Zjištění dimenzí (stejné jako v train.py)
     obs_q = env.observation_space("quad_0")
@@ -47,7 +47,7 @@ def run_demo():
     scout_actor.eval()
 
     # 4. Spuštění Epizody
-    obs, _ = env.reset(seed=102, epizode_number=20000) 
+    obs, _ = env.reset(seed=103, epizode_number=20000) 
     
     quad_agents = env.quad_agents  # ["quad_0", "quad_1"]
     hidden_states = {q: torch.zeros(1, 1, scout_hidden_dim) for q in quad_agents}

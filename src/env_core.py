@@ -665,7 +665,7 @@ class DroneFireEnv(ParallelEnv):
 
         if ep < WARMUP_END or is_easy:
             safe_zone_fire = self.map_bounds * 0.1
-            spawn_radius = 20.0
+            spawn_radius = random.uniform(30.0, 80.0)
         elif ep < RAMP_END:
             # Lineární interpolace: t goes 0→1
             t = (ep - WARMUP_END) / (RAMP_END - WARMUP_END)
@@ -712,7 +712,7 @@ class DroneFireEnv(ParallelEnv):
                 # Pojistka proti spawnu za mapou
                 quad_start_x = float(np.clip(quad_start_x, -self.map_bounds * 0.9, self.map_bounds * 0.9))
                 quad_start_y = float(np.clip(quad_start_y, -self.map_bounds * 0.9, self.map_bounds * 0.9))
-                quad_start_z = random.uniform(30.0, 60.0)
+                quad_start_z = random.uniform(60.0, 90.0)
                 
                 self.sim.add_quadcopter(agent, position=[quad_start_x, quad_start_y, quad_start_z])
 
@@ -1066,13 +1066,22 @@ class DroneFireEnv(ParallelEnv):
         reward = 0.0
 
         # ── Potential-based approach shaping (vždy aktivní) ──
-        # Odměna za to, že se dronu ZMENŠILA vzdálenost k ohni oproti
-        # minulému kroku. Potential-based → nemění optimální politiku.
         dist_to_fire = np.hypot(pos[0] - self.fire_x, pos[1] - self.fire_y)
         prev_dist = self._prev_fire_dists.get(agent, dist_to_fire)
         delta = prev_dist - dist_to_fire  # kladné = přiblížení
         reward += delta * QUAD["approach_k"]
         self._prev_fire_dists[agent] = dist_to_fire
+
+        # ── Compass-follow: odměna za směr letu k ohni ──
+        # cos(angle) mezi velocity a fire_direction.
+        # +1 = letí přímo k ohni, -1 = přímo od něj.
+        # Aktivní jen když se agent hýbe a je dál než 10m od ohně.
+        speed_xy = np.hypot(vel[0], vel[1])
+        if speed_xy > 0.5 and dist_to_fire > 10.0:
+            vel_dir = np.array([vel[0], vel[1]]) / speed_xy
+            fire_dir = np.array([self.fire_x - pos[0], self.fire_y - pos[1]]) / dist_to_fire
+            alignment = np.dot(vel_dir, fire_dir)  # -1 to +1
+            reward += alignment * QUAD["compass_follow_k"]
 
         local_map = self._extract_local_fire_map(pos)
         avg_fire_intensity = np.mean(local_map)

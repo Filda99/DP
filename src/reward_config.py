@@ -39,6 +39,13 @@ QUAD = {
     # Při 10 m/s odletu: 10 * 0.03 = -0.3/step penalizace → za 50 kroků -15.0
     "approach_k":        0.03,
 
+    # Compass follow — odměna za směr letu k ohni (velocity · fire_dir)
+    # Nezávislé na vzdálenosti, čistý direction signal.
+    # Při letu 5 m/s přímo k ohni: reward = +0.15/step → za 500 kroků +75
+    # Při letu 5 m/s od ohně:       reward = -0.15/step → za 500 kroků -75
+    # Spread 150 bodů — dominantní signál, agent NEMŮŽE ignorovat.
+    "compass_follow_k":  0.15,
+
     # First discovery bonus
     "first_discovery_bonus": 1.0,
 
