@@ -53,6 +53,10 @@ QUAD = {
     "ground_danger_alt":  20.0,   # pod touto výškou se aktivuje tvrdá penalizace
     "ground_danger_pen":  0.5,    # max penalizace na zemi (exponenciální)
 
+    # Separation — bonus za rozestup mezi scouty
+    "separation_min_m":   30.0,   # pod touto vzdáleností: penalizace (příliš blízko)
+    "separation_bonus":   0.05,   # per-step bonus když jsou dál než separation_min_m
+
     # Alt penalty
     "alt_penalty":       0.05,  # flat penalizace za létání mimo rozsah
 }

@@ -1098,6 +1098,19 @@ class DroneFireEnv(ParallelEnv):
                 self.fire_discovered = True
                 reward += QUAD["first_discovery_bonus"]
 
+        # ── Separation bonus: odměna za rozestup od ostatních scoutů ──
+        sep_min = QUAD["separation_min_m"]
+        for other in self.quad_agents:
+            if other == agent or other not in self.sim.drones:
+                continue
+            other_pos = self.sim.drones[other].get_position()
+            dist_to_other = np.hypot(pos[0] - other_pos[0], pos[1] - other_pos[1])
+            if dist_to_other >= sep_min:
+                reward += QUAD["separation_bonus"]
+            else:
+                # Lineární penalizace: 0 na hranici, -separation_bonus na dist=0
+                reward -= QUAD["separation_bonus"] * (1.0 - dist_to_other / sep_min)
+
         return reward
     
     def _get_fixed_reward_nav(self, agent):
