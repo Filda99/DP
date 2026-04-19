@@ -113,7 +113,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     local_critic_cmdr.eval()
 
     local_env = DroneFireEnv(
-        num_quads=N_QUADS, num_fixed=1,
+        num_quads=N_QUADS, num_fixed=config.get('N_FIXED', 1),
         grid_size_m=config['grid_size_m'], max_steps=max_steps
     )
     local_env.map_size_range = map_size_range
@@ -144,6 +144,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     d_neigh_m = torch.ones(1, max(1, N_QUADS - 1), dtype=torch.bool)
 
     ep_max_steps = config.get('ep_max_steps', max_steps)
+    N_FIXED = config.get('N_FIXED', 1)
 
     for ep_off in range(num_eps):
         local_env.max_steps = ep_max_steps
@@ -152,32 +153,38 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
         # Recalculate after reset (map size may have changed)
         map_half = local_env.map_bounds
-        safe_limit = map_half - 350.0            # fixed 350m buffer from edge
-        boundary_emergency = map_half - 300.0    # fixed 300m buffer from edge
+        safe_limit = map_half - 350.0
+        boundary_emergency = map_half - 300.0
 
-        q_agent = local_env.quad_agents[0] if N_QUADS > 0 else None
-        f_agent = local_env.fixed_agents[0]
+        quad_agents = local_env.quad_agents   # ["quad_0", "quad_1", ...]
+        fixed_agents = local_env.fixed_agents  # ["fixed_0", ...]
+        f_agent = fixed_agents[0] if fixed_agents else None
 
-        # Hidden states
-        scout_h = torch.zeros(1, 1, hidden_dim_scout)
+        # ── Per-scout state (mirrors train_scout.py) ─────────────────
+        scout_h = {q: torch.zeros(1, 1, hidden_dim_scout) for q in quad_agents}
+        critic_scout_h_dict = {q: torch.zeros(1, 1, hidden_dim_scout) for q in quad_agents}
+        scout_ep_data = {q: [] for q in quad_agents}
+        scout_alive = {q: True for q in quad_agents}
+        scout_lifespan = {q: ep_max_steps for q in quad_agents}
+        scout_death_cause = {q: "survived" for q in quad_agents}
+        ep_reward_scout = {q: 0.0 for q in quad_agents}
+        # Per-scout message buffer for commander (latest msg each step)
+        scout_msg_tensors = {q: torch.zeros(1, scout_msg_dim) for q in quad_agents}
+        scout_msg_valid = {q: False for q in quad_agents}
+
+        for q in quad_agents:
+            scout_h0_list.append(scout_h[q].clone())
+
+        # ── Commander state ──────────────────────────────────────────
         cmdr_h = torch.zeros(1, 1, hidden_dim_cmdr)
-        critic_scout_h = torch.zeros(1, 1, hidden_dim_scout)
         critic_cmdr_h = torch.zeros(1, 1, hidden_dim_cmdr)
-
-        scout_h0_list.append(scout_h.clone())
         cmdr_h0_list.append(cmdr_h.clone())
 
-        # Per-episode tracking
-        scout_ep_data = []  # list of per-step dicts
-        cmdr_ep_data = []   # list of per-decision dicts
-        ep_reward_scout = 0.0
+        cmdr_ep_data = []
         ep_reward_cmdr = 0.0
-        scout_alive = True
         cmdr_alive = True
-        scout_death_cause = "survived"
         cmdr_death_cause = "survived"
         total_cmdr_steps = 0
-        scout_lifespan = ep_max_steps
         cmdr_lifespan = ep_max_steps
 
         # Commander waypoint state
@@ -189,98 +196,98 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         segment_reward = 0.0
         need_new_waypoint = True
 
-        # Scout message buffer (for commander)
-        msg_buffer = []  # list of 5D tensors from this segment
+        # Per-segment message buffer: list of (per_scout_msgs_dict, per_scout_valid_dict)
+        msg_buffer = []
 
         # Trajectory logging (only for first episode per worker)
         log_this_ep = config.get('log_episodes', False) and ep_off == 0
-        traj_scout_pos = [] if log_this_ep else None
+        traj_scout_pos = {q: [] for q in quad_agents} if log_this_ep else None
         traj_cmdr_pos = [] if log_this_ep else None
         traj_cmdr_waypoints = [] if log_this_ep else None
-        traj_rewards_scout = [] if log_this_ep else None
+        traj_rewards_scout = {q: [] for q in quad_agents} if log_this_ep else None
         traj_rewards_cmdr = [] if log_this_ep else None
 
         for step in range(max_steps):
             actions = {}
 
             # ==============================================================
-            # SCOUT FORWARD PASS (every step)
+            # SCOUT FORWARD PASS — all scouts, every step
             # ==============================================================
-            scout_msg_tensor = torch.zeros(1, scout_msg_dim)
-            scout_msg_valid = False
+            for q in quad_agents:
+                if scout_alive[q] and q in local_env.agents:
+                    with torch.no_grad():
+                        l_map = torch.FloatTensor(obs[q]["local_map"]).unsqueeze(0)
+                        s_st = torch.FloatTensor(obs[q]["self_state"]).unsqueeze(0)
+                        n_s = torch.FloatTensor(obs[q]["neighbor_states"]).unsqueeze(0)
+                        n_m = torch.BoolTensor(obs[q]["neighbor_mask"]).unsqueeze(0)
 
-            if scout_alive and q_agent in local_env.agents:
-                with torch.no_grad():
-                    l_map = torch.FloatTensor(obs[q_agent]["local_map"]).unsqueeze(0)
-                    s_st = torch.FloatTensor(obs[q_agent]["self_state"]).unsqueeze(0)
-                    n_s = torch.FloatTensor(obs[q_agent]["neighbor_states"]).unsqueeze(0)
-                    n_m = torch.BoolTensor(obs[q_agent]["neighbor_mask"]).unsqueeze(0)
+                        dist_s, msg_s, h_out_s = local_scout(l_map, s_st, n_s, n_m, scout_h[q])
+                        act_s = dist_s.sample()
 
-                    dist_s, msg_s, h_out_s = local_scout(l_map, s_st, n_s, n_m, scout_h)
-                    act_s = dist_s.sample()
+                        priv_s = torch.FloatTensor(
+                            local_env.get_privileged_state(q)).unsqueeze(0)
+                        v_s, c_h_out = local_critic_scout(priv_s, critic_scout_h_dict[q])
 
-                    # Critic: privileged state
-                    priv_s = torch.FloatTensor(
-                        local_env.get_privileged_state(q_agent)).unsqueeze(0)
-                    v_s, critic_scout_h = local_critic_scout(priv_s, critic_scout_h)
+                    scout_ep_data[q].append({
+                        "alive": True,
+                        "map": l_map, "self": s_st, "n_s": n_s, "n_m": n_m,
+                        "h": scout_h[q], "act": act_s,
+                        "lp": dist_s.log_prob(act_s).sum(1),
+                        "reward": 0.0,
+                        "value": v_s.item(),
+                        "critic_state": priv_s,
+                    })
+                    scout_h[q] = h_out_s
+                    critic_scout_h_dict[q] = c_h_out
+                    actions[q] = act_s.squeeze(0).numpy()
+                    scout_msg_tensors[q] = msg_s.detach()
+                    scout_msg_valid[q] = True
+                else:
+                    scout_alive[q] = False
+                    scout_ep_data[q].append({
+                        "alive": False, "reward": 0.0, "value": 0.0,
+                        "critic_state": torch.zeros(1, scout_priv_dim),
+                    })
 
-                scout_ep_data.append({
-                    "alive": True,
-                    "map": l_map, "self": s_st, "n_s": n_s, "n_m": n_m,
-                    "h": scout_h, "act": act_s,
-                    "lp": dist_s.log_prob(act_s).sum(1),
-                    "reward": 0.0,  # filled after env.step
-                    "value": v_s.item(),
-                    "critic_state": priv_s,
-                })
-                scout_h = h_out_s
-                actions[q_agent] = act_s.squeeze(0).numpy()
-                scout_msg_tensor = msg_s.detach()
-                scout_msg_valid = True
-            else:
-                scout_alive = False
-                scout_ep_data.append({
-                    "alive": False, "reward": 0.0, "value": 0.0,
-                    "critic_state": torch.zeros(1, scout_priv_dim),
-                })
-
-            # Buffer scout message for commander
-            msg_buffer.append((scout_msg_tensor, scout_msg_valid))
+            # Buffer all scout messages for commander (snapshot this step)
+            msg_buffer.append({
+                q: (scout_msg_tensors[q].clone(), scout_msg_valid[q])
+                for q in quad_agents
+            })
 
             # ==============================================================
             # COMMANDER WAYPOINT DECISION (every waypoint_steps or on reach)
             # ==============================================================
             if cmdr_alive and f_agent in local_env.agents:
                 if need_new_waypoint:
-                    # Build message input for commander: [latest, best_fire] per scout
-                    # From msg_buffer (messages collected since last decision)
+                    # Build message input: [latest, best_fire] per scout → 2*N_QUADS slots
                     msgs_for_cmdr = []
                     masks_for_cmdr = []
 
-                    if len(msg_buffer) > 0:
-                        # Latest message
-                        latest_msg, latest_valid = msg_buffer[-1]
+                    for q in quad_agents:
+                        # Latest message from this scout
+                        if len(msg_buffer) > 0:
+                            latest_msg, latest_valid = msg_buffer[-1][q]
+                        else:
+                            latest_msg = torch.zeros(1, scout_msg_dim)
+                            latest_valid = False
                         msgs_for_cmdr.append(latest_msg)
                         masks_for_cmdr.append(not latest_valid)
 
-                        # Best fire message (highest intensity at index 2)
+                        # Best fire message from this scout (highest intensity at index 2)
                         best_msg = latest_msg
                         best_intensity = -1.0
-                        for m_tensor, m_valid in msg_buffer:
+                        for buf_entry in msg_buffer:
+                            m_tensor, m_valid = buf_entry[q]
                             if m_valid and m_tensor[0, 2].item() > best_intensity:
                                 best_intensity = m_tensor[0, 2].item()
                                 best_msg = m_tensor
                         msgs_for_cmdr.append(best_msg)
                         masks_for_cmdr.append(not latest_valid)
-                    else:
-                        msgs_for_cmdr.append(torch.zeros(1, scout_msg_dim))
-                        masks_for_cmdr.append(True)
-                        msgs_for_cmdr.append(torch.zeros(1, scout_msg_dim))
-                        masks_for_cmdr.append(True)
 
-                    # Stack: [1, 2*N_quads, msg_dim]
-                    msgs_t = torch.stack(msgs_for_cmdr, dim=1)  # [1, 2, 5]
-                    msgs_m = torch.tensor([masks_for_cmdr])      # [1, 2]
+                    # Stack: [1, 2*N_QUADS, msg_dim]
+                    msgs_t = torch.stack(msgs_for_cmdr, dim=1)
+                    msgs_m = torch.tensor([masks_for_cmdr])
 
                     # Forward pass
                     with torch.no_grad():
@@ -292,7 +299,6 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
                         act_c = dist_c.sample()
 
-                        # Critic: privileged state
                         priv_c = torch.FloatTensor(
                             local_env.get_privileged_state(f_agent)).unsqueeze(0)
                         v_c, critic_cmdr_h = local_critic_cmdr(priv_c, critic_cmdr_h)
@@ -310,12 +316,6 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         "msg_mask": msgs_m,
                         "h": cmdr_h,
                         "act": act_c,
-                        # TODO: only consider logprobs of the 2 action dimensions, not water and altitude
-                        # Phase 1
-                        # "lp": dist_c.log_prob(act_c)[:, :2].sum(1),
-                        # Phase 2
-                        # "lp": dist_c.log_prob(act_c)[:, :3].sum(1),
-                        # Phase 3
                         "lp": dist_c.log_prob(act_c).sum(1),
                         "reward": 0.0,
                         "value": v_c.item(),
@@ -328,11 +328,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     act_np = act_c.squeeze(0).numpy()
                     dx_raw = float(act_np[0])
                     dy_raw = float(act_np[1])
-                    # Phase 1: fixed altitude, auto water
-                    # target_alt_raw = 0.0  # maps to ~145m via controller
-                    # Phase 2: NN controls altitude, but water is still auto
                     target_alt_raw = float(act_np[2])
-                    # Phase 3: NN controls everything
                     water_raw = float(act_np[3])
 
                     drone = local_env.sim.drones.get(f_agent)
@@ -346,7 +342,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     wp_reached = False
                     segment_reward = 0.0
                     need_new_waypoint = False
-                    msg_buffer = []  # reset for next segment
+                    msg_buffer = []
 
                     if log_this_ep:
                         traj_cmdr_waypoints.append(
@@ -357,12 +353,11 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                 if fw is not None:
                     pos = fw.get_position()
 
-                    # Emergency boundary override: if near kill zone, steer to center
                     if (abs(pos[0]) > boundary_emergency or
                             abs(pos[1]) > boundary_emergency):
                         target_x = 0.0
                         target_y = 0.0
-                        need_new_waypoint = True  # ask NN for new wp next step
+                        need_new_waypoint = True
 
                     dx_to = target_x - pos[0]
                     dy_to = target_y - pos[1]
@@ -379,11 +374,6 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     else:
                         heading_cmd = 0.0
 
-                    # Phase 3: NN controlls this
-                    # fire_dist = np.hypot(pos[0] - local_env.fire_x, pos[1] - local_env.fire_y)
-                    # has_water = fw.current_water > 0.01 * fw.water_capacity
-                    # water_raw = 1.0 if (fire_dist < 80.0 and has_water) else -1.0
-
                     inner_action = np.array(
                         [heading_cmd, target_alt_raw, water_raw],
                         dtype=np.float32)
@@ -397,30 +387,30 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
             # ==============================================================
             # ENV STEP
             # ==============================================================
-            r_scout = 0.0
             r_cmdr = 0.0
             if local_env.agents:
                 obs, rewards, terms, truncs, infos = local_env.step(actions)
 
-                # Scout reward
-                r_scout = rewards.get(q_agent, 0.0) if q_agent else 0.0
-                if scout_alive and q_agent in local_env.agents:
-                    scout_ep_data[-1]["reward"] = r_scout
-                    ep_reward_scout += r_scout
-                if q_agent and (terms.get(q_agent, False) or truncs.get(q_agent, False)):
-                    scout_alive = False
-                    scout_lifespan = step + 1
-                    if terms.get(q_agent, False):
-                        scout_death_cause = infos.get(
-                            q_agent, {}).get("death_cause", "unknown")
-                    else:
-                        scout_death_cause = "survived"
+                # Scout rewards (per scout)
+                for q in quad_agents:
+                    r_q = rewards.get(q, 0.0)
+                    if scout_alive[q] and q in local_env.agents:
+                        scout_ep_data[q][-1]["reward"] = r_q
+                        ep_reward_scout[q] += r_q
+                    if terms.get(q, False) or truncs.get(q, False):
+                        scout_alive[q] = False
+                        scout_lifespan[q] = step + 1
+                        if terms.get(q, False):
+                            scout_death_cause[q] = infos.get(
+                                q, {}).get("death_cause", "unknown")
+                        else:
+                            scout_death_cause[q] = "survived"
 
                 # Commander segment reward
-                r_cmdr = rewards.get(f_agent, 0.0)
+                r_cmdr = rewards.get(f_agent, 0.0) if f_agent else 0.0
                 segment_reward += r_cmdr
 
-                if terms.get(f_agent, False) or truncs.get(f_agent, False):
+                if f_agent and (terms.get(f_agent, False) or truncs.get(f_agent, False)):
                     cmdr_alive = False
                     cmdr_lifespan = step + 1
                     if terms.get(f_agent, False):
@@ -428,56 +418,53 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                             f_agent, {}).get("death_cause", "unknown")
                     else:
                         cmdr_death_cause = "survived"
-                    # Store segment reward for current decision
                     if cmdr_ep_data:
                         cmdr_ep_data[-1]["reward"] = segment_reward
                     ep_reward_cmdr += segment_reward
             else:
-                # All dead
-                if scout_alive:
-                    scout_alive = False
-                    scout_lifespan = step + 1
-                    scout_death_cause = "env_empty"
+                for q in quad_agents:
+                    if scout_alive[q]:
+                        scout_alive[q] = False
+                        scout_lifespan[q] = step + 1
+                        scout_death_cause[q] = "env_empty"
                 if cmdr_alive:
                     cmdr_alive = False
                     cmdr_lifespan = step + 1
                     cmdr_death_cause = "env_empty"
 
-            # Early exit: no point stepping physics when both agents are dead
-            if not scout_alive and not cmdr_alive:
+            # Early exit
+            if not any(scout_alive.values()) and not cmdr_alive:
                 break
 
             # --- Trajectory recording ---
             if log_this_ep:
-                s_drone = local_env.sim.drones.get(q_agent) if q_agent else None
-                c_drone = local_env.sim.drones.get(f_agent)
-                traj_scout_pos.append(
-                    s_drone.get_position().copy() if s_drone else np.full(3, np.nan))
+                for q in quad_agents:
+                    s_drone = local_env.sim.drones.get(q)
+                    traj_scout_pos[q].append(
+                        s_drone.get_position().copy() if s_drone else np.full(3, np.nan))
+                    traj_rewards_scout[q].append(
+                        rewards.get(q, 0.0) if scout_alive[q] else 0.0)
+                c_drone = local_env.sim.drones.get(f_agent) if f_agent else None
                 traj_cmdr_pos.append(
                     c_drone.get_position().copy() if c_drone else np.full(3, np.nan))
-                traj_rewards_scout.append(r_scout if scout_alive else 0.0)
                 traj_rewards_cmdr.append(r_cmdr if cmdr_alive else 0.0)
 
             # ==============================================================
             # CHECK WAYPOINT SEGMENT END
             # ==============================================================
-            if cmdr_alive and f_agent in local_env.agents:
+            if cmdr_alive and f_agent and f_agent in local_env.agents:
                 segment_done = (
                     wp_reached or
                     steps_in_segment >= waypoint_steps or
                     step == max_steps - 1
                 )
                 if segment_done:
-                    # Timeout penalty
                     if not wp_reached and steps_in_segment >= waypoint_steps:
                         segment_reward += wp_timeout_penalty
 
                     if cmdr_ep_data:
                         cmdr_ep_data[-1]["reward"] = segment_reward
-                    ep_reward_cmdr += segment_reward - r_cmdr  # avoid double-count of last r_cmdr
-                    # Actually, let me fix this: segment_reward already includes r_cmdr from earlier
-                    # We assigned segment_reward to cmdr_ep_data[-1]["reward"] correctly
-                    # ep_reward_cmdr should just sum all segment rewards
+                    ep_reward_cmdr += segment_reward - r_cmdr
                     need_new_waypoint = True
 
         # ==================================================================
@@ -486,20 +473,49 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         ep_reward_cmdr = sum(d["reward"] for d in cmdr_ep_data)
 
         # ==================================================================
-        # SCOUT GAE (per step, over max_steps), recursive calculation (gae)
+        # SCOUT GAE — per scout independently (like train_scout.py)
         # ==================================================================
         gamma = config['gamma']
         gae_lam = config['gae_lambda']
 
-        gae = 0.0
-        for i in reversed(range(len(scout_ep_data))):
-            d = scout_ep_data[i]
-            r_t = d["reward"]
-            v_t = d["value"]
-            v_next = scout_ep_data[i + 1]["value"] if i + 1 < len(scout_ep_data) else 0.0
-            delta = r_t + gamma * v_next - v_t
-            gae = delta + gamma * gae_lam * gae
-            d["ret"] = gae + v_t
+        for q in quad_agents:
+            ep_data = scout_ep_data[q]
+            gae = 0.0
+            for i in reversed(range(len(ep_data))):
+                d = ep_data[i]
+                r_t = d["reward"]
+                v_t = d["value"]
+                v_next = ep_data[i + 1]["value"] if i + 1 < len(ep_data) else 0.0
+                delta = r_t + gamma * v_next - v_t
+                gae = delta + gamma * gae_lam * gae
+                d["ret"] = gae + v_t
+
+            # Pack buffer (max_steps entries per scout, padded)
+            for i in range(max_steps):
+                if i < len(ep_data):
+                    d = ep_data[i]
+                    if d["alive"]:
+                        scout_buf["maps"].append(d["map"])
+                        scout_buf["self_states"].append(d["self"])
+                        scout_buf["neighbor_states"].append(d["n_s"])
+                        scout_buf["neighbor_masks"].append(d["n_m"])
+                        scout_buf["actions"].append(d["act"])
+                        scout_buf["logprobs"].append(d["lp"])
+                        scout_buf["returns"].append(d["ret"])
+                        scout_buf["values"].append(d["value"])
+                        scout_buf["critic_states"].append(d["critic_state"])
+                        scout_buf["alive"].append(1.0)
+                        continue
+                scout_buf["maps"].append(d_map)
+                scout_buf["self_states"].append(d_scout_self)
+                scout_buf["neighbor_states"].append(d_neigh_s)
+                scout_buf["neighbor_masks"].append(d_neigh_m)
+                scout_buf["actions"].append(torch.zeros(1, 4))
+                scout_buf["logprobs"].append(torch.tensor([0.0]))
+                scout_buf["returns"].append(0.0)
+                scout_buf["values"].append(0.0)
+                scout_buf["critic_states"].append(torch.zeros(1, scout_priv_dim))
+                scout_buf["alive"].append(0.0)
 
         # ==================================================================
         # COMMANDER GAE (per decision, over cmdr_ep_data)
@@ -517,39 +533,9 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
             d["ret"] = gae + v_t
 
         # ==================================================================
-        # PACK SCOUT BUFFER (max_steps entries, padded for dead steps)
-        # ==================================================================
-        for i in range(max_steps):
-            if i < len(scout_ep_data):
-                d = scout_ep_data[i]
-                if d["alive"]:
-                    scout_buf["maps"].append(d["map"])
-                    scout_buf["self_states"].append(d["self"])
-                    scout_buf["neighbor_states"].append(d["n_s"])
-                    scout_buf["neighbor_masks"].append(d["n_m"])
-                    scout_buf["actions"].append(d["act"])
-                    scout_buf["logprobs"].append(d["lp"])
-                    scout_buf["returns"].append(d["ret"])
-                    scout_buf["values"].append(d["value"])
-                    scout_buf["critic_states"].append(d["critic_state"])
-                    scout_buf["alive"].append(1.0)
-                    continue
-            # Dead or out of range — pad
-            scout_buf["maps"].append(d_map)
-            scout_buf["self_states"].append(d_scout_self)
-            scout_buf["neighbor_states"].append(d_neigh_s)
-            scout_buf["neighbor_masks"].append(d_neigh_m)
-            scout_buf["actions"].append(torch.zeros(1, 4))
-            scout_buf["logprobs"].append(torch.tensor([0.0]))
-            scout_buf["returns"].append(0.0)
-            scout_buf["values"].append(0.0)
-            scout_buf["critic_states"].append(torch.zeros(1, scout_priv_dim))
-            scout_buf["alive"].append(0.0)
-
-        # ==================================================================
         # PACK COMMANDER BUFFER (num_decisions_cmdr entries, padded)
         # ==================================================================
-        n_msg_slots = 2 * N_QUADS  # latest + best_fire per scout
+        n_msg_slots = 2 * N_QUADS
         for i in range(num_decisions_cmdr):
             if i < n_actual_cmdr:
                 d = cmdr_ep_data[i]
@@ -579,34 +565,45 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     torch.zeros(1, cmdr_priv_dim))
                 cmdr_buf["aux_targets"].append(torch.zeros(1, 2))
 
-        ep_reward_total = ep_reward_scout + ep_reward_cmdr
+        # Episode totals
+        avg_scout_reward = sum(ep_reward_scout.values()) / max(1, N_QUADS)
+        ep_reward_total = avg_scout_reward + ep_reward_cmdr
         all_rewards.append(ep_reward_total)
-        all_scout_lifespans.append(scout_lifespan)
+
+        # Per-scout lifespans and deaths
+        for q in quad_agents:
+            all_scout_lifespans.append(scout_lifespan[q])
         all_cmdr_lifespans.append(cmdr_lifespan)
-        all_deaths.append(f"s:{scout_death_cause},c:{cmdr_death_cause}")
+
+        # Death strings: one per scout + one for commander
+        death_parts = []
+        for q in quad_agents:
+            death_parts.append(f"s:{scout_death_cause[q]}")
+        death_parts.append(f"c:{cmdr_death_cause}")
+        all_deaths.append(",".join(death_parts))
 
         # --- Episode log (for replay/analysis) ---
         if log_this_ep:
             log_dir = config.get('log_dir', '/tmp/ep_logs')
             os.makedirs(log_dir, exist_ok=True)
             ep_id = batch_start_idx + ep_off
-            np.savez_compressed(
-                os.path.join(log_dir, f'ep_{ep_id:06d}.npz'),
+            save_dict = dict(
                 ep_id=np.array(ep_id),
-                scout_reward=np.array(ep_reward_scout),
+                scout_reward=np.array([ep_reward_scout[q] for q in quad_agents]),
                 cmdr_reward=np.array(ep_reward_cmdr),
-                scout_lifespan=np.array(scout_lifespan),
+                scout_lifespan=np.array([scout_lifespan[q] for q in quad_agents]),
                 cmdr_lifespan=np.array(cmdr_lifespan),
-                scout_death=np.array(scout_death_cause),
-                cmdr_death=np.array(cmdr_death_cause),
                 n_cmdr_decisions=np.array(n_actual_cmdr),
-                scout_pos=np.array(traj_scout_pos),
                 cmdr_pos=np.array(traj_cmdr_pos),
                 cmdr_waypoints=np.array(traj_cmdr_waypoints) if traj_cmdr_waypoints else np.zeros((0, 5)),
-                rewards_scout=np.array(traj_rewards_scout),
                 rewards_cmdr=np.array(traj_rewards_cmdr),
                 map_bounds=np.array(local_env.grid_size_m / 2.0),
             )
+            for qi, q in enumerate(quad_agents):
+                save_dict[f'scout_{qi}_pos'] = np.array(traj_scout_pos[q])
+                save_dict[f'scout_{qi}_rewards'] = np.array(traj_rewards_scout[q])
+            np.savez_compressed(
+                os.path.join(log_dir, f'ep_{ep_id:06d}.npz'), **save_dict)
 
     # ── Cleanup & return ─────────────────────────────────────────────────
     local_env.sim.stop_simulation()
@@ -655,7 +652,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     print(f"Device: {device}\n")
 
     # ── Hyperparameters ──────────────────────────────────────────────────
-    N_QUADS = 1
+    N_QUADS = 2
     N_FIXED = 1
     grid_size_m = 2000.0
     map_size_range = (1000, 2000)  # random map size per episode [m]
@@ -1098,24 +1095,25 @@ def train_multi(resume_scout="", resume_cmdr="",
 
         # Reshape: [episodes, num_decisions_cmdr, ...]
         nd = num_decisions_cmdr
-        c_states_seq = c_states.view(eps, nd, -1)
-        c_msgs_seq = c_msgs.view(eps, nd, c_msgs.size(-2), c_msgs.size(-1))
-        c_msg_m_seq = c_msg_m.view(eps, nd, c_msg_m.size(-1))
-        c_actions_seq = c_actions.view(eps, nd, -1)
-        c_logprobs_seq = c_logprobs.view(eps, nd)
-        c_adv_seq = c_adv.view(eps, nd)
-        c_alive_seq = c_alive.view(eps, nd)
-        c_returns_seq = c_returns.view(eps, nd)
-        c_returns_norm_seq = c_returns_norm.view(eps, nd)
-        c_cstates_seq = c_cstates.view(eps, nd, -1)
+        eps_cmdr = c_returns.numel() // nd  # 1 commander per real episode
+        c_states_seq = c_states.view(eps_cmdr, nd, -1)
+        c_msgs_seq = c_msgs.view(eps_cmdr, nd, c_msgs.size(-2), c_msgs.size(-1))
+        c_msg_m_seq = c_msg_m.view(eps_cmdr, nd, c_msg_m.size(-1))
+        c_actions_seq = c_actions.view(eps_cmdr, nd, -1)
+        c_logprobs_seq = c_logprobs.view(eps_cmdr, nd)
+        c_adv_seq = c_adv.view(eps_cmdr, nd)
+        c_alive_seq = c_alive.view(eps_cmdr, nd)
+        c_returns_seq = c_returns.view(eps_cmdr, nd)
+        c_returns_norm_seq = c_returns_norm.view(eps_cmdr, nd)
+        c_cstates_seq = c_cstates.view(eps_cmdr, nd, -1)
         h_cmdr_seq = h_cmdr.transpose(0, 1)
-        c_aux_targets_seq = c_aux_targets.view(eps, nd, -1)
+        c_aux_targets_seq = c_aux_targets.view(eps_cmdr, nd, -1)
 
-        mb_size_c = max(1, eps // num_minibatches)
+        mb_size_c = max(1, eps_cmdr // num_minibatches)
 
         for epoch in range(update_epochs):
-            b_inds = np.random.permutation(eps)
-            for start in range(0, eps, mb_size_c):
+            b_inds = np.random.permutation(eps_cmdr)
+            for start in range(0, eps_cmdr, mb_size_c):
                 mb = b_inds[start:start + mb_size_c]
                 curr_mb = len(mb)
 
