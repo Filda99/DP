@@ -42,7 +42,8 @@ class DroneFireEnv(ParallelEnv):
     # -------------------------------------------------------------------------
     # __init__
     # -------------------------------------------------------------------------
-    def __init__(self, num_quads=1, num_fixed=1, grid_size_m=2000.0, local_map_size=32, max_steps=500):
+    def __init__(self, num_quads=1, num_fixed=1, grid_size_m=2000.0, local_map_size=32, max_steps=500,
+                 use_osm=False, osm_lat=49.35, osm_lon=16.42, osm_cache_dir="data"):
         """Initialise the environment configuration.
 
         Parameters
@@ -57,6 +58,14 @@ class DroneFireEnv(ParallelEnv):
             Width/height (in pixels) of each scout's local fire map.
         max_steps : int
             Maximum number of RL steps per episode before truncation.
+        use_osm : bool
+            If True, load real-world terrain from cached OSM GeoPackage files.
+        osm_lat : float
+            Latitude of the OSM cache centre.
+        osm_lon : float
+            Longitude of the OSM cache centre.
+        osm_cache_dir : str
+            Directory containing cached .gpkg files.
         """
         super().__init__()
 
@@ -67,6 +76,12 @@ class DroneFireEnv(ParallelEnv):
         self.grid_size_m = grid_size_m
         # map_bounds is the coordinate of each edge: x ∈ [-map_bounds, +map_bounds]
         self.map_bounds = self.grid_size_m / 2.0
+
+        # OSM terrain
+        self.use_osm = use_osm
+        self.osm_lat = osm_lat
+        self.osm_lon = osm_lon
+        self.osm_cache_dir = osm_cache_dir
 
         # -----------------------------------------------------------------
         # Agent lists
@@ -643,6 +658,22 @@ class DroneFireEnv(ParallelEnv):
             cell_size_m=5.0,
             dt=0.1
         )
+
+        # --- 3b. Inject OSM terrain into fire physics (if enabled) ---
+        if self.use_osm:
+            try:
+                from src.map_importer import load_environment_from_osm_cache
+                prefix = f"{self.osm_lat}_{self.osm_lon}"
+                load_environment_from_osm_cache(
+                    self.sim.environment,
+                    cache_dir=self.osm_cache_dir,
+                    region_prefix=prefix,
+                    center_lat=self.osm_lat,
+                    center_lon=self.osm_lon,
+                    radius_m=self.grid_size_m / 2.0,
+                )
+            except Exception as exc:
+                print(f"Warning: OSM terrain injection failed: {exc}")
 
         # =========================================================
         # EPISODE-DEPENDENT CURRICULUM — plynulá interpolace

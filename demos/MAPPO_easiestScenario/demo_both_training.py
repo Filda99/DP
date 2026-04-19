@@ -1,27 +1,33 @@
 """
 demo_both_training.py
 ─────────────────────
-Vizualizační demo pro heterogenní MAPPO tým (Scout + Commander).
+Visualisation demo for heterogeneous MAPPO team (Scout + Commander).
+Uses real OSM terrain (buildings, forests, water) as map background.
 
-Layout každého snímku GIFu:
+Layout:
 ┌──────────────────────────┬──────────────────┐
-│                          │  Scout kamera    │
-│   Globální mapa + oheň   │  (co 32×32 vidí) │
-│   Trajektorie obou       ├──────────────────┤
-│   FoV rectangle scoutye  │  Stats           │
+│                          │  Scout camera    │
+│   Global map + fire      │  (32×32 view)    │
+│   OSM terrain + trails   ├──────────────────┤
+│   FoV rectangle          │  Stats           │
 └──────────────────────────┴──────────────────┘
 
-Výstup: demo_training.gif  +  demo_training_analysis.png
+Output: demo_training.gif  +  demo_training_analysis.png
 """
 
 import torch
 import numpy as np
-import os, sys
+import os, sys, glob
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+import matplotlib.patches as mpatches
+from matplotlib.collections import PatchCollection
 import imageio
 import io, tqdm
 from PIL import Image
+
+import geopandas as gpd
+from shapely.geometry import Point, MultiPolygon, Polygon
 
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
@@ -29,19 +35,31 @@ sys.path.insert(0, project_root)
 from src.env_core import DroneFireEnv
 from src.models import ScoutActor, CommanderActor
 
+# ── Terrain colours ─────────────────────────────────────────
+CLR_GRASS    = '#f0eed8'
+CLR_BUILDING = '#b0b0b0'
+CLR_FOREST   = '#6abf69'
+CLR_WATER    = '#7ec8e3'
+CLR_SCOUT    = '#00bfff'
+CLR_CMDR     = '#ff3333'
+
 # ============================================================
 # KONFIGURACE
 # ============================================================
-MODEL_SCOUT     = os.path.join(project_root, "saved_models", "multi", "scout_b0050.pt")
-MODEL_COMMANDER = os.path.join(project_root, "saved_models", "multi", "cmdr_b0050.pt")
+MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/08_trainingFW/07_trainingAlsoScout/scout_best.pt"
+MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/08_trainingFW/07_trainingAlsoScout/cmdr_best.pt"
 
 N_QUADS    = 1
 N_FIXED    = 1
 MAX_STEPS  = 1000
-GRID_SIZE  = 2000.0
+GRID_SIZE  = 1000.0
 GIF_EVERY  = 3
 GIF_FPS    = 15
 EPISODE_SEED = 124
+USE_OSM      = True
+OSM_LAT      = 49.35
+OSM_LON      = 16.42
+OSM_CACHE    = os.path.join(project_root, "data")
 
 # Commander waypoint parameters (must match training)
 WAYPOINT_RANGE  = 200.0   # metres per unit of dx/dy
@@ -54,6 +72,106 @@ SAFE_LIMIT_BUF  = 250.0   # boundary buffer
 def _wrap_angle(a):
     """Wrap angle to [-pi, pi]."""
     return (a + np.pi) % (2 * np.pi) - np.pi
+
+
+# ── OSM terrain helpers ─────────────────────────────────────────
+
+def _load_terrain_gdfs():
+    """Load cached .gpkg files, project to UTM, centre on (0,0)."""
+    categories = ['building', 'landuse', 'natural', 'waterway']
+    prefix = f"{OSM_LAT}_{OSM_LON}"
+    gdfs_raw = {}
+    for cat in categories:
+        matches = glob.glob(os.path.join(OSM_CACHE, f"{prefix}_{cat}_*.gpkg"))
+        if matches:
+            try:
+                gdfs_raw[cat] = gpd.read_file(matches[0])
+            except Exception:
+                pass
+    if not gdfs_raw:
+        return {}
+    utm_zone = int((OSM_LON + 180) / 6) + 1
+    utm_crs = f"EPSG:326{utm_zone:02d}" if OSM_LAT >= 0 else f"EPSG:327{utm_zone:02d}"
+    center_proj = gpd.GeoSeries([Point(OSM_LON, OSM_LAT)], crs='EPSG:4326').to_crs(utm_crs).iloc[0]
+    result = {}
+    for cat, gdf in gdfs_raw.items():
+        if gdf.empty:
+            continue
+        gdf_p = gdf.to_crs(utm_crs)
+        gdf_p = gdf_p[gdf_p.distance(center_proj) <= GRID_SIZE / 2.0]
+        if len(gdf_p) == 0:
+            continue
+        gdf_p['geometry'] = gdf_p.translate(xoff=-center_proj.x, yoff=-center_proj.y)
+        result[cat] = gdf_p
+    return result
+
+
+def _classify_features(gdfs):
+    """Split into water / building / forest geometry lists."""
+    water, buildings, forests = [], [], []
+    for gdf in gdfs.values():
+        for _, row in gdf.iterrows():
+            geom = row.geometry
+            if geom is None or geom.is_empty:
+                continue
+            nat = row.get('natural', None)
+            ww  = row.get('waterway', None)
+            lu  = row.get('landuse', None)
+            bld = row.get('building', None)
+            if nat in ('water','wetland') or ww in ('river','canal','dock','riverbank') or lu in ('reservoir','basin'):
+                water.append(geom)
+            elif (bld is not None and bld != 'no') or lu in ('residential','commercial','industrial','retail'):
+                buildings.append(geom)
+            elif lu in ('forest','orchard','vineyard','wood') or nat in ('wood','scrub','heath'):
+                forests.append(geom)
+    return water, buildings, forests
+
+
+def _geom_patches(geom, **kw):
+    out = []
+    if isinstance(geom, MultiPolygon):
+        for p in geom.geoms:
+            out.extend(_geom_patches(p, **kw))
+    elif isinstance(geom, Polygon):
+        xs, ys = geom.exterior.coords.xy
+        out.append(plt.Polygon(list(zip(xs, ys)), closed=True, **kw))
+    return out
+
+
+def _build_terrain_collections(water, buildings, forests):
+    """Pre-build PatchCollections for terrain layers."""
+    colls = []
+    fp = []
+    for g in forests:
+        fp.extend(_geom_patches(g))
+    if fp:
+        colls.append(PatchCollection(fp, facecolor=CLR_FOREST, edgecolor='none', alpha=0.7, zorder=1))
+    bp = []
+    for g in buildings:
+        bp.extend(_geom_patches(g))
+    if bp:
+        colls.append(PatchCollection(bp, facecolor=CLR_BUILDING, edgecolor='#999', linewidth=0.3, alpha=0.85, zorder=2))
+    wp = []
+    for g in water:
+        wp.extend(_geom_patches(g))
+    if wp:
+        colls.append(PatchCollection(wp, facecolor=CLR_WATER, edgecolor='none', alpha=0.85, zorder=3))
+    return colls
+
+
+def _add_terrain_to_ax(ax, terrain_collections):
+    """Re-add terrain PatchCollections to a fresh axes (deep-copy paths)."""
+    for coll in terrain_collections:
+        new_p = [plt.Polygon(p.vertices, closed=True) for p in coll.get_paths()]
+        alpha = coll.get_alpha()
+        alpha = alpha[0] if hasattr(alpha, '__len__') else alpha
+        zo = coll.get_zorder()
+        zo = zo[0] if hasattr(zo, '__len__') else zo
+        nc = PatchCollection(new_p, facecolor=coll.get_facecolor(),
+                             edgecolor=coll.get_edgecolor(),
+                             linewidth=coll.get_linewidth(),
+                             alpha=alpha, zorder=zo)
+        ax.add_collection(nc)
 
 
 def _load_models(device):
@@ -69,7 +187,7 @@ def _load_models(device):
     for path, name, model in [(MODEL_SCOUT, "Scout", scout),
                                (MODEL_COMMANDER, "Commander", cmdr)]:
         if os.path.exists(path):
-            model.load_state_dict(torch.load(path, map_location=device))
+            model.load_state_dict(torch.load(path, map_location=device), strict=False)
             print(f"✅ {name}: {path}")
         else:
             print(f"⚠️ {name}: model nenalezen ({path})")
@@ -84,92 +202,133 @@ def _render_frame(step, fire_map, b,
                   refill_pos, refill_size,
                   local_map_np,
                   total_reward_q, total_reward_f,
-                  fire_seen_sum, q_alive, f_alive):
+                  fire_seen_sum, q_alive, f_alive,
+                  terrain_collections=None):
 
-    fig = plt.figure(figsize=(12, 6), facecolor='#1a1a1a')
+    fig = plt.figure(figsize=(12, 6), facecolor='white')
     gs  = gridspec.GridSpec(2, 2, width_ratios=[2, 1], hspace=0.35, wspace=0.25,
                             left=0.06, right=0.97, top=0.93, bottom=0.07)
 
-    # ── Panel 1: Globální mapa ──────────────────────────────────────────────
+    # ── Panel 1: Global map ─────────────────────────────────────────────
     ax_map = fig.add_subplot(gs[:, 0])
-    ax_map.set_facecolor('#111111')
+    ax_map.set_facecolor(CLR_GRASS)
 
-    # Oheň
+    # OSM terrain background
+    if terrain_collections:
+        _add_terrain_to_ax(ax_map, terrain_collections)
+
+    # Fire
     extent = [-b, b, -b, b]
     fire_masked = np.ma.masked_where(fire_map < 0.01, fire_map)
     ax_map.imshow(fire_masked, extent=extent, origin='lower',
-                  cmap='YlOrRd', vmin=0, vmax=1.0, alpha=0.9)
+                  cmap='YlOrRd', vmin=0, vmax=1.0, alpha=0.75, zorder=4)
 
-    # Refill Zóna (Visualizace)
+    # Refill zone
     if refill_pos is not None:
-        # Vykreslíme Refill zónu jako azurový kruh (zvětšený pro viditelnost)
-        circle = plt.Circle((refill_pos[0], refill_pos[1]), 150,  # 150m = skutečný detekční rádius
-
-                            color='cyan', fill=False, linestyle='--', linewidth=1.5, alpha=0.6)
+        circle = plt.Circle((refill_pos[0], refill_pos[1]), 150,
+                            color='deepskyblue', fill=False, linestyle='--',
+                            linewidth=1.5, alpha=0.6, zorder=5)
         ax_map.add_patch(circle)
-        ax_map.text(refill_pos[0], refill_pos[1] + 60, "REFILL", color='cyan', 
-                    fontsize=8, ha='center', fontweight='bold', alpha=0.8)
+        ax_map.text(refill_pos[0], refill_pos[1] + 60, "REFILL",
+                    color='deepskyblue', fontsize=8, ha='center',
+                    fontweight='bold', alpha=0.8)
 
-    # Trajektorie
+    # Trails
     if len(q_path_x) > 1:
-        ax_map.plot(q_path_x, q_path_y, color='cyan',  alpha=0.4, linewidth=1.2, linestyle=':')
+        ax_map.plot(q_path_x, q_path_y, color=CLR_SCOUT, alpha=0.4,
+                    linewidth=1.2, linestyle=':', zorder=5)
     if len(f_path_x) > 1:
-        ax_map.plot(f_path_x, f_path_y, color='tomato', alpha=0.4, linewidth=1.2, linestyle=':')
+        ax_map.plot(f_path_x, f_path_y, color=CLR_CMDR, alpha=0.4,
+                    linewidth=1.2, linestyle=':', zorder=5)
 
-    # Pozice agentů
+    # Agent positions
     if q_alive and q_pos is not None:
         rect = plt.Rectangle((q_pos[0] - q_fov/2, q_pos[1] - q_fov/2), q_fov, q_fov,
-                              fill=False, edgecolor='cyan', linewidth=1.0, alpha=0.7)
+                              fill=False, edgecolor=CLR_SCOUT, linewidth=1.0,
+                              alpha=0.7, zorder=6)
         ax_map.add_patch(rect)
-        ax_map.scatter(q_pos[0], q_pos[1], c='cyan', s=100, marker='^', edgecolors='white', zorder=5)
+        ax_map.scatter(q_pos[0], q_pos[1], c=CLR_SCOUT, s=100, marker='^',
+                       edgecolors='black', linewidths=0.6, zorder=7)
 
     if f_alive and f_pos is not None:
-        ax_map.scatter(f_pos[0], f_pos[1], c='tomato', s=130, marker='>', edgecolors='white', zorder=5)
+        ax_map.scatter(f_pos[0], f_pos[1], c=CLR_CMDR, s=130, marker='>',
+                       edgecolors='black', linewidths=0.6, zorder=7)
 
     ax_map.set_xlim(-b, b); ax_map.set_ylim(-b, b)
-    ax_map.set_title(f"Krok {step:04d} | Globální přehled", color='white', fontsize=11)
-    ax_map.tick_params(colors='#888888', labelsize=7)
+    ax_map.set_aspect('equal')
+    ax_map.set_title(f"Step {step:04d}  |  Global overview", fontsize=11, fontweight='bold')
+    ax_map.set_xlabel('X [m]', fontsize=8); ax_map.set_ylabel('Y [m]', fontsize=8)
+    ax_map.tick_params(labelsize=7)
 
-    # ── Panel 2: Scout kamera ───────────────────────────────────────────────
+    # Map legend
+    leg_h = []
+    if terrain_collections:
+        leg_h.append(mpatches.Patch(color=CLR_FOREST,   label='Forest'))
+        leg_h.append(mpatches.Patch(color=CLR_BUILDING, label='Building'))
+        leg_h.append(mpatches.Patch(color=CLR_WATER,    label='Water'))
+    leg_h.append(plt.Line2D([0],[0], marker='^', color='w', markerfacecolor=CLR_SCOUT,
+                            markersize=7, label='Scout'))
+    leg_h.append(plt.Line2D([0],[0], marker='>', color='w', markerfacecolor=CLR_CMDR,
+                            markersize=7, label='Commander'))
+    ax_map.legend(handles=leg_h, loc='upper right', fontsize=6.5,
+                  framealpha=0.85, edgecolor='#ccc')
+
+    # ── Panel 2: Scout camera ───────────────────────────────────────────
     ax_cam = fig.add_subplot(gs[0, 1])
-    ax_cam.set_facecolor('#0a0a0a')
+    ax_cam.set_facecolor('#fafafa')
     if local_map_np is not None:
         ax_cam.imshow(local_map_np, origin='lower', cmap='YlOrRd', vmin=0, vmax=1.0)
-    ax_cam.set_title("Scout kamera (32×32)", color='white', fontsize=9)
+    ax_cam.set_title("Scout camera (32×32)", fontsize=9, fontweight='bold')
     ax_cam.set_xticks([]); ax_cam.set_yticks([])
 
-    # ── Panel 3: Stats + Water Bar ──────────────────────────────────────────
+    # ── Panel 3: Stats + Water Bar ──────────────────────────────────────
     ax_stats = fig.add_subplot(gs[1, 1])
-    ax_stats.set_facecolor('#111111')
+    ax_stats.set_facecolor('#fafafa')
     ax_stats.set_xticks([]); ax_stats.set_yticks([])
 
-    # Vizuální bar pro vodu
-    ax_stats.add_patch(plt.Rectangle((0.1, 0.15), 0.8, 0.08, color='#333333', transform=ax_stats.transAxes))
-    ax_stats.add_patch(plt.Rectangle((0.1, 0.15), 0.8 * f_water_pct, 0.08, color='cyan', transform=ax_stats.transAxes))
-    
+    # Water bar
+    ax_stats.add_patch(plt.Rectangle((0.1, 0.15), 0.8, 0.08,
+                       color='#dddddd', transform=ax_stats.transAxes))
+    ax_stats.add_patch(plt.Rectangle((0.1, 0.15), 0.8 * f_water_pct, 0.08,
+                       color='deepskyblue', transform=ax_stats.transAxes))
+
+    status = 'TANK FULL' if f_water_pct > 0.9 else 'REFILL NEEDED' if f_water_pct < 0.2 else 'OPERATIONAL'
     stats_text = (
         f"Scout reward:      {total_reward_q:+.1f}\n"
         f"Commander reward:  {total_reward_f:+.1f}\n\n"
-        f"Fire viditelnost:  {fire_seen_sum:.2f}\n"
-        f"Voda v nádrži:     {f_water_pct*100:3.1f}%\n\n"
-        f"Stav: {'NÁDRŽ PLNÁ' if f_water_pct > 0.9 else 'REFILL POTŘEBNÝ' if f_water_pct < 0.2 else 'OPERATIVNÍ'}"
+        f"Fire visibility:   {fire_seen_sum:.2f}\n"
+        f"Water level:       {f_water_pct*100:3.1f}%\n\n"
+        f"Status: {status}"
     )
-    ax_stats.text(0.08, 0.9, stats_text, color='#dddddd', fontsize=8.5, va='top', transform=ax_stats.transAxes, fontfamily='monospace')
-    ax_stats.set_title("Statistiky mise", color='white', fontsize=9)
+    ax_stats.text(0.08, 0.9, stats_text, color='#222222', fontsize=8.5,
+                  va='top', transform=ax_stats.transAxes, fontfamily='monospace')
+    ax_stats.set_title("Mission stats", fontsize=9, fontweight='bold')
 
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=100, facecolor=fig.get_facecolor())
+    plt.savefig(buf, format='png', dpi=100, facecolor='white')
     buf.seek(0)
     arr = np.array(Image.open(buf))
     plt.close(fig)
     return arr
 
 def run_demo():
-    print("🎬 Demo: Heterogenní MAPPO tým (Scout + Commander)")
+    print("Demo: Heterogeneous MAPPO team (Scout + Commander)")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     scout_actor, commander_actor, _, _ = _load_models(device)
 
-    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=GRID_SIZE, max_steps=MAX_STEPS)
+    # Load OSM terrain for visualisation
+    terrain_collections = None
+    if USE_OSM:
+        print("Loading OSM terrain...")
+        gdfs = _load_terrain_gdfs()
+        if gdfs:
+            water, buildings, forests = _classify_features(gdfs)
+            terrain_collections = _build_terrain_collections(water, buildings, forests)
+            print(f"  Water: {len(water)}  Buildings: {len(buildings)}  Forest: {len(forests)}")
+
+    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=GRID_SIZE,
+                       max_steps=MAX_STEPS, use_osm=USE_OSM, osm_lat=OSM_LAT,
+                       osm_lon=OSM_LON, osm_cache_dir=OSM_CACHE)
     obs, _ = env.reset(seed=EPISODE_SEED, epizode_number=10000)
     
     refill_info = env.sim.environment.refill_zone
@@ -311,7 +470,8 @@ def run_demo():
                 list(f_path_x), list(f_path_y), f_pos, f_water_pct,
                 refill_pos, refill_size,
                 last_local_map.copy() if last_local_map is not None else None,
-                total_rq, total_rf, fire_seen, q_alive, f_alive
+                total_rq, total_rf, fire_seen, q_alive, f_alive,
+                terrain_collections=terrain_collections,
             )
             frames.append(frame)
 
@@ -319,33 +479,37 @@ def run_demo():
     _save_analysis(hist, project_root)
 
 def _save_analysis(hist, project_root):
-    fig, axes = plt.subplots(6, 1, figsize=(12, 16)) # Zvětšeno na 6 grafů
-    axes[0].plot(np.cumsum(hist["q_r"]), label="Scout", color='cyan')
-    axes[0].plot(np.cumsum(hist["f_r"]), label="Commander", color='tomato')
-    axes[0].set_title("Kumulativní odměna"); axes[0].legend()
-    
-    axes[1].plot(hist["q_alt"], color='cyan', label="Scout Alt")
-    axes[1].plot(hist["f_alt"], color='tomato', label="Commander Alt")
-    axes[1].set_title("Výška (m)"); axes[1].legend()
+    fig, axes = plt.subplots(6, 1, figsize=(12, 16))
+    fig.patch.set_facecolor('white')
+
+    axes[0].plot(np.cumsum(hist["q_r"]), label="Scout", color=CLR_SCOUT)
+    axes[0].plot(np.cumsum(hist["f_r"]), label="Commander", color=CLR_CMDR)
+    axes[0].set_title("Cumulative reward", fontweight='bold'); axes[0].legend(); axes[0].grid(alpha=0.3)
+
+    axes[1].plot(hist["q_alt"], color=CLR_SCOUT, label="Scout")
+    axes[1].plot(hist["f_alt"], color=CLR_CMDR, label="Commander")
+    axes[1].set_title("Altitude [m]", fontweight='bold'); axes[1].legend(); axes[1].grid(alpha=0.3)
 
     axes[2].fill_between(range(len(hist["fire"])), hist["fire"], color='orange', alpha=0.5)
-    axes[2].set_title("Intenzita ohně pod Scoutem")
+    axes[2].set_title("Fire intensity under scout", fontweight='bold'); axes[2].grid(alpha=0.3)
 
-    # NOVÝ GRAF: Hladina vody v čase
     axes[3].plot(hist["water"], color='deepskyblue', linewidth=2)
     axes[3].set_ylim(-0.05, 1.05)
-    axes[3].set_title("Hladina vody v nádrži (0.0 - 1.0)")
-    axes[3].grid(alpha=0.3)
+    axes[3].set_title("Commander water level", fontweight='bold'); axes[3].grid(alpha=0.3)
 
-    axes[4].plot(hist["q_r"], color='cyan', alpha=0.4, label="Scout")
-    axes[4].set_title("Odměna Scout per krok")
+    axes[4].plot(hist["q_r"], color=CLR_SCOUT, alpha=0.4)
+    axes[4].set_title("Scout reward per step", fontweight='bold'); axes[4].grid(alpha=0.3)
 
-    axes[5].plot(hist["f_r"], color='tomato', alpha=0.4, label="Commander")
-    axes[5].set_title("Odměna Commander per krok")
+    axes[5].plot(hist["f_r"], color=CLR_CMDR, alpha=0.4)
+    axes[5].set_title("Commander reward per step", fontweight='bold'); axes[5].grid(alpha=0.3)
+
+    for ax in axes:
+        ax.set_xlabel('Step', fontsize=8)
 
     plt.tight_layout()
-    plt.savefig(os.path.join(project_root, "demo_training_analysis.png"), dpi=120)
-    print("✅ Analýza uložena!")
+    plt.savefig(os.path.join(project_root, "demo_training_analysis.png"), dpi=120,
+                facecolor='white', edgecolor='none')
+    print("Analysis saved.")
 
 if __name__ == "__main__":
     run_demo()
