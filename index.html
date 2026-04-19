@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="cs">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -28,7 +28,7 @@
         .gallery {
             display: grid;
             grid-template-columns: 1fr;
-            gap: 20px;
+            gap: 25px;
         }
         
         .card {
@@ -44,13 +44,34 @@
             height: auto;
             border-radius: 8px;
             display: block;
+            background-color: #eee;
+        }
+        
+        .placeholder-box {
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            background: #e1e1e1;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #777;
+            font-weight: bold;
+            font-style: italic;
         }
         
         .card-title {
             font-weight: bold;
-            margin-top: 10px;
+            margin-top: 12px;
             display: block;
-            font-size: 1.1rem;
+            font-size: 1.2rem;
+            color: #1A457B;
+        }
+
+        .card-description {
+            font-size: 0.95rem;
+            color: #666;
+            margin-top: 5px;
         }
 
         footer {
@@ -58,36 +79,47 @@
             margin-top: 50px;
             font-size: 0.9rem;
             color: #666;
+            padding-bottom: 30px;
         }
+        
+        a { color: #1A457B; text-decoration: none; }
+        a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
 
 <header>
     <h1>Optimization of Multi-Agent UAS Behavior</h1>
-    <p class="subtitle">Video výsledky simulací pro Excel@FIT 2026</p>
+    <p class="subtitle">Simulation results for Excel@FIT 2026</p>
 </header>
 
 <main class="gallery">
     <div class="card">
-        <img src="https://via.placeholder.com/800x450.png?text=Ukazka+1+-+Approach+Phase" alt="Ukázka 1">
-        <span class="card-title">A) Autonomous Approach and Fire Tracking</span>
+        <img src="scout_demo.gif" alt="Single Scout Demo">
+        <span class="card-title">1. Single Scout: Autonomous Fire Tracking</span>
+        <p class="card-description">Demonstration of basic quadcopter behavior during fire detection and maintaining a stable hover over the ignition source.</p>
     </div>
 
     <div class="card">
-        <img src="https://via.placeholder.com/800x450.png?text=Ukazka+2+-+Extinguish+Phase" alt="Ukázka 2">
-        <span class="card-title">B) Precision Water Drop Delivery</span>
+        <div class="placeholder-box">
+            TBD - as soon as possible
+        </div>
+        <span class="card-title">2. Dual Scouts: Emergent Cooperation</span>
+        <p class="card-description">Coordination of multiple reconnaissance drones to efficiently cover larger territories and provide redundant tracking.</p>
     </div>
 
     <div class="card">
-        <img src="https://via.placeholder.com/800x450.png?text=Ukazka+3+-+Refill+Cycle" alt="Ukázka 3">
-        <span class="card-title">C) Strategic Retreat and Refill Maneuver</span>
+        <div class="placeholder-box">
+            TBD - as soon as possible
+        </div>
+        <span class="card-title">3. Heterogeneous Swarm: Full Mission Cycle</span>
+        <p class="card-description">Complete mission sequence: Commander approach based on real-time Scout data, precision water drop, and strategic refill maneuver.</p>
     </div>
 </main>
 
 <footer>
-    <p>&copy; 2026 Filip Jahn | VUT FIT Brno</p>
-    <p><a href="https://github.com/Filda99/DP">Zdrojový kód projektu na GitHubu</a></p>
+    <p>&copy; 2026 Filip Jahn | BUT FIT Brno</p>
+    <p><a href="https://github.com/Filda99/DP">Project source code on GitHub</a></p>
 </footer>
 
 </body>
