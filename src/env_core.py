@@ -705,9 +705,21 @@ class DroneFireEnv(ParallelEnv):
                 drone.state_va = 15.0
 
             else:
-                # Quads: Tady vygenerujeme unikátní pozici pro KAŽDÉHO scouta zvlášť!
-                quad_start_x = self.fire_x + random.uniform(-spawn_radius, spawn_radius)
-                quad_start_y = self.fire_y + random.uniform(-spawn_radius, spawn_radius)
+                # Quads: unikátní pozice pro KAŽDÉHO scouta + garantovaný rozestup
+                for _attempt in range(20):
+                    quad_start_x = self.fire_x + random.uniform(-spawn_radius, spawn_radius)
+                    quad_start_y = self.fire_y + random.uniform(-spawn_radius, spawn_radius)
+                    # Zkontroluj vzdálenost od již spawnovaných quadů
+                    too_close = False
+                    for other in self.quad_agents:
+                        if other == agent or other not in self.sim.drones:
+                            continue
+                        op = self.sim.drones[other].get_position()
+                        if np.hypot(quad_start_x - op[0], quad_start_y - op[1]) < 40.0:
+                            too_close = True
+                            break
+                    if not too_close:
+                        break
                 
                 # Pojistka proti spawnu za mapou
                 quad_start_x = float(np.clip(quad_start_x, -self.map_bounds * 0.9, self.map_bounds * 0.9))
