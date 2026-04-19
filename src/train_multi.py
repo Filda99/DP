@@ -79,8 +79,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     map_size_range = config.get('map_size_range', None)
 
     map_half = config['grid_size_m'] / 2.0
-    safe_limit = map_half - 350.0            # waypoints clipped to this box
-    boundary_emergency = map_half - 300.0    # hard override: steer toward center
+    safe_limit = max(50.0, map_half * 0.7)           # waypoints clipped to this box (proportional)
+    boundary_emergency = max(50.0, map_half * 0.6)   # hard override: steer toward center
     wp_reached_dist = 30.0
     wp_timeout_penalty = -1.0
 
@@ -104,7 +104,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
     # Critics (privileged — see global state)
     scout_priv_dim = config['scout_self_dim'] + 6   # 16 + 6 = 22
-    cmdr_priv_dim = config['fixed_self_dim'] + 6    # 17 + 6 = 23
+    cmdr_priv_dim = config['fixed_self_dim'] + 6    # 19 + 6 = 25
     local_critic_scout = PrivilegedCritic(scout_priv_dim, hidden_dim=hidden_dim_scout)
     local_critic_scout.load_state_dict(critic_scout_w)
     local_critic_scout.eval()
@@ -153,8 +153,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
         # Recalculate after reset (map size may have changed)
         map_half = local_env.map_bounds
-        safe_limit = map_half - 350.0
-        boundary_emergency = map_half - 300.0
+        safe_limit = max(50.0, map_half * 0.7)
+        boundary_emergency = max(50.0, map_half * 0.6)
 
         quad_agents = local_env.quad_agents   # ["quad_0", "quad_1", ...]
         fixed_agents = local_env.fixed_agents  # ["fixed_0", ...]
@@ -641,6 +641,12 @@ def train_multi(resume_scout="", resume_cmdr="",
     print("  Commander: CommanderActor (with scout messages)")
     print("=" * 70)
 
+    # Resolve resume paths BEFORE chdir so relative paths work
+    if resume_scout:
+        resume_scout = os.path.abspath(resume_scout)
+    if resume_cmdr:
+        resume_cmdr = os.path.abspath(resume_cmdr)
+
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
     from env_core import DroneFireEnv
@@ -654,15 +660,19 @@ def train_multi(resume_scout="", resume_cmdr="",
     # ── Hyperparameters ──────────────────────────────────────────────────
     N_QUADS = 2
     N_FIXED = 1
-    grid_size_m = 2000.0
-    map_size_range = (1000, 2000)  # random map size per episode [m]
+    grid_size_m = 1000.0
+    map_size_range = (500, 1200)  # random map size per episode [m]
     num_episodes = 30_000
-    max_steps = 4000              # buffer size — full episode length
-    steps_range = (1500, 4000)    # long episodes; BPTT chunked to 128 steps
+    max_steps = 1200              # buffer size — full episode length
+    steps_range = (500, 1200)    # long episodes; BPTT chunked to 128 steps
     bptt_chunk = 128              # GRU backprop limit per chunk
     waypoint_steps = 30
     waypoint_range = 200.0
-    num_decisions_cmdr = max_steps // waypoint_steps  # 133
+    num_decisions_cmdr = max_steps // waypoint_steps  # 16
+
+    # Scout freeze: keep scout frozen for first N batches so commander
+    # learns to use messages before scout policy gets destabilised.
+    scout_freeze_batches = 50
 
     gamma = 0.99
     gamma_cmdr = 0.95          # shorter horizon for commander decisions
@@ -673,7 +683,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     eps_per_worker = 2
     episodes_per_batch = num_workers * eps_per_worker
 
-    lr_scout = 1e-4             # zvýšeno z 1e-5; approach shaping vypnuto, čistý fire reward je stabilní
+    lr_scout = 3e-5             # very low — fine-tuning pre-trained scout, prevent policy collapse
     lr_cmdr = 5e-4
     lr_critic = 3e-4
     hidden_dim_scout = 128
@@ -750,13 +760,23 @@ def train_multi(resume_scout="", resume_cmdr="",
 
     if resume_cmdr and os.path.isfile(resume_cmdr):
         ckpt = torch.load(resume_cmdr, map_location=device)
-        cmdr_actor.load_state_dict(ckpt, strict=False)
+        model_shapes = {k: v.shape for k, v in cmdr_actor.state_dict().items()}
+        filtered = {k: v for k, v in ckpt.items()
+                    if k in model_shapes and v.shape == model_shapes[k]}
+        skipped = [k for k in ckpt if k not in filtered]
+        cmdr_actor.load_state_dict(filtered, strict=False)
+        if skipped:
+            print(f"  Skipped (shape mismatch): {skipped}")
         print(f"  Loaded commander from {resume_cmdr}")
 
     # ── Optimizers (fully separate) ──────────────────────────────────────
-    # for param in scout_actor.parameters():
-    #     param.requires_grad = True          # Phase 8: unfrozen, pure fire reward
-    optimizer_scout = optim.Adam(filter(lambda p: p.requires_grad, scout_actor.parameters()), lr=lr_scout)
+    optimizer_scout = optim.Adam(scout_actor.parameters(), lr=lr_scout)
+    # Start with scout frozen if requested
+    scout_frozen = scout_freeze_batches > 0
+    if scout_frozen:
+        for p in scout_actor.parameters():
+            p.requires_grad = False
+        print(f"  Scout FROZEN for first {scout_freeze_batches} batches")
     cmdr_main_params = [p for n, p in cmdr_actor.named_parameters()
                         if n != 'action_logstd']
     optimizer_cmdr = optim.Adam([
@@ -766,7 +786,7 @@ def train_multi(resume_scout="", resume_cmdr="",
 
     # ── Critics (privileged, CTDE) ───────────────────────────────────────
     scout_priv_dim = scout_self_dim + 6   # 16 + 6 = 22
-    cmdr_priv_dim = fixed_self_dim + 6    # 17 + 6 = 23
+    cmdr_priv_dim = fixed_self_dim + 6    # 19 + 6 = 25
 
     critic_scout = PrivilegedCritic(scout_priv_dim, hidden_dim=hidden_dim_scout).to(device)
     critic_cmdr = PrivilegedCritic(cmdr_priv_dim, hidden_dim=hidden_dim_cmdr).to(device)
@@ -798,6 +818,15 @@ def train_multi(resume_scout="", resume_cmdr="",
 
     # ── Main training loop ───────────────────────────────────────────────
     for batch_idx in range(1, num_batches + 1):
+
+        # Unfreeze scout after warmup period
+        if scout_frozen and batch_idx > scout_freeze_batches:
+            for p in scout_actor.parameters():
+                p.requires_grad = True
+            # Rebuild optimizer with all params now trainable
+            optimizer_scout = optim.Adam(scout_actor.parameters(), lr=lr_scout)
+            scout_frozen = False
+            print(f"   🔓 Scout UNFROZEN at batch {batch_idx}")
 
         scout_w = {k: v.cpu() for k, v in scout_actor.state_dict().items()}
         cmdr_w = {k: v.cpu() for k, v in cmdr_actor.state_dict().items()}
