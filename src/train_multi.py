@@ -259,7 +259,18 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
             # COMMANDER WAYPOINT DECISION (every waypoint_steps or on reach)
             # ==============================================================
             if cmdr_alive and f_agent in local_env.agents:
-                if need_new_waypoint:
+                # Boundary emergency check FIRST — override NN
+                in_boundary_emergency = False
+                fw_check = local_env.sim.drones.get(f_agent)
+                if fw_check is not None:
+                    pos_check = fw_check.get_position()
+                    if (abs(pos_check[0]) > boundary_emergency or
+                            abs(pos_check[1]) > boundary_emergency):
+                        target_x = 0.0
+                        target_y = 0.0
+                        in_boundary_emergency = True
+
+                if need_new_waypoint and not in_boundary_emergency:
                     # Build message input: [latest, best_fire] per scout → 2*N_QUADS slots
                     msgs_for_cmdr = []
                     masks_for_cmdr = []
@@ -352,12 +363,6 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                 fw = local_env.sim.drones.get(f_agent)
                 if fw is not None:
                     pos = fw.get_position()
-
-                    if (abs(pos[0]) > boundary_emergency or
-                            abs(pos[1]) > boundary_emergency):
-                        target_x = 0.0
-                        target_y = 0.0
-                        need_new_waypoint = True
 
                     dx_to = target_x - pos[0]
                     dy_to = target_y - pos[1]
@@ -658,21 +663,21 @@ def train_multi(resume_scout="", resume_cmdr="",
     print(f"Device: {device}\n")
 
     # ── Hyperparameters ──────────────────────────────────────────────────
-    N_QUADS = 2
+    N_QUADS = 2                   # 2 scouts + 1 commander
     N_FIXED = 1
-    grid_size_m = 1000.0
-    map_size_range = (500, 1200)  # random map size per episode [m]
+    grid_size_m = 1000.0          # MUST match train_scout (was 1000)
+    map_size_range = None         # MUST match train_scout (fixed map)
     num_episodes = 30_000
-    max_steps = 1200              # buffer size — full episode length
-    steps_range = (500, 1200)    # long episodes; BPTT chunked to 128 steps
+    max_steps = 500               # MUST match train_scout (was 500)
+    steps_range = None            # MUST match train_scout (fixed length)
     bptt_chunk = 128              # GRU backprop limit per chunk
     waypoint_steps = 30
     waypoint_range = 200.0
     num_decisions_cmdr = max_steps // waypoint_steps  # 16
 
-    # Scout freeze: keep scout frozen for first N batches so commander
-    # learns to use messages before scout policy gets destabilised.
-    scout_freeze_batches = 50
+    # Scout freeze: keep scout frozen initially so commander learns to
+    # read messages from a stable scout before joint fine-tuning.
+    scout_freeze_batches = 30
 
     gamma = 0.99
     gamma_cmdr = 0.95          # shorter horizon for commander decisions
@@ -1035,9 +1040,11 @@ def train_multi(resume_scout="", resume_cmdr="",
                 chunk_entropies = []
                 h_chunk = mb_h.detach()
                 T = mb_maps.size(1)  # actual sequence length (= max_steps)
+                curr_mb = mb_maps.size(0)  # minibatch size
 
                 for t0 in range(0, T, bptt_chunk):
                     t1 = min(t0 + bptt_chunk, T)
+                    chunk_len = t1 - t0
                     c_maps = mb_maps[:, t0:t1]
                     c_self = mb_self[:, t0:t1]
                     c_ns = mb_ns[:, t0:t1]
@@ -1045,12 +1052,14 @@ def train_multi(resume_scout="", resume_cmdr="",
                     c_acts = mb_acts[:, t0:t1].reshape(-1, 4)
 
                     dist_c, _, h_chunk = scout_actor(c_maps, c_self, c_ns, c_nm, h_chunk)
-                    chunk_new_lps.append(dist_c.log_prob(c_acts).sum(1))
-                    chunk_entropies.append(dist_c.entropy().sum(1))
+                    # Reshape to (mb, chunk_len) so we can cat along seq dim
+                    chunk_new_lps.append(dist_c.log_prob(c_acts).sum(1).view(curr_mb, chunk_len))
+                    chunk_entropies.append(dist_c.entropy().sum(1).view(curr_mb, chunk_len))
                     h_chunk = h_chunk.detach()  # cut gradient flow between chunks
 
-                new_lp = torch.cat(chunk_new_lps)
-                entropy = torch.cat(chunk_entropies)
+                # Cat along seq dim → (mb, T), then flatten episode-major
+                new_lp = torch.cat(chunk_new_lps, dim=1).reshape(-1)
+                entropy = torch.cat(chunk_entropies, dim=1).reshape(-1)
                 flat_old_lp = mb_old_lp.reshape(-1)
                 flat_adv = mb_adv.reshape(-1)
                 flat_alive_s = mb_alive_s.reshape(-1)
@@ -1058,6 +1067,21 @@ def train_multi(resume_scout="", resume_cmdr="",
 
                 log_ratio = (new_lp - flat_old_lp).clamp(-10.0, 10.0)
                 ratio = torch.exp(log_ratio)
+
+                # ── Diagnostic: print ratio + advantage stats on first minibatch of each batch ──
+                if epoch == 0 and start == 0:
+                    with torch.no_grad():
+                        alive_mask_d = flat_alive_s > 0.5
+                        if alive_mask_d.sum() > 0:
+                            r_alive = ratio[alive_mask_d]
+                            a_alive = flat_adv[alive_mask_d]
+                            lp_diff = (new_lp - flat_old_lp)[alive_mask_d]
+                            print(f"   [SCOUT DIAG] ratio: mean={r_alive.mean():.4f} std={r_alive.std():.4f} "
+                                  f"min={r_alive.min():.4f} max={r_alive.max():.4f} | "
+                                  f"adv: mean={a_alive.mean():.4f} std={a_alive.std():.4f} | "
+                                  f"lp_diff: mean={lp_diff.mean():.4f} std={lp_diff.std():.4f} | "
+                                  f"alive={alive_mask_d.sum().item()}/{flat_alive_s.numel()}")
+
                 pg1 = -flat_adv * ratio
                 pg2 = -flat_adv * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
                 surr = torch.max(pg1, pg2)

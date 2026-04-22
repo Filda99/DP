@@ -46,8 +46,8 @@ CLR_CMDR     = '#ff3333'
 # ============================================================
 # KONFIGURACE
 # ============================================================
-MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/08_trainingFW/07_trainingAlsoScout/scout_best.pt"
-MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/08_trainingFW/07_trainingAlsoScout/cmdr_best.pt"
+MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/scout_b0110.pt"
+MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/cmdr_b0110.pt"
 
 N_QUADS    = 1
 N_FIXED    = 1
@@ -65,7 +65,6 @@ OSM_CACHE    = os.path.join(project_root, "data")
 WAYPOINT_RANGE  = 200.0   # metres per unit of dx/dy
 WAYPOINT_STEPS  = 30      # physics steps per waypoint segment
 WP_REACHED_DIST = 30.0    # metres
-SAFE_LIMIT_BUF  = 250.0   # boundary buffer
 # ============================================================
 
 
@@ -197,12 +196,12 @@ def _load_models(device):
     return scout, cmdr, scout_self_dim, fixed_self_dim
 
 def _render_frame(step, fire_map, b,
-                  q_path_x, q_path_y, q_pos, q_fov,
+                  q_paths, q_positions, q_alive_map,
                   f_path_x, f_path_y, f_pos, f_water_pct,
                   refill_pos, refill_size,
                   local_map_np,
                   total_reward_q, total_reward_f,
-                  fire_seen_sum, q_alive, f_alive,
+                  fire_seen_sum, f_alive,
                   terrain_collections=None):
 
     fig = plt.figure(figsize=(12, 6), facecolor='white')
@@ -234,21 +233,26 @@ def _render_frame(step, fire_map, b,
                     fontweight='bold', alpha=0.8)
 
     # Trails
-    if len(q_path_x) > 1:
-        ax_map.plot(q_path_x, q_path_y, color=CLR_SCOUT, alpha=0.4,
-                    linewidth=1.2, linestyle=':', zorder=5)
+    for q_name, paths in q_paths.items():
+        if len(paths["x"]) > 1:
+            ax_map.plot(paths["x"], paths["y"], color=CLR_SCOUT, alpha=0.4,
+                        linewidth=1.2, linestyle=':', zorder=5)
     if len(f_path_x) > 1:
         ax_map.plot(f_path_x, f_path_y, color=CLR_CMDR, alpha=0.4,
                     linewidth=1.2, linestyle=':', zorder=5)
 
     # Agent positions
-    if q_alive and q_pos is not None:
-        rect = plt.Rectangle((q_pos[0] - q_fov/2, q_pos[1] - q_fov/2), q_fov, q_fov,
-                              fill=False, edgecolor=CLR_SCOUT, linewidth=1.0,
-                              alpha=0.7, zorder=6)
-        ax_map.add_patch(rect)
-        ax_map.scatter(q_pos[0], q_pos[1], c=CLR_SCOUT, s=100, marker='^',
-                       edgecolors='black', linewidths=0.6, zorder=7)
+    for q_name in q_positions:
+        q_pos = q_positions[q_name]
+        if q_alive_map.get(q_name, False) and q_pos is not None:
+            q_alt = q_pos[2]
+            q_fov = max(10.0, q_alt * 1.5)
+            rect = plt.Rectangle((q_pos[0] - q_fov/2, q_pos[1] - q_fov/2), q_fov, q_fov,
+                                  fill=False, edgecolor=CLR_SCOUT, linewidth=1.0,
+                                  alpha=0.7, zorder=6)
+            ax_map.add_patch(rect)
+            ax_map.scatter(q_pos[0], q_pos[1], c=CLR_SCOUT, s=100, marker='^',
+                           edgecolors='black', linewidths=0.6, zorder=7)
 
     if f_alive and f_pos is not None:
         ax_map.scatter(f_pos[0], f_pos[1], c=CLR_CMDR, s=130, marker='>',
@@ -335,87 +339,125 @@ def run_demo():
     refill_pos = refill_info['position'] if refill_info else None
     refill_size = refill_info['size'] if refill_info else 20.0
 
-    safe_limit = env.map_bounds - SAFE_LIMIT_BUF
-    boundary_emergency = env.map_bounds - 100.0
+    safe_limit = max(50.0, env.map_bounds * 0.7)           # must match training
+    boundary_emergency = max(50.0, env.map_bounds * 0.6)   # must match training
+    print(f"📐 map_bounds={env.map_bounds}, safe_limit={safe_limit}, "
+          f"boundary_emergency={boundary_emergency}")
 
-    h_scout = torch.zeros(1, 1, 128).to(device)
+    h_scout = {f"quad_{i}": torch.zeros(1, 1, 128).to(device) for i in range(N_QUADS)}
     h_cmdr  = torch.zeros(1, 1, 64).to(device)
 
-    hist = { "q_r": [], "f_r": [], "q_alt": [], "f_alt": [], "fire": [], "water": [] }
-    frames, total_rq, total_rf = [], 0.0, 0.0
-    q_path_x, q_path_y, f_path_x, f_path_y = [], [], [], []
-    last_local_map = None
+    hist = { "q_r": {f"quad_{i}": [] for i in range(N_QUADS)},
+             "f_r": [], "q_alt": {f"quad_{i}": [] for i in range(N_QUADS)},
+             "f_alt": [], "fire": [], "water": [] }
+    frames, total_rf = [], 0.0
+    total_rq = {f"quad_{i}": 0.0 for i in range(N_QUADS)}
+    q_paths = {f"quad_{i}": {"x": [], "y": []} for i in range(N_QUADS)}
+    f_path_x, f_path_y = [], []
+    last_local_maps = {f"quad_{i}": None for i in range(N_QUADS)}
 
     # Commander waypoint state
     need_new_waypoint = True
     target_x, target_y = 0.0, 0.0
     target_alt_raw, water_raw = 0.0, -0.5
     steps_in_segment = 0
-    last_scout_msg = torch.zeros(1, 1, 5).to(device)
-    scout_msg_valid = False
+    # Per-scout message tracking: latest + best-fire
+    scout_msgs = {f"quad_{i}": {"latest": torch.zeros(1, 5).to(device),
+                                 "best": torch.zeros(1, 5).to(device),
+                                 "valid": False, "best_intensity": -1.0}
+                  for i in range(N_QUADS)}
 
     print("🚀 Mise začíná...")
     for step in tqdm.tqdm(range(MAX_STEPS)):
         if not env.agents: break
         actions = {}
 
-        # ── Scout ────────────────────────────────────────────────────────
-        if "quad_0" in env.agents:
-            l_map = torch.FloatTensor(obs["quad_0"]["local_map"]).to(device).unsqueeze(0)
-            s_st  = torch.FloatTensor(obs["quad_0"]["self_state"]).to(device).unsqueeze(0)
-            n_st  = torch.FloatTensor(obs["quad_0"]["neighbor_states"]).to(device).unsqueeze(0)
-            n_m   = torch.BoolTensor(obs["quad_0"]["neighbor_mask"]).to(device).unsqueeze(0)
-            with torch.no_grad():
-                dist, scout_msg, h_scout = scout_actor(l_map, s_st, n_st, n_m, h_scout)
-            actions["quad_0"] = dist.mean.squeeze(0).cpu().numpy()
-            last_local_map = obs["quad_0"]["local_map"][0]
-            last_scout_msg = scout_msg.unsqueeze(1)  # [1, 5] → [1, 1, 5]
-            scout_msg_valid = True
-        else:
-            scout_msg_valid = False
+        # ── Scouts ───────────────────────────────────────────────────────
+        for qi in range(N_QUADS):
+            q_name = f"quad_{qi}"
+            if q_name in env.agents:
+                l_map = torch.FloatTensor(obs[q_name]["local_map"]).to(device).unsqueeze(0)
+                s_st  = torch.FloatTensor(obs[q_name]["self_state"]).to(device).unsqueeze(0)
+                n_st  = torch.FloatTensor(obs[q_name]["neighbor_states"]).to(device).unsqueeze(0)
+                n_m   = torch.BoolTensor(obs[q_name]["neighbor_mask"]).to(device).unsqueeze(0)
+                with torch.no_grad():
+                    dist, scout_msg, h_scout[q_name] = scout_actor(
+                        l_map, s_st, n_st, n_m, h_scout[q_name])
+                actions[q_name] = dist.mean.squeeze(0).cpu().numpy()
+                last_local_maps[q_name] = obs[q_name]["local_map"][0]
+                # Update message tracking
+                sm = scout_msgs[q_name]
+                sm["latest"] = scout_msg  # [1, 5]
+                sm["valid"] = True
+                intensity = scout_msg[0, 2].item()
+                if intensity > sm["best_intensity"]:
+                    sm["best_intensity"] = intensity
+                    sm["best"] = scout_msg
 
         # ── Commander (waypoint mode) ────────────────────────────────────
         if "fixed_0" in env.agents:
-            # Check if waypoint reached or timeout → new decision
             drone = env.sim.drones.get("fixed_0")
+
+            # Boundary emergency check FIRST — overrides NN
+            in_boundary_emergency = False
             if drone is not None:
                 pos = drone.get_position()
-                dx_to = target_x - pos[0]
-                dy_to = target_y - pos[1]
-                dist_to = np.sqrt(dx_to**2 + dy_to**2)
-                if dist_to < WP_REACHED_DIST:
+                if abs(pos[0]) > boundary_emergency or abs(pos[1]) > boundary_emergency:
+                    target_x = 0.0
+                    target_y = 0.0
+                    in_boundary_emergency = True
+
+            if not in_boundary_emergency:
+                if drone is not None:
+                    dx_to = target_x - pos[0]
+                    dy_to = target_y - pos[1]
+                    dist_to = np.sqrt(dx_to**2 + dy_to**2)
+                    if dist_to < WP_REACHED_DIST:
+                        need_new_waypoint = True
+
+                if steps_in_segment >= WAYPOINT_STEPS:
                     need_new_waypoint = True
 
-            if steps_in_segment >= WAYPOINT_STEPS:
-                need_new_waypoint = True
+                if need_new_waypoint:
+                    s_st_f = torch.FloatTensor(obs["fixed_0"]["self_state"]).to(device).unsqueeze(0)
 
-            if need_new_waypoint:
-                s_st_f = torch.FloatTensor(obs["fixed_0"]["self_state"]).to(device).unsqueeze(0)
-                # Build message tensor for commander (latest + best-fire slots)
-                msgs_t = torch.cat([last_scout_msg, last_scout_msg], dim=1)  # [1, 2, 5]
-                msgs_m = torch.tensor([[not scout_msg_valid, not scout_msg_valid]])  # [1, 2]
-                with torch.no_grad():
-                    dist_c, _, h_cmdr = commander_actor(s_st_f, msgs_t, msgs_m, h_cmdr)
-                act_np = dist_c.mean.squeeze(0).cpu().numpy()
-                dx_raw = float(act_np[0])
-                dy_raw = float(act_np[1])
-                target_alt_raw = float(act_np[2])
-                water_raw = float(act_np[3])
+                    # Build 4-slot message tensor: [latest_q0, best_q0, latest_q1, best_q1]
+                    msgs_for_cmdr = []
+                    masks_for_cmdr = []
+                    for qi in range(N_QUADS):
+                        sm = scout_msgs[f"quad_{qi}"]
+                        msgs_for_cmdr.append(sm["latest"])   # each is [1, 5]
+                        masks_for_cmdr.append(not sm["valid"])
+                        msgs_for_cmdr.append(sm["best"])     # each is [1, 5]
+                        masks_for_cmdr.append(not sm["valid"])
 
-                cur_pos = drone.get_position() if drone else np.zeros(3)
-                target_x = np.clip(cur_pos[0] + dx_raw * WAYPOINT_RANGE, -safe_limit, safe_limit)
-                target_y = np.clip(cur_pos[1] + dy_raw * WAYPOINT_RANGE, -safe_limit, safe_limit)
-                steps_in_segment = 0
-                need_new_waypoint = False
+                    msgs_t = torch.stack(msgs_for_cmdr, dim=1)    # [1, 2*N_QUADS, 5]
+                    msgs_m = torch.tensor([masks_for_cmdr])       # [1, 2*N_QUADS]
+                    if step == 0:
+                        print(f"  [DEBUG] msgs_t shape={msgs_t.shape}, msgs_m shape={msgs_m.shape}, masks={masks_for_cmdr}")
+
+                    with torch.no_grad():
+                        dist_c, aux_pred, h_cmdr = commander_actor(s_st_f, msgs_t, msgs_m, h_cmdr)
+                    act_np = dist_c.mean.squeeze(0).cpu().numpy()
+                    std_np = dist_c.stddev.squeeze(0).cpu().numpy()
+                    dx_raw = float(act_np[0])
+                    dy_raw = float(act_np[1])
+                    target_alt_raw = float(act_np[2])
+                    water_raw = float(act_np[3])
+
+                    cur_pos = drone.get_position() if drone else np.zeros(3)
+                    target_x = np.clip(cur_pos[0] + dx_raw * WAYPOINT_RANGE, -safe_limit, safe_limit)
+                    target_y = np.clip(cur_pos[1] + dy_raw * WAYPOINT_RANGE, -safe_limit, safe_limit)
+                    print(f"  [WP step={step}] pos=({cur_pos[0]:.0f},{cur_pos[1]:.0f},{cur_pos[2]:.0f}) "
+                            f"mean=({act_np}) std=({std_np}) "
+                            f"aux={aux_pred.squeeze().cpu().numpy()} "
+                            f"→ target=({target_x:.0f},{target_y:.0f})")
+                    steps_in_segment = 0
+                    need_new_waypoint = False
 
             # Heading controller → physical action
             if drone is not None:
                 pos = drone.get_position()
-                # Emergency boundary override
-                if abs(pos[0]) > boundary_emergency or abs(pos[1]) > boundary_emergency:
-                    target_x = 0.0
-                    target_y = 0.0
-                    need_new_waypoint = True
                 dx_to = target_x - pos[0]
                 dy_to = target_y - pos[1]
                 dist_to = np.sqrt(dx_to**2 + dy_to**2)
@@ -427,50 +469,80 @@ def run_demo():
                 else:
                     heading_cmd = 0.0
 
-                # Todo: zmenit pak
-                # fire_dist = np.hypot(pos[0] - env.fire_x, pos[1] - env.fire_y)
-                # has_water = drone.current_water > 0.01 * drone.water_capacity
-                # water_raw = 1.0 if (fire_dist < 80.0 and has_water) else -1.0
-
                 actions["fixed_0"] = np.array(
                     [heading_cmd, target_alt_raw, water_raw], dtype=np.float32)
 
             steps_in_segment += 1
 
-        obs, rewards, _, _, _ = env.step(actions)
-        total_rq += rewards.get("quad_0", 0.0)
+        obs, rewards, _, _, infos = env.step(actions)
+
+        # Commander death diagnostic
+        if "fixed_0" in infos and infos["fixed_0"].get("death_cause", ""):
+            dc = infos["fixed_0"]["death_cause"]
+            last_pos = f_path_x[-1] if f_path_x else "?"
+            last_pos_y = f_path_y[-1] if f_path_y else "?"
+            print(f"\n💀 Commander died at step {step}: cause={dc}, "
+                  f"last_pos=({last_pos:.1f}, {last_pos_y:.1f}), "
+                  f"map_bounds={env.map_bounds}, "
+                  f"safe_limit={safe_limit:.1f}, boundary_emergency={boundary_emergency:.1f}")
+
+        for qi in range(N_QUADS):
+            q_name = f"quad_{qi}"
+            total_rq[q_name] += rewards.get(q_name, 0.0)
         total_rf += rewards.get("fixed_0", 0.0)
 
         # Sběr dat pro vizualizaci
         f_water_pct = 0.0
-        q_alive = "quad_0" in env.sim.drones
         f_alive = "fixed_0" in env.sim.drones
-        q_pos, f_pos = None, None
+        f_pos = None
 
-        if q_alive:
-            q_pos = env.sim.drones["quad_0"].get_position()
-            q_path_x.append(q_pos[0]); q_path_y.append(q_pos[1])
+        for qi in range(N_QUADS):
+            q_name = f"quad_{qi}"
+            if q_name in env.sim.drones:
+                q_pos = env.sim.drones[q_name].get_position()
+                q_paths[q_name]["x"].append(q_pos[0])
+                q_paths[q_name]["y"].append(q_pos[1])
+                hist["q_alt"][q_name].append(q_pos[2])
+            hist["q_r"][q_name].append(rewards.get(q_name, 0.0))
+
         if f_alive:
             f_pos = env.sim.drones["fixed_0"].get_position()
             f_path_x.append(f_pos[0]); f_path_y.append(f_pos[1])
             f_water_pct = env.sim.drones["fixed_0"].current_water / env.sim.drones["fixed_0"].water_capacity
 
-        fire_seen = float(np.sum(last_local_map)) if last_local_map is not None else 0.0
-        hist["q_r"].append(rewards.get("quad_0", 0.0))
+        # Use best local map from any scout for display
+        best_local_map = None
+        best_fire_sum = -1
+        for qi in range(N_QUADS):
+            lm = last_local_maps[f"quad_{qi}"]
+            if lm is not None:
+                s = float(np.sum(lm))
+                if s > best_fire_sum:
+                    best_fire_sum = s
+                    best_local_map = lm
+
+        fire_seen = best_fire_sum if best_fire_sum >= 0 else 0.0
         hist["f_r"].append(rewards.get("fixed_0", 0.0))
         hist["fire"].append(fire_seen)
         hist["water"].append(f_water_pct)
-        if q_alive: hist["q_alt"].append(q_pos[2])
         if f_alive: hist["f_alt"].append(f_pos[2])
 
         if step % GIF_EVERY == 0:
+            # Gather scout positions
+            q_positions = {}
+            q_alive_map = {}
+            for qi in range(N_QUADS):
+                q_name = f"quad_{qi}"
+                q_alive_map[q_name] = q_name in env.sim.drones
+                q_positions[q_name] = env.sim.drones[q_name].get_position() if q_alive_map[q_name] else None
+
             frame = _render_frame(
                 step, env.sim.environment.fire_grid.I.copy(), env.map_bounds,
-                list(q_path_x), list(q_path_y), q_pos, 40.0,
+                q_paths, q_positions, q_alive_map,
                 list(f_path_x), list(f_path_y), f_pos, f_water_pct,
                 refill_pos, refill_size,
-                last_local_map.copy() if last_local_map is not None else None,
-                total_rq, total_rf, fire_seen, q_alive, f_alive,
+                best_local_map.copy() if best_local_map is not None else None,
+                sum(total_rq.values()), total_rf, fire_seen, f_alive,
                 terrain_collections=terrain_collections,
             )
             frames.append(frame)
@@ -482,11 +554,13 @@ def _save_analysis(hist, project_root):
     fig, axes = plt.subplots(6, 1, figsize=(12, 16))
     fig.patch.set_facecolor('white')
 
-    axes[0].plot(np.cumsum(hist["q_r"]), label="Scout", color=CLR_SCOUT)
     axes[0].plot(np.cumsum(hist["f_r"]), label="Commander", color=CLR_CMDR)
+    for q_name in hist["q_r"]:
+        axes[0].plot(np.cumsum(hist["q_r"][q_name]), label=q_name, color=CLR_SCOUT, alpha=0.7)
     axes[0].set_title("Cumulative reward", fontweight='bold'); axes[0].legend(); axes[0].grid(alpha=0.3)
 
-    axes[1].plot(hist["q_alt"], color=CLR_SCOUT, label="Scout")
+    for q_name in hist["q_alt"]:
+        axes[1].plot(hist["q_alt"][q_name], color=CLR_SCOUT, alpha=0.7, label=q_name)
     axes[1].plot(hist["f_alt"], color=CLR_CMDR, label="Commander")
     axes[1].set_title("Altitude [m]", fontweight='bold'); axes[1].legend(); axes[1].grid(alpha=0.3)
 
@@ -497,8 +571,9 @@ def _save_analysis(hist, project_root):
     axes[3].set_ylim(-0.05, 1.05)
     axes[3].set_title("Commander water level", fontweight='bold'); axes[3].grid(alpha=0.3)
 
-    axes[4].plot(hist["q_r"], color=CLR_SCOUT, alpha=0.4)
     axes[4].set_title("Scout reward per step", fontweight='bold'); axes[4].grid(alpha=0.3)
+    for q_name in hist["q_r"]:
+        axes[4].plot(hist["q_r"][q_name], color=CLR_SCOUT, alpha=0.3)
 
     axes[5].plot(hist["f_r"], color=CLR_CMDR, alpha=0.4)
     axes[5].set_title("Commander reward per step", fontweight='bold'); axes[5].grid(alpha=0.3)

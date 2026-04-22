@@ -1160,7 +1160,8 @@ class DroneFireEnv(ParallelEnv):
         """FW navigation reward — BEZ ground-truth fire pozice.
 
         FW musí se naučit navigovat k ohni čistě přes scout zprávy
-        (cross-attention v CommanderActor). Reward zde jen:
+        (cross-attention v CommanderActor). Reward zde:
+          - Approach gradient: přiblížení k ohni (potential-based)
           - Extinguish efektivita (řešena v step() team reward)
           - Refill gradient když je prázdný tank
           - Altitude sweet spot když je blízko ohně (ví z extinguish feedback)
@@ -1170,6 +1171,19 @@ class DroneFireEnv(ParallelEnv):
         water_lvl = drone.current_water / drone.water_capacity if drone.water_capacity > 0 else 0.0
 
         reward = 0.0
+
+        # ── Potential-based approach shaping → gradient k ohni ──
+        # FW potřebuje guidance k ohni, jinak jen krouží a nikdy se nenaučí hasit.
+        # Používáme ground-truth fire pos (stejně jako scouti mají approach_k).
+        dist_to_fire = np.hypot(pos[0] - self.fire_x, pos[1] - self.fire_y)
+        prev_dist = self._prev_fire_dists.get(agent, dist_to_fire)
+        delta = prev_dist - dist_to_fire  # kladné = přiblížení
+        reward += delta * 0.02  # slabší než scout (0.03) — hlavní guidance je přes messages
+        self._prev_fire_dists[agent] = dist_to_fire
+
+        # ── Bonus za blízkost ohni s vodou ──
+        if dist_to_fire < 150.0 and water_lvl > 0.05:
+            reward += 0.1  # jsi blízko a máš vodu — zůstaň!
 
         if water_lvl < 0.05:
             # PRÁZDNÝ TANK → gradient k refill zóně
