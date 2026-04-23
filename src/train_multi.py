@@ -271,32 +271,17 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         in_boundary_emergency = True
 
                 if need_new_waypoint and not in_boundary_emergency:
-                    # Build message input: [latest, best_fire] per scout → 2*N_QUADS slots
                     msgs_for_cmdr = []
                     masks_for_cmdr = []
 
                     for q in quad_agents:
-                        # Latest message from this scout
-                        if len(msg_buffer) > 0:
-                            latest_msg, latest_valid = msg_buffer[-1][q]
-                        else:
-                            latest_msg = torch.zeros(1, scout_msg_dim)
-                            latest_valid = False
+                        # Pouze LATEST zpráva
+                        latest_msg, latest_valid = msg_buffer[-1][q] if len(msg_buffer) > 0 else (torch.zeros(1, scout_msg_dim), False)
+                        
                         msgs_for_cmdr.append(latest_msg)
                         masks_for_cmdr.append(not latest_valid)
 
-                        # Best fire message from this scout (highest intensity at index 2)
-                        best_msg = latest_msg
-                        best_intensity = -1.0
-                        for buf_entry in msg_buffer:
-                            m_tensor, m_valid = buf_entry[q]
-                            if m_valid and m_tensor[0, 2].item() > best_intensity:
-                                best_intensity = m_tensor[0, 2].item()
-                                best_msg = m_tensor
-                        msgs_for_cmdr.append(best_msg)
-                        masks_for_cmdr.append(not latest_valid)
-
-                    # Stack: [1, 2*N_QUADS, msg_dim]
+                    # Stack: [1, N_QUADS, msg_dim]
                     msgs_t = torch.stack(msgs_for_cmdr, dim=1)
                     msgs_m = torch.tensor([masks_for_cmdr])
 
@@ -540,7 +525,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         # ==================================================================
         # PACK COMMANDER BUFFER (num_decisions_cmdr entries, padded)
         # ==================================================================
-        n_msg_slots = 2 * N_QUADS
+        n_msg_slots = N_QUADS
         for i in range(num_decisions_cmdr):
             if i < n_actual_cmdr:
                 d = cmdr_ep_data[i]

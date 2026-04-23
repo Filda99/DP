@@ -975,26 +975,16 @@ class DroneFireEnv(ParallelEnv):
                 continue
 
             eff = self.sim.drone_extinguish_stats.get(f_agent, 0.0)
-            is_dropping = drone_controls[f_agent][3] > 0.5
-
+            
             if eff > 0.0:
-                fire_bonus = min(eff * 50.0, 3.0)  # cap per-step bonus
+                fire_bonus = min(eff * 50.0, 3.0)
                 rewards[f_agent] += fire_bonus
 
-                # NOTE: scouts no longer receive team extinguish bonus.
-                # The 20% share created unattributable reward noise that
-                # destroyed the scout's fire-seeking policy via PPO.
-                # Scout credit comes purely from its own mission reward.
-
-            elif is_dropping and f_agent in self.sim.drones:
-                # Dense reward: dropping water near fire
-                f_pos = self.sim.drones[f_agent].get_position()
-                dist_to_fire = np.linalg.norm([f_pos[0] - self.fire_x, f_pos[1] - self.fire_y])
-                if dist_to_fire < 100.0:
-                    rewards[f_agent] += 2.0  # dense: +2/krok za správné hašení
-                else:
-                    # Penalty for wasting water far from fire
-                    rewards[f_agent] -= 3.0
+                # Sdílená odměna pro Scouty
+                # Scouti dostanou 50 % z bonusu Commandera, aby věděli, že naváděli správně
+                for q_agent in self.quad_agents:
+                    if q_agent in rewards: # Pokud je naživu
+                        rewards[q_agent] += fire_bonus * 0.5
              
         if self.sim.environment.fire_grid is not None:
             total_burning = int(np.sum(self.sim.environment.fire_grid.B))
