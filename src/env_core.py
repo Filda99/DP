@@ -394,17 +394,8 @@ class DroneFireEnv(ParallelEnv):
         danger_flag = 1.0 if min(self._get_boundary_measurements(pos)) < danger_threshold else 0.0
         
         # --- Fire compass (unit vector from drone toward fire) ---
-        # Phase 1-4
-        # vec_fire_x = self.fire_x - pos[0]
-        # vec_fire_y = self.fire_y - pos[1]
-        # dist_to_fire = np.hypot(vec_fire_x, vec_fire_y)
-        # if dist_to_fire > 1.0:
-        #     fire_dir_x = vec_fire_x / dist_to_fire
-        #     fire_dir_y = vec_fire_y / dist_to_fire
-        # else:
-        #     fire_dir_x, fire_dir_y = 0.0, 0.0
-        
-        # Phase 5
+        # Disabled: commander must learn fire location from scout messages
+        # via cross-attention, not from direct observation.
         fire_dir_x, fire_dir_y = 0.0, 0.0
 
         self_state = np.array([
@@ -1071,8 +1062,12 @@ class DroneFireEnv(ParallelEnv):
         if "fixed" in agent:
             alt_min = FIXED["alt_ideal_min"]
             alt_max = FIXED["alt_ideal_max"]
-            if pos[2] > alt_max or pos[2] < alt_min:
-                reward -= 0.05
+            if pos[2] > alt_max:
+                excess = pos[2] - alt_max
+                reward -= excess * FIXED["alt_penalty"]
+            elif pos[2] < alt_min:
+                excess = alt_min - pos[2]
+                reward -= excess * FIXED["alt_penalty"]
         else:
             if pos[2] > QUAD["alt_ideal_max"]:
                 excess_alt = pos[2] - QUAD["alt_ideal_max"]
@@ -1173,17 +1168,18 @@ class DroneFireEnv(ParallelEnv):
         reward = 0.0
 
         # ── Potential-based approach shaping → gradient k ohni ──
-        # FW potřebuje guidance k ohni, jinak jen krouží a nikdy se nenaučí hasit.
-        # Používáme ground-truth fire pos (stejně jako scouti mají approach_k).
+        # FW potřebuje silný guidance k ohni — musí tam doletět aby mohl hasit.
         dist_to_fire = np.hypot(pos[0] - self.fire_x, pos[1] - self.fire_y)
         prev_dist = self._prev_fire_dists.get(agent, dist_to_fire)
         delta = prev_dist - dist_to_fire  # kladné = přiblížení
-        reward += delta * 0.02  # slabší než scout (0.03) — hlavní guidance je přes messages
+        reward += delta * 0.05  # approach gradient
         self._prev_fire_dists[agent] = dist_to_fire
 
         # ── Bonus za blízkost ohni s vodou ──
-        if dist_to_fire < 150.0 and water_lvl > 0.05:
-            reward += 0.1  # jsi blízko a máš vodu — zůstaň!
+        if dist_to_fire < 200.0 and water_lvl > 0.05:
+            reward += 0.2  # jsi blízko a máš vodu — zůstaň!
+        elif dist_to_fire < 100.0 and water_lvl > 0.05:
+            reward += 0.5  # velmi blízko — hasení možné
 
         if water_lvl < 0.05:
             # PRÁZDNÝ TANK → gradient k refill zóně

@@ -640,7 +640,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 # =============================================================================
 
 def train_multi(resume_scout="", resume_cmdr="",
-                log_episodes=False, log_dir="/tmp/ep_logs"):
+                log_episodes=False, log_dir="/tmp/ep_logs", episodes_played=0):
     print("=" * 70)
     print("  Multi-Agent Training: Scout (frame-by-frame) + Commander (waypoint)")
     print("  Commander: CommanderActor (with scout messages)")
@@ -677,7 +677,7 @@ def train_multi(resume_scout="", resume_cmdr="",
 
     # Scout freeze: keep scout frozen initially so commander learns to
     # read messages from a stable scout before joint fine-tuning.
-    scout_freeze_batches = 30
+    scout_freeze_batches = 999999  # freeze scouts permanently — train only commander
 
     gamma = 0.99
     gamma_cmdr = 0.95          # shorter horizon for commander decisions
@@ -755,6 +755,10 @@ def train_multi(resume_scout="", resume_cmdr="",
             print(f"  Skipped (shape mismatch): {skipped}")
         print(f"  Loaded scout from {resume_scout}")
 
+        with torch.no_grad():
+            scout_actor.action_logstd.fill_(-0.5)
+            print("  [INFO] Resetován action_logstd Scouta pro lepší exploraci.")
+
     cmdr_actor = CommanderActor(
         self_state_dim=fixed_self_dim,
         msg_input_dim=scout_msg_dim,
@@ -773,6 +777,10 @@ def train_multi(resume_scout="", resume_cmdr="",
         if skipped:
             print(f"  Skipped (shape mismatch): {skipped}")
         print(f"  Loaded commander from {resume_cmdr}")
+
+        with torch.no_grad():
+            cmdr_actor.action_logstd.fill_(-0.5) 
+            print("  [INFO] Resetován action_logstd Commandera pro lepší exploraci.")
 
     # ── Optimizers (fully separate) ──────────────────────────────────────
     optimizer_scout = optim.Adam(scout_actor.parameters(), lr=lr_scout)
@@ -818,7 +826,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     print(f"Checkpoints → {save_dir}\n")
 
     best_avg = -1e9
-    episodes_played = 0
+    episodes_played = episodes_played
     num_batches = num_episodes // episodes_per_batch
 
     # ── Main training loop ───────────────────────────────────────────────
@@ -1384,6 +1392,7 @@ if __name__ == "__main__":
                         help="Save trajectory logs for replay (1 ep/worker/batch)")
     parser.add_argument("--log-dir", type=str, default="/tmp/ep_logs",
                         help="Directory for episode logs")
+    parser.add_argument("--start-ep", type=int, default=0)
     args = parser.parse_args()
 
     train_multi(
@@ -1391,4 +1400,5 @@ if __name__ == "__main__":
         resume_cmdr=args.resume_cmdr,
         log_episodes=args.log_episodes,
         log_dir=args.log_dir,
+        episodes_played = args.start_ep
     )

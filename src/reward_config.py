@@ -69,8 +69,9 @@ FIXED = {
 
     # Výška — fixní
     "alt_ideal_min":    40.0,
-    "alt_ideal_max":   250.0,
+    "alt_ideal_max":   150.0,
     "alt_ceiling":     450.0,
+    "alt_penalty":       0.01,   # per-metre above alt_ideal_max
 
     # Survival donut
     "donut_radius":    250.0,

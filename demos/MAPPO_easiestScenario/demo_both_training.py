@@ -49,14 +49,14 @@ CLR_CMDR     = '#ff3333'
 MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/scout_b0110.pt"
 MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/cmdr_b0110.pt"
 
-N_QUADS    = 1
+N_QUADS    = 2
 N_FIXED    = 1
-MAX_STEPS  = 1000
+MAX_STEPS  = 500
 GRID_SIZE  = 1000.0
 GIF_EVERY  = 3
 GIF_FPS    = 15
 EPISODE_SEED = 124
-USE_OSM      = True
+USE_OSM      = False
 OSM_LAT      = 49.35
 OSM_LON      = 16.42
 OSM_CACHE    = os.path.join(project_root, "data")
@@ -333,7 +333,7 @@ def run_demo():
     env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=GRID_SIZE,
                        max_steps=MAX_STEPS, use_osm=USE_OSM, osm_lat=OSM_LAT,
                        osm_lon=OSM_LON, osm_cache_dir=OSM_CACHE)
-    obs, _ = env.reset(seed=EPISODE_SEED, epizode_number=10000)
+    obs, _ = env.reset(seed=EPISODE_SEED, epizode_number=30000)
     
     refill_info = env.sim.environment.refill_zone
     refill_pos = refill_info['position'] if refill_info else None
@@ -431,8 +431,11 @@ def run_demo():
                         msgs_for_cmdr.append(sm["best"])     # each is [1, 5]
                         masks_for_cmdr.append(not sm["valid"])
 
-                    msgs_t = torch.stack(msgs_for_cmdr, dim=1)    # [1, 2*N_QUADS, 5]
-                    msgs_m = torch.tensor([masks_for_cmdr])       # [1, 2*N_QUADS]
+                    # msgs_t = torch.stack(msgs_for_cmdr, dim=1)    # [1, 2*N_QUADS, 5]
+                    # msgs_m = torch.tensor([masks_for_cmdr])       # [1, 2*N_QUADS]
+                    msgs_t = torch.stack(msgs_for_cmdr, dim=1).to(device) 
+                    msgs_m = torch.tensor([masks_for_cmdr], dtype=torch.bool).to(device)
+
                     if step == 0:
                         print(f"  [DEBUG] msgs_t shape={msgs_t.shape}, msgs_m shape={msgs_m.shape}, masks={masks_for_cmdr}")
 
