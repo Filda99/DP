@@ -240,6 +240,8 @@ class DroneFireEnv(ParallelEnv):
         vec_y = self.fire_y - pos[1]
         dist_to_fire = np.hypot(vec_x, vec_y)
         
+        fire_cx, fire_cy = self._get_fire_centroid()
+        
         if dist_to_fire > 0.1:
             rel_fire_start_x = vec_x / dist_to_fire
             rel_fire_start_y = vec_y / dist_to_fire
@@ -449,9 +451,10 @@ class DroneFireEnv(ParallelEnv):
         own_obs = self._get_obs(agent_name)
         own_state = own_obs["self_state"]  # 15D (scout) or 17D (cmdr)
 
-        # Fire info (normalised by map_bounds)
-        fire_x_norm = self.fire_x / NORM_DIST
-        fire_y_norm = self.fire_y / NORM_DIST
+        # Fire info (current centroid, not just ignition point)
+        fire_cx, fire_cy = self._get_fire_centroid()
+        fire_x_norm = fire_cx / NORM_DIST
+        fire_y_norm = fire_cy / NORM_DIST
 
         # Current fire intensity (mean of fire grid, 0 if no grid)
         fire_intensity = 0.0
@@ -751,7 +754,7 @@ class DroneFireEnv(ParallelEnv):
                 self.sim.add_quadcopter(agent, position=[quad_start_x, quad_start_y, quad_start_z])
 
         # --- 5. Initialise per-episode tracking variables ---
-        self.visited_cells = set()   # tracks which grid cells have been overflown
+        self.visited_cells = {q: set() for q in self.quad_agents}  # per-agent exploration tracking
         self.fire_discovered = False
         self.current_step = 0
 
@@ -1079,6 +1082,38 @@ class DroneFireEnv(ParallelEnv):
 
         return reward
 
+    def _get_fire_centroid(self):
+        """Return the intensity-weighted centroid of currently burning cells.
+
+        Cached per step (self._fire_centroid_step) so that multiple calls
+        within the same step() don't recompute.  Falls back to self.fire_x/y
+        (the ignition point) when no cells are actively burning.
+        """
+        # Return cached value if already computed this step
+        if getattr(self, '_fire_centroid_step', -1) == self.current_step:
+            return self._fire_centroid_cache
+
+        fg = self.sim.environment.fire_grid
+        if fg is not None and np.any(fg.B):
+            rows, cols = np.where(fg.B)
+            intensities = fg.I[rows, cols]
+            total_i = intensities.sum()
+            if total_i > 0:
+                # Intensity-weighted centroid in grid space
+                mean_row = np.average(rows, weights=intensities)
+                mean_col = np.average(cols, weights=intensities)
+            else:
+                mean_row = np.mean(rows)
+                mean_col = np.mean(cols)
+            mapper = self.sim.environment.grid_mapper
+            cx, cy = mapper.cell_to_world(int(round(mean_row)), int(round(mean_col)))
+        else:
+            cx, cy = self.fire_x, self.fire_y
+
+        self._fire_centroid_cache = (cx, cy)
+        self._fire_centroid_step = self.current_step
+        return cx, cy
+
     def _get_quad_reward(self, agent):
         """Compute the mission reward for a quadrotor scout.
 
@@ -1099,17 +1134,32 @@ class DroneFireEnv(ParallelEnv):
         delta = prev_dist - dist_to_fire  # kladné = přiblížení
         reward += delta * QUAD["approach_k"]
         self._prev_fire_dists[agent] = dist_to_fire
+        fire_cx, fire_cy = self._get_fire_centroid()
 
         # ── Compass-follow: odměna za směr letu k ohni ──
         # cos(angle) mezi velocity a fire_direction.
         # +1 = letí přímo k ohni, -1 = přímo od něj.
         # Aktivní jen když se agent hýbe a je dál než 10m od ohně.
+        # SCALE DOWN when another scout is closer to fire — prevents the
+        # "loser" scout from being punished for not chasing a fire that's
+        # already covered by another scout.
+        closest_to_fire = True
+        for other in self.quad_agents:
+            if other == agent or other not in self.sim.drones:
+                continue
+            other_pos = self.sim.drones[other].get_position()
+            other_dist = np.hypot(other_pos[0] - fire_cx, other_pos[1] - fire_cy)
+            if other_dist < dist_to_fire:
+                closest_to_fire = False
+                break
+        compass_scale = 1.0 if closest_to_fire else 0.2
+
         speed_xy = np.hypot(vel[0], vel[1])
         if speed_xy > 0.5 and dist_to_fire > 10.0:
             vel_dir = np.array([vel[0], vel[1]]) / speed_xy
-            fire_dir = np.array([self.fire_x - pos[0], self.fire_y - pos[1]]) / dist_to_fire
+            fire_dir = np.array([fire_cx - pos[0], fire_cy - pos[1]]) / dist_to_fire
             alignment = np.dot(vel_dir, fire_dir)  # -1 to +1
-            reward += alignment * QUAD["compass_follow_k"]
+            reward += alignment * QUAD["compass_follow_k"] * compass_scale
 
         local_map = self._extract_local_fire_map(pos)
         avg_fire_intensity = np.mean(local_map)
@@ -1139,6 +1189,14 @@ class DroneFireEnv(ParallelEnv):
                 # Lineární penalizace: 0 na hranici, -separation_bonus na dist=0
                 reward -= QUAD["separation_bonus"] * (1.0 - dist_to_other / sep_min)
 
+        # ── Exploration bonus: odměna za navštěvování nových oblastí ──
+        # Coarse 50m grid buckets — gives the "loser" scout something
+        # productive to do instead of crashing.
+        explore_cell = (int(pos[0] // 50), int(pos[1] // 50))
+        if explore_cell not in self.visited_cells[agent]:
+            self.visited_cells[agent].add(explore_cell)
+            reward += QUAD["exploration_bonus"]
+
         return reward
     
     def _get_fixed_reward_nav(self, agent):
@@ -1159,7 +1217,8 @@ class DroneFireEnv(ParallelEnv):
 
         # ── Potential-based approach shaping → gradient k ohni ──
         # FW potřebuje silný guidance k ohni — musí tam doletět aby mohl hasit.
-        dist_to_fire = np.hypot(pos[0] - self.fire_x, pos[1] - self.fire_y)
+        fire_cx, fire_cy = self._get_fire_centroid()
+        dist_to_fire = np.hypot(pos[0] - fire_cx, pos[1] - fire_cy)
         prev_dist = self._prev_fire_dists.get(agent, dist_to_fire)
         delta = prev_dist - dist_to_fire  # kladné = přiblížení
         reward += delta * 0.05  # approach gradient

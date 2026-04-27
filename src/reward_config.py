@@ -59,6 +59,9 @@ QUAD = {
 
     # Alt penalty
     "alt_penalty":       0.05,  # flat penalizace za létání mimo rozsah
+
+    # Exploration — bonus za návštěvu nové 50m buňky (motivace pro scouta bez ohně)
+    "exploration_bonus":  0.1,
 }
 
 # ─── Fixed-wing (Commander) ──────────────────────────────────────────────────

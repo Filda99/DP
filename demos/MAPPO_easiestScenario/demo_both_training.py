@@ -46,17 +46,17 @@ CLR_CMDR     = '#ff3333'
 # ============================================================
 # KONFIGURACE
 # ============================================================
-MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/scout_b0110.pt"
-MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/cmdr_b0110.pt"
+MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_solo/scout_b0710.pt"
+MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/09_finalTraining/2on1/cmdr_b0180.pt"
 
 N_QUADS    = 2
 N_FIXED    = 1
-MAX_STEPS  = 500
+MAX_STEPS  = 2000
 GRID_SIZE  = 1000.0
 GIF_EVERY  = 3
 GIF_FPS    = 15
-EPISODE_SEED = 124
-USE_OSM      = False
+EPISODE_SEED = 139
+USE_OSM      = True
 OSM_LAT      = 49.35
 OSM_LON      = 16.42
 OSM_CACHE    = os.path.join(project_root, "data")
@@ -383,7 +383,7 @@ def run_demo():
                 with torch.no_grad():
                     dist, scout_msg, h_scout[q_name] = scout_actor(
                         l_map, s_st, n_st, n_m, h_scout[q_name])
-                actions[q_name] = dist.mean.squeeze(0).cpu().numpy()
+                actions[q_name] = dist.sample().squeeze(0).cpu().numpy()
                 last_local_maps[q_name] = obs[q_name]["local_map"][0]
                 # Update message tracking
                 sm = scout_msgs[q_name]
@@ -428,16 +428,13 @@ def run_demo():
                         sm = scout_msgs[f"quad_{qi}"]
                         msgs_for_cmdr.append(sm["latest"])   # each is [1, 5]
                         masks_for_cmdr.append(not sm["valid"])
-                        msgs_for_cmdr.append(sm["best"])     # each is [1, 5]
-                        masks_for_cmdr.append(not sm["valid"])
+                        # msgs_for_cmdr.append(sm["best"])     # each is [1, 5]
+                        # masks_for_cmdr.append(not sm["valid"])
 
                     # msgs_t = torch.stack(msgs_for_cmdr, dim=1)    # [1, 2*N_QUADS, 5]
                     # msgs_m = torch.tensor([masks_for_cmdr])       # [1, 2*N_QUADS]
                     msgs_t = torch.stack(msgs_for_cmdr, dim=1).to(device) 
                     msgs_m = torch.tensor([masks_for_cmdr], dtype=torch.bool).to(device)
-
-                    if step == 0:
-                        print(f"  [DEBUG] msgs_t shape={msgs_t.shape}, msgs_m shape={msgs_m.shape}, masks={masks_for_cmdr}")
 
                     with torch.no_grad():
                         dist_c, aux_pred, h_cmdr = commander_actor(s_st_f, msgs_t, msgs_m, h_cmdr)
@@ -451,10 +448,10 @@ def run_demo():
                     cur_pos = drone.get_position() if drone else np.zeros(3)
                     target_x = np.clip(cur_pos[0] + dx_raw * WAYPOINT_RANGE, -safe_limit, safe_limit)
                     target_y = np.clip(cur_pos[1] + dy_raw * WAYPOINT_RANGE, -safe_limit, safe_limit)
-                    print(f"  [WP step={step}] pos=({cur_pos[0]:.0f},{cur_pos[1]:.0f},{cur_pos[2]:.0f}) "
-                            f"mean=({act_np}) std=({std_np}) "
-                            f"aux={aux_pred.squeeze().cpu().numpy()} "
-                            f"→ target=({target_x:.0f},{target_y:.0f})")
+                    # print(f"  [WP step={step}] pos=({cur_pos[0]:.0f},{cur_pos[1]:.0f},{cur_pos[2]:.0f}) "
+                    #         f"mean=({act_np}) std=({std_np}) "
+                    #         f"aux={aux_pred.squeeze().cpu().numpy()} "
+                    #         f"→ target=({target_x:.0f},{target_y:.0f})")
                     steps_in_segment = 0
                     need_new_waypoint = False
 

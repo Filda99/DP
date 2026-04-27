@@ -259,10 +259,10 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
     # ── Hyperparameters ──────────────────────────────────────────────────
     N_QUADS = 2
     grid_size_m = 1000.0
-    map_size_range = None          # fixed map size during training (08_Quad used 500 fixed)
+    map_size_range = (800,1500)          # fixed map size during training (08_Quad used 500 fixed)
     num_episodes = 30_000
     max_steps = 500                # fixed 500 steps like 08_Quad
-    steps_range = None             # no random episode length — curriculum handles difficulty
+    steps_range = (500,1500)
 
     gamma = 0.99
     gae_lambda = 0.95

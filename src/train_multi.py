@@ -662,7 +662,7 @@ def train_multi(resume_scout="", resume_cmdr="",
 
     # Scout freeze: keep scout frozen initially so commander learns to
     # read messages from a stable scout before joint fine-tuning.
-    scout_freeze_batches = 999999  # freeze scouts permanently — train only commander
+    scout_freeze_batches = 30  # freeze scouts permanently — train only commander
 
     gamma = 0.99
     gamma_cmdr = 0.95          # shorter horizon for commander decisions

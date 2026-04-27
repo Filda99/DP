@@ -52,11 +52,11 @@ SCOUT_LABELS  = ['Scout 0', 'Scout 1']
 # ============================================================
 # CONFIGURATION
 # ============================================================
-MODEL_PATH  = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_solo/scout_b0530.pt"
+MODEL_PATH  = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_solo/scout_b0710.pt"
 
 N_QUADS      = 2
 N_FIXED      = 0
-MAX_STEPS    = 500
+MAX_STEPS    = 1000
 GRID_SIZE    = 1000.0
 GIF_EVERY    = 2
 GIF_FPS      = 15
@@ -314,9 +314,9 @@ def run_demo():
     # 1) Enlarge the fire — ignite a 60m radius patch (much larger than default 5m)
     fire_x, fire_y = env.fire_x, env.fire_y
     env.sim.environment.start_fire_at_position(
-        [fire_x, fire_y], intensity=0.8, radius_m=60.0)
+        [fire_x, fire_y], intensity=0.8, radius_m=6)
     # Let fire spread a few ticks so it looks established
-    for _ in range(20):
+    for _ in range(10):
         env.sim.environment.update_fire_simulation(real_dt=0.1)
 
     # 2) Respawn scouts at least 200m from fire, with 50m mutual separation
