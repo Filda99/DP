@@ -46,16 +46,16 @@ CLR_CMDR     = '#ff3333'
 # ============================================================
 # KONFIGURACE
 # ============================================================
-MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/scout_solo/scout_b0710.pt"
-MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/09_finalTraining/2on1/cmdr_b0180.pt"
+MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/09_finalTraining/2on1/02_scoutsFineTuned/scout_b0700.pt"
+MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/cmdr_b0300.pt"
 
 N_QUADS    = 2
 N_FIXED    = 1
-MAX_STEPS  = 2000
-GRID_SIZE  = 1000.0
+MAX_STEPS  = 1000
+GRID_SIZE  = 1200.0
 GIF_EVERY  = 3
 GIF_FPS    = 15
-EPISODE_SEED = 139
+EPISODE_SEED = 111
 USE_OSM      = True
 OSM_LAT      = 49.35
 OSM_LON      = 16.42

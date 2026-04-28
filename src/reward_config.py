@@ -22,11 +22,11 @@ QUAD = {
     "boundary_threshold_m":  150.0,
 
     # Výška — fixní rozsah, nezávislý na mapě
-    "alt_ideal_min":    30.0,   # pod 10m → penalizace
-    "alt_ideal_max":   80.0,   # starý design: 150m
+    "alt_ideal_min":    30.0,   # pod tímto → penalizace
+    "alt_ideal_max":   120.0,   # zvýšeno z 80m — netrestáme létání výš (větší FOV)
     "alt_ceiling":     300.0,   # tvrdá smrt
     "alt_sweet_min":    50.0,   # ideální operační pásmo — spodní hranice
-    "alt_sweet_max":    100.0,   # ideální operační pásmo — horní hranice
+    "alt_sweet_max":   150.0,   # zvýšeno z 100m
     "alt_sweet_bonus":   0.02,  # per-krok bonus za let ve sweet-spotu
 
     # Mise — silnější signál, agent musí CÍTIT rozdíl mezi "nad ohněm" a "jinde"
@@ -49,9 +49,10 @@ QUAD = {
     # First discovery bonus
     "first_discovery_bonus": 1.0,
 
-    # Ground proximity — exponenciální penalizace pod 20m zabraňuje dive-crashům
-    "ground_danger_alt":  20.0,   # pod touto výškou se aktivuje tvrdá penalizace
-    "ground_danger_pen":  0.5,    # max penalizace na zemi (exponenciální)
+    # Ground proximity — exponenciální penalizace zabraňuje dive-crashům
+    # Na 50m: 0, na 25m: -0.75, na 10m: -2.2, na 0m: -3.0
+    "ground_danger_alt":  50.0,   # zvýšeno z 20m — aktivuje se dřív
+    "ground_danger_pen":  3.0,    # zvýšeno z 0.5 — must hurt
 
     # Separation — bonus za rozestup mezi scouty
     "separation_min_m":   30.0,   # pod touto vzdáleností: penalizace (příliš blízko)
