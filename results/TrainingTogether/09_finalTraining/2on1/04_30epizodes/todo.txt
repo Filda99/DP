@@ -1,0 +1,42 @@
+Bimodální distribuce — buď 100% nebo 0%
+
+Z 30 epizod: 13× supp=100%, 1× supp=17%, 1× supp=87%, 15× supp=0%. Průměr 43.5% je tedy poněkud zavádějící číslo.
+
+Dvě odlišné příčiny selhání:
+
+1. FW nenásleduje scouty (9 epizod) — seed 202, 205, 207, 219, 220, 225, 226, 228, 229
+Znak: 🔥 ale žádné 💧, nebo fire_seen je vysoké (500–1000 kroků), přesto supp=0%
+→ Scout dlouhodobě vidí oheň, ale commander k němu neletí. Komunikační pipeline existuje, ale FW ze zpráv nevyvodí správné waypointy.
+
+2. FW haší ale minuje (6 epizod) — seed 204, 208, 209, 211, 216, 221, 222, 224
+Znak: 💧 přítomno, ale peak=100–264 cells a end ≈ peak
+→ FW doletěl a házel vodu, ale oheň byl příliš velký (200L nestačí na 200+ buněk). Buď dorazil pozdě, nebo mírí špatně.
+
+Klíčová korelace:
+supp=100% → peak ≤ 19 cells (vždy)
+supp=0% → peak ≥ 70 cells (vždy)
+
+Oheň roste ~10 buněk/sekundu. Pokud FW nenajde oheň do první minuty, je po šanci.
+
+Je to ok na tento stav tréninku (batch 670)?
+
+Ano — FW přežívá 100%, scouti 83%, 90% epizod aspoň jeden scout oheň vidí. Hlavní problém je překlad zpráv scoutů na pohyb commandera — to je přesně co se trénuje nyní. Epizody kde fire_seen=1000 ale supp=0% (seed 220: oba scouti celou epizodu nad ohněm, FW neletí tam) jsou nejcennější příklady k prozkoumání.
+
+Doporučení: Spíš než replay konkrétních epizod bych se zaměřil na jeden diagnostický dotaz — podívat se co commander dělá v seed 220 kde oba scouti mají fire_seen=1000 ale suppression je 0%:
+
+Diagnostika je velmi výmluvná:
+
+Diagnóza: Commander se naučí navigovat, ale příliš pomalu.
+
+FW odletí nejdříve špatným směrem (step 0–60), pak se pomalu koriguje. Oheň dohoní teprve v kroce ~480. Do té doby fire vyrostl z 9 → 235 buněk — 200L vody na to nestačí.
+
+Proč létí špatně na začátku? Zprávy scoutů obsahují relativní fire pozici ve FOV (msg[3,4] ∈ [-1,1]), ne absolutní souřadnice. Commander musí naučit kombinovat msg[0,1] (kde je scout absolutně) + msg[3,4] (kde je oheň relativně k němu). To je netriviální a vyžaduje víc tréninku.
+
+Závěr: Výsledky jsou na batch 670 v pořádku, pokračuj v tréninku.
+
+Tři pozorování podporují tento závěr:
+
+Commander se zlepšuje — finálně se dostane na 30m od ohně, ale pozdě. Gradient je tam.
+Malé ohně = 100% suppression — kdy je oheň malý (peak < 20 cells), FW stihne dorazit. To znamená navigace funguje, jen je pomalá.
+Bimodální split 0%/100% je klasický symptom "agent umí úkol ale není dostatečně rychlý" — časem se oba vrcholy sblíží.
+Replay dalších epizod by ukázal totéž. Pokračuj s tréninkem do batch ~1000–1200 a pak evaluaci zopakuj — očekávám že průměrné supp% se přesune z 43% na 60%+.

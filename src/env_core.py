@@ -395,9 +395,10 @@ class DroneFireEnv(ParallelEnv):
         danger_threshold = FIXED["boundary_threshold_m"]  # fixed absolute distance, same as penalty zone
         danger_flag = 1.0 if min(self._get_boundary_measurements(pos)) < danger_threshold else 0.0
         
-        # --- Fire compass (unit vector from drone toward fire) ---
-        # Disabled: commander must learn fire location from scout messages
-        # via cross-attention, not from direct observation.
+        # --- Fire compass ---
+        # Disabled: commander must learn fire location exclusively from scout
+        # messages (cross-attention). Direct ground-truth access would make
+        # scouts irrelevant — FW would navigate independently.
         fire_dir_x, fire_dir_y = 0.0, 0.0
 
         self_state = np.array([
@@ -776,6 +777,9 @@ class DroneFireEnv(ParallelEnv):
         else:
             self._prev_burning_count = 0
 
+        # Track which FW agents triggered water this step (for waste penalty)
+        self._fw_water_triggered = {a: False for a in self.fixed_agents}
+
         # --- 6. Build and return initial observations (PettingZoo requirement) ---
         observations = {agent: self._get_obs(agent) for agent in self.agents}
         infos = {agent: {} for agent in self.agents}
@@ -894,8 +898,11 @@ class DroneFireEnv(ParallelEnv):
 
                     mapped_action = np.array([roll_cmd, pitch_cmd, throttle, water_trigger])
                     drone_controls[agent_name] = mapped_action
+                    # Track water trigger so team-reward section can apply waste penalty
+                    self._fw_water_triggered[agent_name] = water_trigger > 0.5
                 else:
                     drone_controls[agent_name] = np.zeros(4)
+                    self._fw_water_triggered[agent_name] = False
             else:
                 # Quad: actions are used directly by the physics backend
                 drone_controls[agent_name] = smooth_action
@@ -988,6 +995,28 @@ class DroneFireEnv(ParallelEnv):
                 for q_agent in self.quad_agents:
                     if q_agent in rewards: # Pokud je naživu
                         rewards[q_agent] += fire_bonus * 0.5
+            elif self._fw_water_triggered.get(f_agent, False):
+                # FW střílel vodu ale nenapadl oheň.
+                # Soft gradient: bonus za drop u scoutu (kde pravděpodobně dostal zprávu s fire pos),
+                # penalizace za drop zcela mimo dosah všech scoutů.
+                # Scout pozice jsou v cross-attention observaci FW — není to ground-truth leakage.
+                fw_drone = self.sim.drones.get(f_agent)
+                if fw_drone is not None:
+                    fw_pos = fw_drone.get_position()
+                    comm_range = FIXED["communication_range_m"]
+                    min_dist_to_scout = min(
+                        (np.hypot(fw_pos[0] - self.sim.drones[q].get_position()[0],
+                                  fw_pos[1] - self.sim.drones[q].get_position()[1])
+                         for q in self.quad_agents if q in self.sim.drones),
+                        default=float('inf')
+                    )
+                    if min_dist_to_scout < comm_range:
+                        # U scoutu: měkký bonus (max 0.2 vedle scoutu, 0 na hranici)
+                        partial = FIXED["water_guidance_bonus"] * (1.0 - min_dist_to_scout / comm_range)
+                        rewards[f_agent] += partial
+                    else:
+                        # Zcela mimo scouty — plýtvání
+                        rewards[f_agent] -= FIXED["water_waste_penalty"]
              
         if self.sim.environment.fire_grid is not None:
             total_burning = int(np.sum(self.sim.environment.fire_grid.B))
@@ -1200,14 +1229,15 @@ class DroneFireEnv(ParallelEnv):
         return reward
     
     def _get_fixed_reward_nav(self, agent):
-        """FW navigation reward — BEZ ground-truth fire pozice.
+        """FW navigation reward — ŽÁDNÝ ground-truth přístup k pozici ohně.
 
-        FW musí se naučit navigovat k ohni čistě přes scout zprávy
-        (cross-attention v CommanderActor). Reward zde:
-          - Approach gradient: přiblížení k ohni (potential-based)
-          - Extinguish efektivita (řešena v step() team reward)
-          - Refill gradient když je prázdný tank
-          - Altitude sweet spot když je blízko ohně (ví z extinguish feedback)
+        FW musí navigovat k ohni výhradně přes zprávy scoutů (cross-attention).
+        Přímý gradient k ohni by udělal scouty zbytečné — FW by se naučil
+        létat k ohni sám bez nich.
+
+        Odměny zde:
+          - Refill gradient když je prázdný tank (refill pos je v obs FW, takže OK)
+          - Extinguish bonus přichází ze step() přes drone_extinguish_stats
         """
         drone = self.sim.drones[agent]
         pos = drone.get_position()
@@ -1215,30 +1245,15 @@ class DroneFireEnv(ParallelEnv):
 
         reward = 0.0
 
-        # ── Potential-based approach shaping → gradient k ohni ──
-        # FW potřebuje silný guidance k ohni — musí tam doletět aby mohl hasit.
-        fire_cx, fire_cy = self._get_fire_centroid()
-        dist_to_fire = np.hypot(pos[0] - fire_cx, pos[1] - fire_cy)
-        prev_dist = self._prev_fire_dists.get(agent, dist_to_fire)
-        delta = prev_dist - dist_to_fire  # kladné = přiblížení
-        reward += delta * 0.05  # approach gradient
-        self._prev_fire_dists[agent] = dist_to_fire
-
-        # ── Bonus za blízkost ohni s vodou ──
-        if dist_to_fire < 200.0 and water_lvl > 0.05:
-            reward += 0.2  # jsi blízko a máš vodu — zůstaň!
-        elif dist_to_fire < 100.0 and water_lvl > 0.05:
-            reward += 0.5  # velmi blízko — hasení možné
-
         if water_lvl < 0.05:
             # PRÁZDNÝ TANK → gradient k refill zóně
+            # Refill poloha je v observaci FW (slots 11-12), takže tohle je OK
             if self.sim.environment.refill_zone is not None:
                 rz = self.sim.environment.refill_zone['position']
                 dist_to_refill = np.hypot(pos[0] - rz[0], pos[1] - rz[1])
-                # Normalizovaný gradient: max +0.3/step when heading to refill
                 reward += max(0.0, 0.3 * (1.0 - dist_to_refill / 500.0))
                 if dist_to_refill < 100:
-                    reward += 0.5  # blízko refill zóny = velký bonus
+                    reward += 0.5
 
         return reward
 

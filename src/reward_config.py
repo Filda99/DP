@@ -29,8 +29,8 @@ QUAD = {
     "alt_sweet_max":   150.0,   # zvýšeno z 100m
     "alt_sweet_bonus":   0.02,  # per-krok bonus za let ve sweet-spotu
 
-    # Mise — silnější signál, agent musí CÍTIT rozdíl mezi "nad ohněm" a "jinde"
-    "fire_flat_bonus":   0.5,    # výrazný per-step bonus za viditelnost ohně
+    # Mise — originální hodnoty které fungovaly (zvýšení na 1.0/3.0 způsobilo dive-crash)
+    "fire_flat_bonus":   0.5,    # per-step bonus za viditelnost ohně
     "fire_intensity_k":  2.0,    # proporcionální k intenzitě
     "fire_speed_pen":    0.01,   # penalizace za rychlost nad ohněm
 
@@ -41,10 +41,8 @@ QUAD = {
 
     # Compass follow — odměna za směr letu k ohni (velocity · fire_dir)
     # Nezávislé na vzdálenosti, čistý direction signal.
-    # Při letu 5 m/s přímo k ohni: reward = +0.15/step → za 500 kroků +75
-    # Při letu 5 m/s od ohně:       reward = -0.15/step → za 500 kroků -75
-    # Spread 150 bodů — dominantní signál, agent NEMŮŽE ignorovat.
-    "compass_follow_k":  0.15,
+    # Zvýšeno z 0.15 — dominantní signál k ohni
+    "compass_follow_k":  0.25,
 
     # First discovery bonus
     "first_discovery_bonus": 1.0,
@@ -83,12 +81,14 @@ FIXED = {
     "survival_base":     0.02,
     "rubber_band_k":     0.02,
 
-    # Water trigger bonus
+    # Water trigger bonus — FW teď dostane reward za pokus u aktivního scoutu
     "water_trigger_dist":   150.0,
     "water_trigger_alt":    150.0,
     "water_trigger_bonus":    1.5,
     "water_trigger_thresh":   0.0,
-    "water_waste_penalty": 8.0,  # Postih za vypouštění mimo cíl — zvýšeno z 5 → plýtvání musí bolet
+    "communication_range_m": 400.0,   # dosah cross-attention zpráv (použito v team reward)
+    "water_guidance_bonus": 0.2,       # max bonus za drop u scoutu (0 na hranici dosahu, 0.2 vedle scoutu)
+    "water_waste_penalty": 0.3,        # penalizace za drop zcela mimo dosah scoutů
 
     # Refill bonus
     "refill_state_bonus":  0.0,

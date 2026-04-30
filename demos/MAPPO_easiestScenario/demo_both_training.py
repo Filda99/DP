@@ -46,8 +46,8 @@ CLR_CMDR     = '#ff3333'
 # ============================================================
 # KONFIGURACE
 # ============================================================
-MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingTogether/09_finalTraining/2on1/02_scoutsFineTuned/scout_b0700.pt"
-MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/cmdr_b0300.pt"
+MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/scout_b0670.pt"
+MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/cmdr_b0670.pt"
 
 N_QUADS    = 2
 N_FIXED    = 1

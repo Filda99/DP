@@ -160,9 +160,19 @@ def run_episode(env, scout_actor, cmdr_actor, seed, ep_num, device):
     target_alt_raw, water_raw = 0.0, -0.5   # sensible defaults until first NN call
     steps_in_segment = 0
 
+    # Fire cell tracking
+    _fg0 = env.sim.environment.fire_grid
+    fire_cells_start = int(np.sum(_fg0.B)) if _fg0 is not None else 0
+    fire_cells_peak  = fire_cells_start
+
     for step in range(env.max_steps):
         if not env.agents:
             break
+
+        # Aktualizuj peak burning cells
+        _fg = env.sim.environment.fire_grid
+        if _fg is not None:
+            fire_cells_peak = max(fire_cells_peak, int(np.sum(_fg.B)))
 
         actions = {}
 
@@ -303,6 +313,14 @@ def run_episode(env, scout_actor, cmdr_actor, seed, ep_num, device):
         if final_obs_fw is not None and len(final_obs_fw) > 10:
             fw_water_used_pct = max(0.0, 1.0 - float(final_obs_fw[10]))
 
+    # Fire cell stats
+    _fgend = env.sim.environment.fire_grid
+    fire_cells_end = int(np.sum(_fgend.B)) if _fgend is not None else 0
+    # % potlačení ohně: jak moc se FW podařilo snížit peak
+    # Pokud oheň nevzrostl (fire_cells_peak == 0), není co hasit
+    fire_suppression_pct = max(0.0,
+        (fire_cells_peak - fire_cells_end) / max(1, fire_cells_peak) * 100.0)
+
     # Sestavení výsledků
     m = {}
     for qi, q in enumerate(quad_names):
@@ -318,6 +336,9 @@ def run_episode(env, scout_actor, cmdr_actor, seed, ep_num, device):
     m["fw_survived"]      = not fw_terminated
     m["fw_water_used_pct"] = fw_water_used_pct
     m["fire_extinguished"] = fire_extinguished_total
+    m["fire_cells_peak"]   = fire_cells_peak
+    m["fire_cells_end"]    = fire_cells_end
+    m["fire_suppression_pct"] = fire_suppression_pct
     m["fw_death_cause"]    = fw_death_cause
     m["fw_reward"]         = fw_reward
 
@@ -337,13 +358,14 @@ def run_episode(env, scout_actor, cmdr_actor, seed, ep_num, device):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def print_table(all_m, seeds):
-    sep = "─" * 110
-    print("\n" + "═" * 110)
+    sep = "─" * 120
+    print("\n" + "═" * 120)
     print("  VÝSLEDKY EVALUACE  —  2 Scout + 1 Commander")
-    print("═" * 110)
+    print("═" * 120)
     hdr = (f"{'Seed':>5}  {'S0_life':>7}  {'S0_fire':>7}  {'S0_surv':>7}  "
            f"{'S1_life':>7}  {'S1_fire':>7}  {'S1_surv':>7}  "
-           f"{'FW_life':>7}  {'FW_surv':>7}  {'Water%':>6}  {'Extg':>6}  "
+           f"{'FW_life':>7}  {'FW_surv':>7}  {'Water%':>6}  "
+           f"{'Peak':>5}  {'End':>5}  {'Supp%':>6}  "
            f"{'S0_death':>8}  {'S1_death':>8}  {'FW_death':>8}")
     print(hdr)
     print(sep)
@@ -353,7 +375,8 @@ def print_table(all_m, seeds):
             f"{m['scout_0_lifespan']:>7}  {m['scout_0_fire_seen_steps']:>7}  {str(m['scout_0_survived']):>7}  "
             f"{m['scout_1_lifespan']:>7}  {m['scout_1_fire_seen_steps']:>7}  {str(m['scout_1_survived']):>7}  "
             f"{m['fw_lifespan']:>7}  {str(m['fw_survived']):>7}  "
-            f"{m['fw_water_used_pct']*100:>5.1f}%  {m['fire_extinguished']:>6.3f}  "
+            f"{m['fw_water_used_pct']*100:>5.1f}%  "
+            f"{m['fire_cells_peak']:>5}  {m['fire_cells_end']:>5}  {m['fire_suppression_pct']:>5.1f}%  "
             f"{m['scout_0_death_cause']:>8}  {m['scout_1_death_cause']:>8}  {m['fw_death_cause']:>8}"
         )
 
@@ -381,8 +404,12 @@ def print_table(all_m, seeds):
     print(f"  {'Aspoň 1 scout u ohně (%)':<40}  {pct('any_scout_reached_fire'):>9.1f}%")
     print(f"  {'Oba scouti u ohně (%)':<40}  {pct('both_scouts_reached_fire'):>9.1f}%")
     print(f"  {'FW shodil vodu (extg>0) (%)':<40}  {pct('fire_was_extinguished'):>9.1f}%")
-    print(f"  {'Průměrná efektivita hašení':<40}  {avg('fire_extinguished'):>9.4f}")
+    print(f"  {'─'*52}")
+    print(f"  {'Průměrný peak ohně (buňky)':<40}  {avg('fire_cells_peak'):>9.1f} ± {std('fire_cells_peak'):.1f}")
+    print(f"  {'Průměrný zbytek ohně na konci (buňky)':<40}  {avg('fire_cells_end'):>9.1f} ± {std('fire_cells_end'):.1f}")
+    print(f"  {'Průměrné % potlačení ohně':<40}  {avg('fire_suppression_pct'):>9.1f}% ± {std('fire_suppression_pct'):.1f}")
     print(f"  {'Průměrné % vody spotřebováno':<40}  {avg('fw_water_used_pct')*100:>9.1f}%")
+    print(f"  {'─'*52}")
     print(f"  {'Průměrný lifespan Scout_0':<40}  {avg('scout_0_lifespan'):>9.1f} ± {std('scout_0_lifespan'):.1f}")
     print(f"  {'Průměrný lifespan Scout_1':<40}  {avg('scout_1_lifespan'):>9.1f} ± {std('scout_1_lifespan'):.1f}")
     print(f"  {'Průměrný lifespan Commander':<40}  {avg('fw_lifespan'):>9.1f} ± {std('fw_lifespan'):.1f}")
@@ -397,7 +424,7 @@ def print_table(all_m, seeds):
         cnt = Counter(m[agent_key] for m in all_m)
         print(f"  {label:<12}: {dict(cnt)}")
 
-    print("═" * 110 + "\n")
+    print("═" * 120 + "\n")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -411,91 +438,150 @@ def save_plots(all_m, output_path, n_episodes):
     def vals(key):
         return [m[key] for m in all_m]
 
-    fig, axes = plt.subplots(3, 3, figsize=(15, 11))
-    fig.suptitle(f"Evaluace: 2 Scout + 1 Commander  —  {n} epizod", fontsize=13, fontweight='bold')
-    kw = dict(linewidth=1.2, alpha=0.8)
-    ks = dict(s=40, zorder=3)
+    # ── Global font sizes for thesis readability ──────────────────────
+    TITLE_FS  = 11
+    LABEL_FS  = 10
+    TICK_FS   = 9
+    LEGEND_FS = 9
+    ANNOT_FS  = 8
 
-    # ── Řada 0: Přežití & dosažení ohně ────────────────────────────────
+    plt.rcParams.update({
+        "font.size":        LABEL_FS,
+        "axes.titlesize":   TITLE_FS,
+        "axes.labelsize":   LABEL_FS,
+        "xtick.labelsize":  TICK_FS,
+        "ytick.labelsize":  TICK_FS,
+        "legend.fontsize":  LEGEND_FS,
+    })
+
+    fig, axes = plt.subplots(3, 3, figsize=(16, 12))
+    # No suptitle — described by \caption / \label in the thesis
+    kw = dict(linewidth=1.4, alpha=0.85)
+    ks = dict(s=50, zorder=3)
+
+    # ── Row 0: Survival & fire contact ───────────────────────────────────
+    # Survival: grouped bars per episode so each agent is clearly visible
     ax = axes[0, 0]
-    ax.bar(xs, [int(m["scout_0_survived"]) for m in all_m],
-           label="Scout_0", color="deepskyblue", alpha=0.6)
-    ax.bar(xs, [int(m["scout_1_survived"]) for m in all_m],
-           label="Scout_1", color="royalblue", alpha=0.6, bottom=0)
-    ax.bar(xs, [int(m["fw_survived"]) for m in all_m],
-           label="Commander", color="tomato", alpha=0.6, bottom=0)
-    ax.set_ylim(0, 1.4); ax.set_yticks([0, 1])
-    ax.set_title("Přežití (1 = přežil)"); ax.legend(fontsize=7); ax.set_xlabel("epizoda")
+    width = 0.28
+    s0_surv = [int(m["scout_0_survived"]) for m in all_m]
+    s1_surv = [int(m["scout_1_survived"]) for m in all_m]
+    fw_surv = [int(m["fw_survived"])      for m in all_m]
+    ax.bar([x - width for x in xs], s0_surv, width=width,
+           label="Scout 0",    color="deepskyblue", alpha=0.85)
+    ax.bar(xs,                   s1_surv, width=width,
+           label="Scout 1",    color="royalblue",   alpha=0.85)
+    ax.bar([x + width for x in xs], fw_surv, width=width,
+           label="Commander", color="tomato",       alpha=0.85)
+    ax.set_ylim(0, 1.5)
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels(["died", "survived"])
+    ax.set_title("Survival per episode")
+    ax.set_xlabel("Episode")
+    ax.legend()
 
     ax = axes[0, 1]
     ax.bar(xs, [int(m["scout_0_reached_fire"]) for m in all_m],
-           color="deepskyblue", alpha=0.7, label="Scout_0")
+           color="deepskyblue", alpha=0.8, label="Scout 0")
     ax.bar(xs, [int(m["scout_1_reached_fire"]) for m in all_m],
-           color="royalblue", alpha=0.7, label="Scout_1",
+           color="royalblue",   alpha=0.8, label="Scout 1",
            bottom=[int(m["scout_0_reached_fire"]) for m in all_m])
-    ax.set_ylim(0, 2.5); ax.set_title("Scouti u ohně (kumulativně)")
-    ax.legend(fontsize=7); ax.set_xlabel("epizoda")
+    ax.set_ylim(0, 2.5)
+    ax.set_title("Scouts that reached fire (stacked)")
+    ax.set_ylabel("Count")
+    ax.set_xlabel("Episode")
+    ax.legend()
 
     ax = axes[0, 2]
-    ax.scatter(xs, vals("scout_0_fire_seen_steps"), color="deepskyblue", **ks, label="Scout_0")
-    ax.scatter(xs, vals("scout_1_fire_seen_steps"), color="royalblue",   **ks, label="Scout_1", marker="s")
-    ax.set_title("Kroky s ohněm v local_map"); ax.legend(fontsize=7); ax.set_xlabel("epizoda")
-    ax.axhline(FIRE_REACHED_STEPS_THRESHOLD, color="orange", linewidth=1.0,
+    ax.scatter(xs, vals("scout_0_fire_seen_steps"), color="deepskyblue",
+               **ks, label="Scout 0")
+    ax.scatter(xs, vals("scout_1_fire_seen_steps"), color="royalblue",
+               **ks, label="Scout 1", marker="s")
+    ax.axhline(FIRE_REACHED_STEPS_THRESHOLD, color="orange", linewidth=1.2,
                linestyle="--", label=f"threshold={FIRE_REACHED_STEPS_THRESHOLD}")
+    ax.set_title("Steps with fire in local map")
+    ax.set_ylabel("Steps")
+    ax.set_xlabel("Episode")
+    ax.legend()
 
-    # ── Řada 1: Hašení ──────────────────────────────────────────────────
+    # ── Row 1: Fire suppression ───────────────────────────────────────────
     ax = axes[1, 0]
-    ax.scatter(xs, vals("fire_extinguished"), color="red", **ks)
-    ax.axhline(0.01, color="orange", linewidth=0.8, linestyle="--", label="threshold 0.01")
-    ax.set_title("Kumulativní efektivita hašení"); ax.legend(fontsize=7); ax.set_xlabel("epizoda")
+    ends      = vals("fire_cells_end")
+    peaks     = vals("fire_cells_peak")
+    suppressed = [max(0, p - e) for p, e in zip(peaks, ends)]
+    ax.bar(xs, suppressed, label="suppressed", color="steelblue",  alpha=0.85)
+    ax.bar(xs, ends,       label="remaining",  color="tomato",     alpha=0.85,
+           bottom=suppressed)
+    ax.set_title("Fire cells: suppressed vs. remaining")
+    ax.set_ylabel("Grid cells")
+    ax.set_xlabel("Episode")
+    ax.legend()
 
     ax = axes[1, 1]
-    ax.bar(xs, [m["fw_water_used_pct"] * 100 for m in all_m], color="deepskyblue", alpha=0.8)
-    ax.set_ylim(0, 105); ax.set_ylabel("%")
-    ax.set_title("Spotřeba vody FW (%)"); ax.set_xlabel("epizoda")
+    supp_pcts  = vals("fire_suppression_pct")
+    bar_colors = ["steelblue" if v >= 50 else ("orange" if v > 0 else "tomato")
+                  for v in supp_pcts]
+    ax.bar(xs, supp_pcts, color=bar_colors, alpha=0.85)
+    ax.axhline(50, color="grey", linewidth=0.9, linestyle="--", label="50 %")
+    ax.set_ylim(0, 105)
+    ax.set_ylabel("%")
+    ax.set_title("Fire suppression: (peak − end) / peak")
+    ax.set_xlabel("Episode")
+    ax.legend()
 
     ax = axes[1, 2]
-    ax.plot(xs, vals("scout_0_reward"), color="deepskyblue", **kw, label="Scout_0")
-    ax.plot(xs, vals("scout_1_reward"), color="royalblue",   **kw, label="Scout_1")
+    ax.plot(xs, vals("scout_0_reward"), color="deepskyblue", **kw, label="Scout 0")
+    ax.plot(xs, vals("scout_1_reward"), color="royalblue",   **kw, label="Scout 1")
     ax.plot(xs, vals("fw_reward"),      color="tomato",      **kw, label="Commander")
-    ax.axhline(0, color="grey", linewidth=0.5, linestyle="--")
-    ax.set_title("Odměna za epizodu"); ax.legend(fontsize=7); ax.set_xlabel("epizoda")
+    ax.axhline(0, color="grey", linewidth=0.6, linestyle="--")
+    ax.set_title("Cumulative reward per episode")
+    ax.set_ylabel("Reward")
+    ax.set_xlabel("Episode")
+    ax.legend()
 
-    # ── Řada 2: Lifespan & shrnutí ──────────────────────────────────────
+    # ── Row 2: Lifespans & summary ────────────────────────────────────────
     ax = axes[2, 0]
-    ax.scatter(xs, vals("scout_0_lifespan"), color="deepskyblue", **ks, label="Scout_0")
-    ax.scatter(xs, vals("scout_1_lifespan"), color="royalblue",   **ks, label="Scout_1", marker="s")
-    ax.axhline(MAX_STEPS, color="grey", linewidth=0.8, linestyle="--", label=f"max={MAX_STEPS}")
-    ax.set_title("Lifespan Scoutů (kroky)"); ax.legend(fontsize=7); ax.set_xlabel("epizoda")
+    ax.scatter(xs, vals("scout_0_lifespan"), color="deepskyblue",
+               **ks, label="Scout 0")
+    ax.scatter(xs, vals("scout_1_lifespan"), color="royalblue",
+               **ks, label="Scout 1", marker="s")
+    ax.axhline(MAX_STEPS, color="grey", linewidth=0.9, linestyle="--",
+               label=f"max={MAX_STEPS}")
+    ax.set_title("Scout lifespan (steps)")
+    ax.set_ylabel("Steps")
+    ax.set_xlabel("Episode")
+    ax.legend()
 
     ax = axes[2, 1]
-    ax.scatter(xs, vals("fw_lifespan"), color="tomato", **ks)
-    ax.axhline(MAX_STEPS, color="grey", linewidth=0.8, linestyle="--", label=f"max={MAX_STEPS}")
-    ax.set_title("Lifespan Commander (kroky)"); ax.legend(fontsize=7); ax.set_xlabel("epizoda")
+    ax.scatter(xs, vals("fw_lifespan"), color="tomato", **ks, label="Commander")
+    ax.axhline(MAX_STEPS, color="grey", linewidth=0.9, linestyle="--",
+               label=f"max={MAX_STEPS}")
+    ax.set_title("Commander lifespan (steps)")
+    ax.set_ylabel("Steps")
+    ax.set_xlabel("Episode")
+    ax.legend()
 
-    # Souhrnný sloupcový graf
+    # Summary bar chart
     ax = axes[2, 2]
-    metrics_summary = {
-        "S0 přežil":        np.mean(vals("scout_0_survived")) * 100,
-        "S1 přežil":        np.mean(vals("scout_1_survived")) * 100,
-        "FW přežil":        np.mean(vals("fw_survived"))       * 100,
-        "S0 u ohně":        np.mean(vals("scout_0_reached_fire")) * 100,
-        "S1 u ohně":        np.mean(vals("scout_1_reached_fire")) * 100,
-        "FW hasil":         np.mean(vals("fire_was_extinguished")) * 100,
+    summary = {
+        "S0\nsurvived":   np.mean(vals("scout_0_survived"))   * 100,
+        "S1\nsurvived":   np.mean(vals("scout_1_survived"))   * 100,
+        "FW\nsurvived":   np.mean(vals("fw_survived"))        * 100,
+        "S0\nat fire":    np.mean(vals("scout_0_reached_fire")) * 100,
+        "S1\nat fire":    np.mean(vals("scout_1_reached_fire")) * 100,
+        "FW\nextinguished": np.mean(vals("fire_was_extinguished")) * 100,
+        "Avg\nsupp %":    np.mean(vals("fire_suppression_pct")),
     }
-    labels = list(metrics_summary.keys())
-    values = list(metrics_summary.values())
-    colors = ["deepskyblue", "royalblue", "tomato", "deepskyblue", "royalblue", "red"]
-    bars = ax.bar(labels, values, color=colors, alpha=0.8)
-    ax.set_ylim(0, 115); ax.set_ylabel("%")
-    ax.set_title(f"Přehled (% epizod, n={n})")
-    ax.tick_params(axis='x', rotation=20)
-    for tick, label in zip(ax.get_xticklabels(), labels):
-        tick.set_text(label)
-        tick.set_fontsize(7)
+    labels = list(summary.keys())
+    values = list(summary.values())
+    bar_c  = ["deepskyblue", "royalblue", "tomato",
+              "deepskyblue", "royalblue", "red", "steelblue"]
+    bars = ax.bar(labels, values, color=bar_c, alpha=0.85)
+    ax.set_ylim(0, 118)
+    ax.set_ylabel("%")
+    ax.set_title(f"Summary (n={n} episodes)")
     for bar, val in zip(bars, values):
         ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1.5,
-                f"{val:.0f}%", ha='center', va='bottom', fontsize=7)
+                f"{val:.0f}%", ha="center", va="bottom", fontsize=ANNOT_FS)
 
     for row in axes:
         for ax in row:
@@ -503,8 +589,17 @@ def save_plots(all_m, output_path, n_episodes):
 
     plt.tight_layout()
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    plt.savefig(output_path, dpi=120, bbox_inches="tight")
-    print(f"✅ Graf uložen → {output_path}")
+
+    # Save as PDF (vector) for thesis — fall back to PNG if path ends with .png
+    if output_path.endswith(".png"):
+        pdf_path = output_path.replace(".png", ".pdf")
+    else:
+        pdf_path = output_path if output_path.endswith(".pdf") else output_path + ".pdf"
+    plt.savefig(pdf_path, format="pdf", bbox_inches="tight")
+    print(f"\u2705 Plot saved \u2192 {pdf_path}")
+
+    # Reset rcParams to avoid side effects
+    plt.rcParams.update(plt.rcParamsDefault)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -522,7 +617,7 @@ def parse_args():
                    help="Číslo epizody předané curriculum plánovači (default 30000 = plná obtížnost: "
                         "spawn 50–960 m od ohně). Warmup < 3000, ramp 3000–25000, plná ≥ 25000.")
     p.add_argument("--max-steps",  type=int, default=MAX_STEPS)
-    p.add_argument("--output",     default=os.path.join(OUTPUT_DIR, "eval_2scouts.png"))
+    p.add_argument("--output",     default=os.path.join(OUTPUT_DIR, "eval_2scouts.pdf"))
     return p.parse_args()
 
 
@@ -574,7 +669,7 @@ def main():
               f"{surv_s} {surv_f} | "
               f"fire_seen=({m['scout_0_fire_seen_steps']:3d},{m['scout_1_fire_seen_steps']:3d}) "
               f"{fire_icon} {extg_icon} | "
-              f"extg={m['fire_extinguished']:.3f}  water={m['fw_water_used_pct']*100:4.1f}%")
+              f"peak={m['fire_cells_peak']:4d}cells  supp={m['fire_suppression_pct']:5.1f}%  water={m['fw_water_used_pct']*100:4.1f}%")
 
     print_table(all_m, seeds)
     save_plots(all_m, args.output, args.episodes)
