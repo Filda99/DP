@@ -1,0 +1,115 @@
+xjahnf00@aeroworks:~/tmp/DP$ python demos/MAPPO_easiestScenario/demo_eval_2scouts.py --scout saved_models/multi/scout_b0260.pt --commander saved_models/multi/cmdr_b0260.pt --episodes 30 --seed-start 200
+pybullet build time: Mar 10 2026 14:33:15
+
+🔍 Konfigurace evaluace:
+   N_QUADS=2  N_FIXED=1  GRID_SIZE=1200.0m  MAX_STEPS=1000
+   Epizody:  30
+   Seeds:    200 → 229
+   ep_num:   30000  →  PLNÁ OBTÍŽNOST (spawn 50–480 m od ohně)
+   Device:   cpu
+
+  ✅ Scout: saved_models/multi/scout_b0260.pt
+  ✅ Commander: saved_models/multi/cmdr_b0260.pt
+
+▶ Spouštím 30 epizod...
+
+  [ 1/30] seed= 200 | S0=✓ S1=✓ FW=✓ | fire_seen=(245,245) 🔥 💧 | peak=  19cells  supp=100.0%  water=100.0%
+  [ 2/30] seed= 201 | S0=✓ S1=✓ FW=✓ | fire_seen=(837,655) 🔥 💧 | peak=  24cells  supp=  0.0%  water=100.0%
+  [ 3/30] seed= 202 | S0=✓ S1=✓ FW=✓ | fire_seen=(665,655) 🔥 💧 | peak=  89cells  supp=  0.0%  water=100.0%
+  [ 4/30] seed= 203 | S0=✓ S1=✓ FW=✓ | fire_seen=(  0,  0)    💧 | peak=  10cells  supp=100.0%  water=100.0%
+  [ 5/30] seed= 204 | S0=✓ S1=✓ FW=✓ | fire_seen=(955,908) 🔥 💧 | peak=  41cells  supp=  0.0%  water=100.0%
+  [ 6/30] seed= 205 | S0=✓ S1=✓ FW=✓ | fire_seen=(886,686) 🔥    | peak= 191cells  supp=  0.0%  water=100.0%
+  [ 7/30] seed= 206 | S0=✓ S1=✓ FW=✓ | fire_seen=(159,168) 🔥 💧 | peak=  19cells  supp=100.0%  water=100.0%
+  [ 8/30] seed= 207 | S0=✓ S1=✓ FW=✓ | fire_seen=(572,713) 🔥    | peak= 236cells  supp=  0.0%  water=100.0%
+  [ 9/30] seed= 208 | S0=✓ S1=✓ FW=✓ | fire_seen=(641,931) 🔥 💧 | peak=  87cells  supp=  0.0%  water=100.0%
+  [10/30] seed= 209 | S0=✓ S1=✓ FW=✓ | fire_seen=(904,617) 🔥    | peak= 209cells  supp=  0.0%  water=100.0%
+  [11/30] seed= 210 | S0=✓ S1=✓ FW=✓ | fire_seen=(796,809) 🔥 💧 | peak=  26cells  supp=  0.0%  water=100.0%
+  [12/30] seed= 211 | S0=✓ S1=✓ FW=✓ | fire_seen=( 73,174) 🔥 💧 | peak=  18cells  supp=100.0%  water=100.0%
+  [13/30] seed= 212 | S0=✓ S1=✓ FW=✓ | fire_seen=(158,170) 🔥 💧 | peak=  18cells  supp=100.0%  water=100.0%
+  [14/30] seed= 213 | S0=✓ S1=✓ FW=✓ | fire_seen=(585,736) 🔥 💧 | peak=  21cells  supp= 38.1%  water=100.0%
+  [15/30] seed= 214 | S0=✓ S1=✓ FW=✓ | fire_seen=(657,657) 🔥 💧 | peak=  54cells  supp=100.0%  water=100.0%
+  [16/30] seed= 215 | S0=✓ S1=✓ FW=✓ | fire_seen=(  0,  0)    💧 | peak=  13cells  supp=100.0%  water=100.0%
+  [17/30] seed= 216 | S0=✓ S1=✓ FW=✓ | fire_seen=(  8,632) 🔥 💧 | peak=  90cells  supp= 41.1%  water=100.0%
+  [18/30] seed= 217 | S0=✓ S1=✓ FW=✓ | fire_seen=( 91,223) 🔥 💧 | peak=  27cells  supp=100.0%  water=100.0%
+  [19/30] seed= 218 | S0=✓ S1=✓ FW=✓ | fire_seen=(218,218) 🔥 💧 | peak=  24cells  supp=100.0%  water=100.0%
+  [20/30] seed= 219 | S0=✓ S1=✓ FW=✓ | fire_seen=(493,418) 🔥    | peak= 136cells  supp=  0.0%  water=100.0%
+  [21/30] seed= 220 | S0=✓ S1=✓ FW=✓ | fire_seen=(998,998) 🔥    | peak= 203cells  supp=  0.0%  water=100.0%
+  [22/30] seed= 221 | S0=✓ S1=✓ FW=✓ | fire_seen=(766,733) 🔥 💧 | peak= 124cells  supp=  0.0%  water=100.0%
+  [23/30] seed= 222 | S0=✓ S1=✓ FW=✓ | fire_seen=(1000,1000) 🔥 💧 | peak= 250cells  supp=  0.0%  water=100.0%
+  [24/30] seed= 223 | S0=✓ S1=✓ FW=✓ | fire_seen=(  0, 94) 🔥 💧 | peak=  13cells  supp=100.0%  water=100.0%
+  [25/30] seed= 224 | S0=✓ S1=✓ FW=✓ | fire_seen=(849,880) 🔥 💧 | peak=  97cells  supp=  0.0%  water=100.0%
+  [26/30] seed= 225 | S0=✓ S1=✓ FW=✓ | fire_seen=(907,704) 🔥    | peak= 141cells  supp=  0.0%  water=100.0%
+  [27/30] seed= 226 | S0=✓ S1=✓ FW=✓ | fire_seen=(143,543) 🔥    | peak= 312cells  supp=  0.0%  water=100.0%
+  [28/30] seed= 227 | S0=✓ S1=✓ FW=✓ | fire_seen=( 79,143) 🔥 💧 | peak=  23cells  supp=100.0%  water=100.0%
+  [29/30] seed= 228 | S0=✓ S1=✓ FW=✗ | fire_seen=(755,738) 🔥    | peak= 185cells  supp=  0.0%  water= 0.0%
+  [30/30] seed= 229 | S0=✓ S1=✓ FW=✓ | fire_seen=(255,510) 🔥 💧 | peak=  42cells  supp=100.0%  water=100.0%
+
+════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+  VÝSLEDKY EVALUACE  —  2 Scout + 1 Commander
+════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+ Seed  S0_life  S0_fire  S0_surv  S1_life  S1_fire  S1_surv  FW_life  FW_surv  Water%   Peak    End   Supp%  S0_death  S1_death  FW_death
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  200     1000      245     True     1000      245     True     1000     True  100.0%     19      0  100.0%  survived  survived  survived
+  201     1000      837     True     1000      655     True     1000     True  100.0%     24     24    0.0%  survived  survived  survived
+  202     1000      665     True     1000      655     True     1000     True  100.0%     89     89    0.0%  survived  survived  survived
+  203     1000        0     True     1000        0     True     1000     True  100.0%     10      0  100.0%  survived  survived  survived
+  204     1000      955     True     1000      908     True     1000     True  100.0%     41     41    0.0%  survived  survived  survived
+  205     1000      886     True     1000      686     True     1000     True  100.0%    191    191    0.0%  survived  survived  survived
+  206     1000      159     True     1000      168     True     1000     True  100.0%     19      0  100.0%  survived  survived  survived
+  207     1000      572     True     1000      713     True     1000     True  100.0%    236    236    0.0%  survived  survived  survived
+  208     1000      641     True     1000      931     True     1000     True  100.0%     87     87    0.0%  survived  survived  survived
+  209     1000      904     True     1000      617     True     1000     True  100.0%    209    209    0.0%  survived  survived  survived
+  210     1000      796     True     1000      809     True     1000     True  100.0%     26     26    0.0%  survived  survived  survived
+  211     1000       73     True     1000      174     True     1000     True  100.0%     18      0  100.0%  survived  survived  survived
+  212     1000      158     True     1000      170     True     1000     True  100.0%     18      0  100.0%  survived  survived  survived
+  213     1000      585     True     1000      736     True     1000     True  100.0%     21     13   38.1%  survived  survived  survived
+  214     1000      657     True     1000      657     True     1000     True  100.0%     54      0  100.0%  survived  survived  survived
+  215     1000        0     True     1000        0     True     1000     True  100.0%     13      0  100.0%  survived  survived  survived
+  216     1000        8     True     1000      632     True     1000     True  100.0%     90     53   41.1%  survived  survived  survived
+  217     1000       91     True     1000      223     True     1000     True  100.0%     27      0  100.0%  survived  survived  survived
+  218     1000      218     True     1000      218     True     1000     True  100.0%     24      0  100.0%  survived  survived  survived
+  219     1000      493     True     1000      418     True     1000     True  100.0%    136    136    0.0%  survived  survived  survived
+  220     1000      998     True     1000      998     True     1000     True  100.0%    203    203    0.0%  survived  survived  survived
+  221     1000      766     True     1000      733     True     1000     True  100.0%    124    124    0.0%  survived  survived  survived
+  222     1000     1000     True     1000     1000     True     1000     True  100.0%    250    250    0.0%  survived  survived  survived
+  223     1000        0     True     1000       94     True     1000     True  100.0%     13      0  100.0%  survived  survived  survived
+  224     1000      849     True     1000      880     True     1000     True  100.0%     97     97    0.0%  survived  survived  survived
+  225     1000      907     True     1000      704     True     1000     True  100.0%    141    141    0.0%  survived  survived  survived
+  226     1000      143     True     1000      543     True     1000     True  100.0%    312    312    0.0%  survived  survived  survived
+  227     1000       79     True     1000      143     True     1000     True  100.0%     23      0  100.0%  survived  survived  survived
+  228     1000      755     True     1000      738     True       75    False    0.0%    185    186    0.0%  survived  survived  boundary
+  229     1000      255     True     1000      510     True     1000     True  100.0%     42      0  100.0%  survived  survived  survived
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  PŘEHLED KLÍČOVÝCH METRIK  (n=30 epizod)
+  Metrika                                      Hodnota
+  ────────────────────────────────────────────────────
+  Přežil scout_0 (%)                            100.0%
+  Přežil scout_1 (%)                            100.0%
+  Přežili OBA scouti (%)                        100.0%
+  Přežil Commander/FW (%)                        96.7%
+  Scout_0 dosletěl k ohni (%)                    90.0%
+  Scout_1 dosletěl k ohni (%)                    93.3%
+  Aspoň 1 scout u ohně (%)                       93.3%
+  Oba scouti u ohně (%)                          90.0%
+  FW shodil vodu (extg>0) (%)                    73.3%
+  ────────────────────────────────────────────────────
+  Průměrný peak ohně (buňky)                     91.4 ± 85.4
+  Průměrný zbytek ohně na konci (buňky)          80.6 ± 93.3
+  Průměrné % potlačení ohně                      42.6% ± 47.8
+  Průměrné % vody spotřebováno                   96.7%
+  ────────────────────────────────────────────────────
+  Průměrný lifespan Scout_0                    1000.0 ± 0.0
+  Průměrný lifespan Scout_1                    1000.0 ± 0.0
+  Průměrný lifespan Commander                   969.2 ± 166.0
+  Průměrná odměna Scout_0                       145.5 ± 265.9
+  Průměrná odměna Scout_1                       144.4 ± 290.1
+  Průměrná odměna Commander                     275.5 ± 111.6
+
+  PŘÍČINY SMRTI
+  Scout_0     : {'survived': 30}
+  Scout_1     : {'survived': 30}
+  Commander   : {'survived': 29, 'boundary': 1}
+════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+✅ Plot saved → /homes/eva/xj/xjahnf00/tmp/DP/output/eval_2scouts.pdf

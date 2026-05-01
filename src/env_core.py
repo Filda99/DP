@@ -990,11 +990,11 @@ class DroneFireEnv(ParallelEnv):
                 fire_bonus = min(eff * 50.0, 3.0)
                 rewards[f_agent] += fire_bonus
 
-                # Sdílená odměna pro Scouty
-                # Scouti dostanou 50 % z bonusu Commandera, aby věděli, že naváděli správně
+                # Sdílená odměna pro Scouty — záměrně malá (0.15), aby nepouštěla
+                # scout do dive-loopu (maximalizace intenzity v local_map → crash)
                 for q_agent in self.quad_agents:
-                    if q_agent in rewards: # Pokud je naživu
-                        rewards[q_agent] += fire_bonus * 0.5
+                    if q_agent in rewards:
+                        rewards[q_agent] += fire_bonus * 0.15
             elif self._fw_water_triggered.get(f_agent, False):
                 # FW střílel vodu ale nenapadl oheň.
                 # Soft gradient: bonus za drop u scoutu (kde pravděpodobně dostal zprávu s fire pos),

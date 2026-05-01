@@ -334,6 +334,37 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     target_x = np.clip(target_x, -safe_limit, safe_limit)
                     target_y = np.clip(target_y, -safe_limit, safe_limit)
 
+                    # ── Approach reward: bonus za waypoint směrující ke scoutům ────────
+                    # Spočítej centroid aktivních scoutů (jsou vídeni z msg bufferu).
+                    # Scout pozice jsou v msg[0]*NORM_DIST, msg[1]*NORM_DIST — to jsou
+                    # absolutní souřadnice scoutu, ne ground-truth ohniště.
+                    scout_positions = []
+                    for q in quad_agents:
+                        if q in local_env.sim.drones:
+                            scout_positions.append(
+                                local_env.sim.drones[q].get_position()[:2])
+                    if scout_positions and drone is not None:
+                        sc_cx = np.mean([p[0] for p in scout_positions])
+                        sc_cy = np.mean([p[1] for p in scout_positions])
+                        prev_dist_to_scouts = np.hypot(
+                            cur_pos[0] - sc_cx, cur_pos[1] - sc_cy)
+                        new_dist_to_scouts = np.hypot(
+                            target_x - sc_cx, target_y - sc_cy)
+                        approach_delta = prev_dist_to_scouts - new_dist_to_scouts
+                        # Norm: max reward +0.5 za 200m přiblížení (plný waypoint range)
+                        approach_reward = float(np.clip(
+                            approach_delta / waypoint_range * 0.5, -0.3, 0.5))
+                        # Aplikuj jen pokud scouti vídí oheň (msg intensity > 0)
+                        any_scout_has_fire = any(
+                            float(msgs_for_cmdr[i].squeeze(0)[2]) > 0.01
+                            for i in range(len(msgs_for_cmdr))
+                        )
+                        if any_scout_has_fire:
+                            # Přidej approach reward k PŘEDCHOZÍMU segmentu
+                            # (current segment se hned vynuluje níže)
+                            if cmdr_ep_data:
+                                cmdr_ep_data[-1]["reward"] += approach_reward
+
                     steps_in_segment = 0
                     wp_reached = False
                     segment_reward = 0.0
@@ -680,8 +711,8 @@ def train_multi(resume_scout="", resume_cmdr="",
     hidden_dim_cmdr = 64
     scout_msg_dim = 5
 
-    entropy_scout = 0.01        # Phase 8: higher entropy to allow re-exploration after policy drift
-    entropy_cmdr = 0.01        # prevent premature std collapse
+    entropy_scout = 0.002       # sníženo z 0.01 — entropy term dominoval nad policy gradientem (entropy rostla na 3.95)
+    entropy_cmdr = 0.01         # prevent premature std collapse
 
     # ── Dims ─────────────────────────────────────────────────────────────
     temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED,
@@ -801,6 +832,9 @@ def train_multi(resume_scout="", resume_cmdr="",
     loss_history_cmdr = []
     critic_loss_history_scout = []
     critic_loss_history_cmdr = []
+    # Loss component breakdown (for diagnosis)
+    loss_components_scout = []   # list of dicts: {policy, entropy, value}
+    loss_components_cmdr  = []   # list of dicts: {policy, entropy, aux, value}
     scout_life_pct_history = []   # avg scout lifespan % per batch
     cmdr_life_pct_history = []    # avg cmdr lifespan % per batch
     scout_death_history = []      # list of Counter dicts per batch
@@ -1008,6 +1042,8 @@ def train_multi(resume_scout="", resume_cmdr="",
         mb_size_s = max(1, eps // num_minibatches)
         scout_loss_total = 0.0
         scout_critic_loss_total = 0.0
+        scout_policy_loss_total = 0.0
+        scout_entropy_total = 0.0
 
         for epoch in range(update_epochs):
             b_inds = np.random.permutation(eps)
@@ -1090,6 +1126,8 @@ def train_multi(resume_scout="", resume_cmdr="",
                         nn.utils.clip_grad_norm_(scout_actor.parameters(), max_norm=0.5)
                         optimizer_scout.step()
                     scout_loss_total += loss_s.item()
+                    scout_policy_loss_total += ((surr * flat_alive_s).sum() / n_alive_s).item()
+                    scout_entropy_total += ((entropy * flat_alive_s).sum() / n_alive_s).item()
 
                 # Critic value loss (separate optimizer, masked by alive)
                 v_pred, _ = critic_scout(mb_cs, None)
@@ -1102,10 +1140,14 @@ def train_multi(resume_scout="", resume_cmdr="",
                     optimizer_critic_scout.step()
                     scout_critic_loss_total += v_loss.item()
 
-        loss_history_scout.append(
-            scout_loss_total / max(1, update_epochs * num_minibatches))
-        critic_loss_history_scout.append(
-            scout_critic_loss_total / max(1, update_epochs * num_minibatches))
+        n_updates_s = max(1, update_epochs * num_minibatches)
+        loss_history_scout.append(scout_loss_total / n_updates_s)
+        critic_loss_history_scout.append(scout_critic_loss_total / n_updates_s)
+        loss_components_scout.append({
+            "policy":  scout_policy_loss_total / n_updates_s,
+            "entropy": scout_entropy_total      / n_updates_s,
+            "value":   scout_critic_loss_total  / n_updates_s,
+        })
 
         # ==============================================================
         # PPO UPDATE — COMMANDER
@@ -1118,6 +1160,9 @@ def train_multi(resume_scout="", resume_cmdr="",
         c_returns = torch.cat(agg_cmdr["returns"]).to(device)
         cmdr_loss_total = 0.0
         cmdr_critic_loss_total = 0.0
+        cmdr_policy_loss_total = 0.0
+        cmdr_entropy_total = 0.0
+        cmdr_aux_loss_total = 0.0
         c_alive = torch.cat(agg_cmdr["alive"]).to(device)
         c_values = torch.cat(agg_cmdr["values"]).to(device)
         c_cstates = torch.cat(agg_cmdr["critic_states"]).to(device)
@@ -1204,8 +1249,8 @@ def train_multi(resume_scout="", resume_cmdr="",
                 # Průměrujeme jen přes živé kroky
                 aux_loss = (aux_error.sum(dim=-1) * mb_alive).sum() / n_alive 
 
-                # Přičteme aux_loss k celkové ztrátě (sníženo na 0.1 — PPO musí dominovat)
-                loss_c = policy_loss - entropy_cmdr * entropy_loss + 0.1 * aux_loss
+                # Přičteme aux_loss k celkové ztrátě (zvýšeno na 0.5 — silnější supervised signal pro cross-attention encoder)
+                loss_c = policy_loss - entropy_cmdr * entropy_loss + 0.5 * aux_loss
 
                 if torch.isfinite(loss_c):
                     optimizer_cmdr.zero_grad()
@@ -1213,6 +1258,9 @@ def train_multi(resume_scout="", resume_cmdr="",
                     nn.utils.clip_grad_norm_(cmdr_actor.parameters(), max_norm=0.5)
                     optimizer_cmdr.step()
                     cmdr_loss_total += loss_c.item()
+                    cmdr_policy_loss_total += policy_loss.item()
+                    cmdr_entropy_total     += entropy_loss.item()
+                    cmdr_aux_loss_total    += aux_loss.item()
 
                 # Critic value loss (separate optimizer, masked by alive)
                 v_pred, _ = critic_cmdr(mb_cs, None)
@@ -1225,10 +1273,15 @@ def train_multi(resume_scout="", resume_cmdr="",
                     optimizer_critic_cmdr.step()
                     cmdr_critic_loss_total += v_loss_c.item()
 
-        loss_history_cmdr.append(
-            cmdr_loss_total / max(1, update_epochs * num_minibatches))
-        critic_loss_history_cmdr.append(
-            cmdr_critic_loss_total / max(1, update_epochs * num_minibatches))
+        n_updates_c = max(1, update_epochs * num_minibatches)
+        loss_history_cmdr.append(cmdr_loss_total / n_updates_c)
+        critic_loss_history_cmdr.append(cmdr_critic_loss_total / n_updates_c)
+        loss_components_cmdr.append({
+            "policy":  cmdr_policy_loss_total / n_updates_c,
+            "entropy": cmdr_entropy_total      / n_updates_c,
+            "aux":     cmdr_aux_loss_total      / n_updates_c,
+            "value":   cmdr_critic_loss_total   / n_updates_c,
+        })
 
         # ==============================================================
         # PERIODIC SAVE & PLOT
@@ -1239,14 +1292,16 @@ def train_multi(resume_scout="", resume_cmdr="",
                 scout_life_pct_history, cmdr_life_pct_history,
                 scout_death_history,
                 save_dir, batch_idx,
-                critic_loss_history_scout, critic_loss_history_cmdr)
+                critic_loss_history_scout, critic_loss_history_cmdr,
+                loss_components_scout, loss_components_cmdr)
 
     _save_plot_multi(
         reward_per_batch, loss_history_scout, loss_history_cmdr,
         scout_life_pct_history, cmdr_life_pct_history,
         scout_death_history,
         save_dir, batch_idx,
-        critic_loss_history_scout, critic_loss_history_cmdr)
+        critic_loss_history_scout, critic_loss_history_cmdr,
+        loss_components_scout, loss_components_cmdr)
 
     print(f"\n✅ Training complete!")
     print(f"   Best: {save_dir}/scout_best.pt + cmdr_best.pt")
@@ -1259,9 +1314,11 @@ def train_multi(resume_scout="", resume_cmdr="",
 def _save_plot_multi(reward_batches, loss_s, loss_c,
                      scout_life_pct, cmdr_life_pct, scout_deaths,
                      save_dir, batch_idx,
-                     critic_loss_s=None, critic_loss_c=None):
+                     critic_loss_s=None, critic_loss_c=None,
+                     loss_comp_s=None, loss_comp_c=None):
     """All data is per-batch (x-axis = batch number)."""
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    n_rows = 3 if (loss_comp_s or loss_comp_c) else 2
+    fig, axes = plt.subplots(n_rows, 3, figsize=(18, 5 * n_rows))
     fig.suptitle(f"Multi-Agent — Batch {batch_idx}", fontsize=13)
     batches = np.arange(1, len(reward_batches) + 1)
 
@@ -1364,6 +1421,47 @@ def _save_plot_multi(reward_batches, loss_s, loss_c,
     plt.savefig(os.path.join(save_dir, f"training_b{batch_idx:04d}.png"),
                 dpi=100)
     plt.close()
+
+    # ── Separate loss breakdown plot ─────────────────────────────────
+    if loss_comp_s and loss_comp_c:
+        fig2, ax2 = plt.subplots(2, 3, figsize=(18, 8))
+        fig2.suptitle(f"Loss Breakdown — Batch {batch_idx}", fontsize=13)
+        xs = np.arange(1, len(loss_comp_s) + 1)
+        xs_c = np.arange(1, len(loss_comp_c) + 1)
+
+        def _plot_comp(ax, data, xs, key, color, label):
+            vals = [d[key] for d in data]
+            ax.plot(xs, vals, color=color, linewidth=1.2, label=label)
+            mx, ma_ = np.arange(10, len(vals)+1), np.convolve(vals, np.ones(10)/10, mode='valid') if len(vals)>=10 else (None, None)
+            if ma_ is not None:
+                ax.plot(mx, ma_, color=color, linewidth=2.2, alpha=0.6)
+
+        # Scout: policy + entropy + value
+        _plot_comp(ax2[0,0], loss_comp_s, xs, "policy",  "steelblue",  "policy")
+        ax2[0,0].set_title("Scout: Policy Loss"); ax2[0,0].set_xlabel("Batch"); ax2[0,0].grid(alpha=0.3)
+
+        _plot_comp(ax2[0,1], loss_comp_s, xs, "entropy", "green",      "entropy")
+        ax2[0,1].set_title("Scout: Entropy");     ax2[0,1].set_xlabel("Batch"); ax2[0,1].grid(alpha=0.3)
+
+        _plot_comp(ax2[0,2], loss_comp_s, xs, "value",   "orange",     "value")
+        ax2[0,2].set_title("Scout: Critic MSE");  ax2[0,2].set_xlabel("Batch"); ax2[0,2].grid(alpha=0.3)
+
+        # Commander: policy + entropy + aux + value
+        _plot_comp(ax2[1,0], loss_comp_c, xs_c, "policy",  "tomato",    "policy")
+        ax2[1,0].set_title("Cmdr: Policy Loss");  ax2[1,0].set_xlabel("Batch"); ax2[1,0].grid(alpha=0.3)
+
+        _plot_comp(ax2[1,1], loss_comp_c, xs_c, "entropy", "darkorange", "entropy")
+        ax2_aux = ax2[1,1].twinx()
+        _plot_comp(ax2_aux,  loss_comp_c, xs_c, "aux",     "purple",     "aux (×0.5)")
+        ax2[1,1].set_title("Cmdr: Entropy (orange) + Aux (purple)")
+        ax2[1,1].set_xlabel("Batch"); ax2[1,1].grid(alpha=0.3)
+
+        _plot_comp(ax2[1,2], loss_comp_c, xs_c, "value",   "saddlebrown", "value")
+        ax2[1,2].set_title("Cmdr: Critic MSE");   ax2[1,2].set_xlabel("Batch"); ax2[1,2].grid(alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, f"loss_breakdown_b{batch_idx:04d}.png"), dpi=100)
+        plt.close()
 
 
 # =============================================================================
