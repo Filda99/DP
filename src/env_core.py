@@ -1102,8 +1102,6 @@ class DroneFireEnv(ParallelEnv):
                 reward += QUAD["alt_sweet_bonus"]
 
             # --- Ground proximity: exponenciální penalizace pod danger_alt ---
-            # Zabraňuje dive-crash strategii: čím níž, tím tvrdší trest.
-            # Na 20m: 0, na 10m: -0.15, na 5m: -0.35, na 0m: -0.5
             danger_alt = QUAD["ground_danger_alt"]
             if pos[2] < danger_alt:
                 frac = 1.0 - pos[2] / danger_alt  # 0 na hranici, 1 na zemi

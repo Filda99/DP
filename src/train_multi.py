@@ -337,33 +337,29 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     # ── Approach reward: bonus za waypoint směrující ke scoutům ────────
                     # Spočítej centroid aktivních scoutů (jsou vídeni z msg bufferu).
                     # Scout pozice jsou v msg[0]*NORM_DIST, msg[1]*NORM_DIST — to jsou
-                    # absolutní souřadnice scoutu, ne ground-truth ohniště.
-                    scout_positions = []
-                    for q in quad_agents:
-                        if q in local_env.sim.drones:
-                            scout_positions.append(
-                                local_env.sim.drones[q].get_position()[:2])
-                    if scout_positions and drone is not None:
-                        sc_cx = np.mean([p[0] for p in scout_positions])
-                        sc_cy = np.mean([p[1] for p in scout_positions])
-                        prev_dist_to_scouts = np.hypot(
-                            cur_pos[0] - sc_cx, cur_pos[1] - sc_cy)
-                        new_dist_to_scouts = np.hypot(
-                            target_x - sc_cx, target_y - sc_cy)
-                        approach_delta = prev_dist_to_scouts - new_dist_to_scouts
+                    # Approach reward: navigovat k scoutům, kteří VIDÍ oheň.
+                    # Centroid pouze přes scouty s intensity > 0 – nikoli všechny.
+                    # Pozice scoutů čteme z jejich zpráv (msg[0]*1000, msg[1]*1000).
+                    fire_scout_positions = []
+                    for i in range(len(msgs_for_cmdr)):
+                        msg_vec = msgs_for_cmdr[i].squeeze(0)
+                        if float(msg_vec[2]) > 0.01:   # scout vidí oheň
+                            sx = float(msg_vec[0]) * 1000.0
+                            sy = float(msg_vec[1]) * 1000.0
+                            fire_scout_positions.append((sx, sy))
+                    if fire_scout_positions and drone is not None:
+                        sc_cx = np.mean([p[0] for p in fire_scout_positions])
+                        sc_cy = np.mean([p[1] for p in fire_scout_positions])
+                        prev_dist = np.hypot(cur_pos[0] - sc_cx, cur_pos[1] - sc_cy)
+                        new_dist  = np.hypot(target_x  - sc_cx, target_y  - sc_cy)
+                        approach_delta = prev_dist - new_dist
                         # Norm: max reward +0.5 za 200m přiblížení (plný waypoint range)
                         approach_reward = float(np.clip(
                             approach_delta / waypoint_range * 0.5, -0.3, 0.5))
-                        # Aplikuj jen pokud scouti vídí oheň (msg intensity > 0)
-                        any_scout_has_fire = any(
-                            float(msgs_for_cmdr[i].squeeze(0)[2]) > 0.01
-                            for i in range(len(msgs_for_cmdr))
-                        )
-                        if any_scout_has_fire:
-                            # Přidej approach reward k PŘEDCHOZÍMU segmentu
-                            # (current segment se hned vynuluje níže)
-                            if cmdr_ep_data:
-                                cmdr_ep_data[-1]["reward"] += approach_reward
+                        # Přidej approach reward k PŘEDCHOZÍMU segmentu
+                        # (current segment se hned vynuluje níže)
+                        if cmdr_ep_data:
+                            cmdr_ep_data[-1]["reward"] += approach_reward
 
                     steps_in_segment = 0
                     wp_reached = False
@@ -691,9 +687,9 @@ def train_multi(resume_scout="", resume_cmdr="",
     waypoint_range = 200.0
     num_decisions_cmdr = max_steps // waypoint_steps  # 33 (odpovídá max_steps=1000)
 
-    # Scout freeze: keep scout frozen initially so commander learns to
-    # read messages from a stable scout before joint fine-tuning.
-    scout_freeze_batches = 0  # freeze scouts permanently — train only commander
+    # Scout freeze: scouts are already well-trained (b0700). Freeze permanently
+    # so only the commander learns. Scout weights will not be updated.
+    scout_freeze_batches = 999999  # permanent freeze — scouts are frozen
 
     gamma = 0.99
     gamma_cmdr = 0.95          # shorter horizon for commander decisions
