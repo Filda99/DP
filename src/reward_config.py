@@ -64,6 +64,12 @@ QUAD = {
 
     # Exploration — bonus za návštěvu nové 50m buňky (motivace pro scouta bez ohně)
     "exploration_bonus":  0.1,
+
+    # Fire abandonment — penalizace za odlet od ohně který už byl vidět.
+    # Aplikuje se pouze při přechodu fire_seen > threshold → fire_seen < threshold.
+    # Pomáhá scoutům zůstat u ohně co najdou (klíčové při multi-fire scénářích).
+    "fire_abandon_penalty": 1.0,  # škálováno podle předchozí intenzity (max ~1.0/step)
+    "fire_abandon_threshold": 0.05,  # min intenzita aby se počítalo jako "viděl oheň"
 }
 
 # ─── Fixed-wing (Commander) ──────────────────────────────────────────────────

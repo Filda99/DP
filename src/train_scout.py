@@ -64,7 +64,8 @@ def collect_scout_worker(num_eps, scout_w, critic_w, config, batch_start_idx):
 
     local_env = DroneFireEnv(
         num_quads=N_QUADS, num_fixed=0,
-        grid_size_m=config['grid_size_m'], max_steps=max_steps
+        grid_size_m=config['grid_size_m'], max_steps=max_steps,
+        n_fires_range=config.get('n_fires_range', (1, 1))
     )
     local_env.map_size_range = map_size_range
 
@@ -257,9 +258,10 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
     print(f"Device: {device}\n")
 
     # ── Hyperparameters ──────────────────────────────────────────────────
-    N_QUADS = 2
+    N_QUADS = 3          # 3 scouts → each assigned to a different fire in multi-fire episodes
     grid_size_m = 1000.0
     map_size_range = (800,1500)          # fixed map size during training (08_Quad used 500 fixed)
+    n_fires_range = (2, 6)               # 2–6 fires per episode so scouts learn per-fire coverage
     num_episodes = 30_000
     max_steps = 500                # fixed 500 steps like 08_Quad
     steps_range = (500,1500)
@@ -296,6 +298,7 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
         'N_QUADS': N_QUADS,
         'grid_size_m': grid_size_m,
         'map_size_range': map_size_range,
+        'n_fires_range': n_fires_range,
         'max_steps': max_steps,
         'scout_self_dim': scout_self_dim,
         'scout_msg_dim': scout_msg_dim,
@@ -341,7 +344,7 @@ def train_scout(resume="", log_episodes=False, log_dir="/tmp/ep_logs"):
     death_history = []
 
     save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "..", "saved_models", "scout_solo")
+                            "..", "saved_models", "scout_multifire")
     os.makedirs(save_dir, exist_ok=True)
     print(f"Checkpoints → {save_dir}\n")
 

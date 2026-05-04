@@ -43,7 +43,8 @@ class DroneFireEnv(ParallelEnv):
     # __init__
     # -------------------------------------------------------------------------
     def __init__(self, num_quads=1, num_fixed=1, grid_size_m=2000.0, local_map_size=32, max_steps=500,
-                 use_osm=False, osm_lat=49.35, osm_lon=16.42, osm_cache_dir="data"):
+                 use_osm=False, osm_lat=49.35, osm_lon=16.42, osm_cache_dir="data",
+                 n_fires_range=(1, 1)):
         """Initialise the environment configuration.
 
         Parameters
@@ -82,6 +83,10 @@ class DroneFireEnv(ParallelEnv):
         self.osm_lat = osm_lat
         self.osm_lon = osm_lon
         self.osm_cache_dir = osm_cache_dir
+
+        # Number of fire sources per episode: (min, max) inclusive.
+        # Default (1,1) keeps single-fire behaviour for commander training.
+        self.n_fires_range = n_fires_range
 
         # -----------------------------------------------------------------
         # Agent lists
@@ -238,15 +243,14 @@ class DroneFireEnv(ParallelEnv):
         norm_vel = vel / 20.0
 
         # --- 2. Static fire start position (Direction + Distance Compass) ---
-        # Unit vector (direction) + normalised distance so the network knows
-        # both WHERE the fire is and HOW FAR.  The old 08_Quad model that
-        # successfully crossed the map used distance-encoded compass.
-        vec_x = self.fire_x - pos[0]
-        vec_y = self.fire_y - pos[1]
-        dist_to_fire = np.hypot(vec_x, vec_y)
-        
+        # Points to the NEAREST fire source so that each scout gets a
+        # meaningful gradient regardless of how many fires are on the map.
+        nf_x, nf_y, dist_to_fire = self._nearest_fire(pos)
+        vec_x = nf_x - pos[0]
+        vec_y = nf_y - pos[1]
+
         fire_cx, fire_cy = self._get_fire_centroid()
-        
+
         if dist_to_fire > 0.1:
             rel_fire_start_x = vec_x / dist_to_fire
             rel_fire_start_y = vec_y / dist_to_fire
@@ -710,10 +714,27 @@ class DroneFireEnv(ParallelEnv):
             safe_zone_fire = self.map_bounds * 0.4
             spawn_radius = random.uniform(50.0, self.map_bounds * 0.8)
 
-        # Oheň na náhodné pozici v bezpečné zóně
-        self.fire_x = random.uniform(-safe_zone_fire, safe_zone_fire)
-        self.fire_y = random.uniform(-safe_zone_fire, safe_zone_fire)
-        self.sim.start_fire([self.fire_x, self.fire_y], intensity=0.5)
+        # ── Place 1–N fires spread across the map ──────────────────────────
+        n_fires = random.randint(*getattr(self, 'n_fires_range', (1, 1)))
+        # During warmup / easy episodes always use a single fire so the
+        # curriculum gradient is not diluted.
+        if is_easy or ep < WARMUP_END:
+            n_fires = 1
+
+        fire_positions = []
+        _attempts = 0
+        while len(fire_positions) < n_fires and _attempts < 200:
+            _attempts += 1
+            fx = random.uniform(-safe_zone_fire, safe_zone_fire)
+            fy = random.uniform(-safe_zone_fire, safe_zone_fire)
+            if any(np.hypot(fx - px, fy - py) < 150.0 for px, py in fire_positions):
+                continue
+            fire_positions.append((fx, fy))
+
+        self.fire_positions = fire_positions
+        self.fire_x, self.fire_y = fire_positions[0]  # primary fire (compass fallback)
+        for fx, fy in fire_positions:
+            self.sim.start_fire([fx, fy], intensity=0.5)
         self.current_episode = epizode_number
 
         # Refill zona na náhodné pozici, ale s jistou korelací k ohni (aby nebyla úplně mimo mapu)
@@ -722,6 +743,7 @@ class DroneFireEnv(ParallelEnv):
         self.sim.environment.create_refill_zone(center_pos=[refill_x, refill_y, 0.0])
 
         # --- 4. Spawn every agent at its starting position ---
+        _quad_idx = 0  # counter for assigning fires to scouts
         for agent in self.agents:
             if "fixed" in agent:
                 # Normální spawn pro fixed-wing
@@ -737,10 +759,14 @@ class DroneFireEnv(ParallelEnv):
                 drone.state_va = 15.0
 
             else:
+                # Assign each scout to a different fire source (wraps if more scouts than fires)
+                target_fx, target_fy = self.fire_positions[_quad_idx % len(self.fire_positions)]
+                _quad_idx += 1
+
                 # Quads: unikátní pozice pro KAŽDÉHO scouta + garantovaný rozestup
                 for _attempt in range(20):
-                    quad_start_x = self.fire_x + random.uniform(-spawn_radius, spawn_radius)
-                    quad_start_y = self.fire_y + random.uniform(-spawn_radius, spawn_radius)
+                    quad_start_x = target_fx + random.uniform(-spawn_radius, spawn_radius)
+                    quad_start_y = target_fy + random.uniform(-spawn_radius, spawn_radius)
                     # Zkontroluj vzdálenost od již spawnovaných quadů
                     too_close = False
                     for other in self.quad_agents:
@@ -775,7 +801,8 @@ class DroneFireEnv(ParallelEnv):
         for q in self.quad_agents:
             if q in self.sim.drones:
                 pos = self.sim.drones[q].get_position()
-                self._prev_fire_dists[q] = np.sqrt((pos[0] - self.fire_x)**2 + (pos[1] - self.fire_y)**2)
+                _, _, d = self._nearest_fire(pos)
+                self._prev_fire_dists[q] = d
 
         # Fire spread tracking: how many cells are burning at episode start
         if self.sim.environment.fire_grid is not None:
@@ -788,6 +815,10 @@ class DroneFireEnv(ParallelEnv):
 
         # Track FW water level for refill-success detection
         self._prev_fw_water = {}
+
+        # Fire abandonment tracking: previous per-step mean fire intensity
+        # seen by each scout's local camera (used in _get_quad_reward).
+        self._prev_fire_seen = {q: 0.0 for q in self.quad_agents}
         for a in self.fixed_agents:
             if a in self.sim.drones:
                 d = self.sim.drones[a]
@@ -1130,6 +1161,21 @@ class DroneFireEnv(ParallelEnv):
 
         return reward
 
+    def _nearest_fire(self, pos):
+        """Return (fx, fy, dist) of the fire source nearest to pos.
+
+        Uses self.fire_positions (set in reset).  Falls back to
+        (self.fire_x, self.fire_y) if fire_positions is not yet set.
+        """
+        candidates = getattr(self, 'fire_positions', [(self.fire_x, self.fire_y)])
+        best_x, best_y, best_dist = self.fire_x, self.fire_y, float('inf')
+        for fx, fy in candidates:
+            d = np.hypot(pos[0] - fx, pos[1] - fy)
+            if d < best_dist:
+                best_dist = d
+                best_x, best_y = fx, fy
+        return best_x, best_y, best_dist
+
     def _get_fire_centroid(self):
         """Return the intensity-weighted centroid of currently burning cells.
 
@@ -1177,7 +1223,8 @@ class DroneFireEnv(ParallelEnv):
         reward = 0.0
 
         # ── Potential-based approach shaping (vždy aktivní) ──
-        dist_to_fire = np.hypot(pos[0] - self.fire_x, pos[1] - self.fire_y)
+        # Use NEAREST fire so the shaping is consistent with the compass.
+        _, _, dist_to_fire = self._nearest_fire(pos)
         prev_dist = self._prev_fire_dists.get(agent, dist_to_fire)
         delta = prev_dist - dist_to_fire  # kladné = přiblížení
         reward += delta * QUAD["approach_k"]
@@ -1223,6 +1270,15 @@ class DroneFireEnv(ParallelEnv):
             if not self.fire_discovered:
                 self.fire_discovered = True
                 reward += QUAD["first_discovery_bonus"]
+
+        # ── Fire abandonment penalty ──
+        # Scout byl nad ohněm (avg_intensity > threshold) ale teď ho nevidí.
+        # Penalizace škálovaná intenzitou předchozího vidění — čím víc viděl,
+        # tím dražší je odjet.
+        prev_fire = self._prev_fire_seen.get(agent, 0.0)
+        if prev_fire > QUAD["fire_abandon_threshold"] and avg_fire_intensity < QUAD["fire_abandon_threshold"]:
+            reward -= QUAD["fire_abandon_penalty"] * prev_fire
+        self._prev_fire_seen[agent] = avg_fire_intensity
 
         # ── Separation bonus: odměna za rozestup od ostatních scoutů ──
         sep_min = QUAD["separation_min_m"]

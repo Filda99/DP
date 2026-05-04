@@ -1,0 +1,1 @@
+../MAPPO_easiestScenario/demo_both_training.py
