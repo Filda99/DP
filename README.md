@@ -189,6 +189,20 @@ tmux kill-session -t train    # zabít session
 | `saved_models/multi/cmdr_b{N}.pt` | Periodické snapshoty commandera |
 | `saved_models/multi/training_b{N}.png` | Grafy tréninku |
 
+
+## Moje ulozene commandy:
+
+Spusteni evaluation celeho reseni:
+```bash 
+python tools/eval_full_scenario.py     --scout-model saved_models/multi/scout_best.pt     --cmdr-model  saved_models/multi/cmdr_b0780.pt     --runs 50     --max-steps 1000
+```
+
+Scout - ruzne mapy
+```bash
+python demos/scout/demo_scout.py     --seeds 203 --max-steps 400 --scouts 5 --fires 3     --grid-sizes 800 1200 2000
+```
+
+
 ---
 
 *DP project — Heterogeneous multi-agent drone coordination for wildfire suppression using MAPPO*

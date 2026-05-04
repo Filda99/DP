@@ -720,19 +720,20 @@ def train_multi(resume_scout="", resume_cmdr="",
     # ── Hyperparameters ──────────────────────────────────────────────────
     N_QUADS = 2                   # 2 scouts + 1 commander
     N_FIXED = 1
-    grid_size_m = 1200.0          # stejná mapa jako při trénování scoutů
-    map_size_range = None         # fixní mapa — diverzita přidána až po stabilizaci
+    grid_size_m = 1200.0          # výchozí mapa (přepsána map_size_range při každém epizodě)
+    map_size_range = (800.0, 2000.0)  # domain randomization — klíčové pro generalizaci na různé mapy
     num_episodes = 30_000
     max_steps = 1000              # delší epizody — scouts i FW mají čas doletět
     steps_range = None            # fixní délka — proměnná délka rozbíjela commander buffer
     bptt_chunk = 128              # GRU backprop limit per chunk
     waypoint_steps = 30
-    waypoint_range = 200.0
+    waypoint_range = 300.0        # zvýšeno z 200 — větší dosah pro větší mapy (2000m)
     num_decisions_cmdr = max_steps // waypoint_steps  # 33 (odpovídá max_steps=1000)
 
-    # Scout freeze: scouts are already well-trained (b0700). Freeze permanently
-    # so only the commander learns. Scout weights will not be updated.
-    scout_freeze_batches = 999999  # permanent freeze — scouts are frozen
+    # Scout freeze: scouti jsou natrénovaní, ale odmrazujeme pro jemnou adaptaci
+    # na různé velikosti map (domain randomization). Velmi nízké lr_scout zabrání
+    # kolapsu naučené politiky.
+    scout_freeze_batches = 0      # scouti NEFREEZNUTI — jemné doladění s různými mapami
 
     gamma = 0.99
     gamma_cmdr = 0.95          # shorter horizon for commander decisions
@@ -743,8 +744,8 @@ def train_multi(resume_scout="", resume_cmdr="",
     eps_per_worker = 2
     episodes_per_batch = num_workers * eps_per_worker
 
-    lr_scout = 1e-5             # very low — fine-tuning pre-trained scout, prevent policy collapse
-    lr_cmdr = 2e-4              # zvýšeno z 1e-4 — critic loss ~1.0 ukazuje undertrained commander
+    lr_scout = 3e-6             # velmi nízký — jen adaptace na různé mapy, zabrání přeučení
+    lr_cmdr = 3e-4              # mírně zvýšeno — commander se stále učí efektivně hasit
     lr_critic = 5e-4
     hidden_dim_scout = 128
     hidden_dim_cmdr = 64
@@ -879,7 +880,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     scout_death_history = []      # list of Counter dicts per batch
 
     save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "..", "saved_models", "multi")
+                            "..", "saved_models", "finetune_07")  # nová složka — nepřepisuje předchozí checkpointy
     os.makedirs(save_dir, exist_ok=True)
     print(f"Checkpoints → {save_dir}\n")
 
