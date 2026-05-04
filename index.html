@@ -39,11 +39,12 @@
             padding: 15px;
         }
         
+        /* Původní styl pro obrázky */
         .card img {
             width: 100%;
             height: auto;
             border-radius: 8px;
-            display: block;
+            display: block; 
             background-color: #eee;
         }
         
@@ -56,12 +57,13 @@
             background-color: #eee;
         }
         
-        .carousel-slide {
-            display: none;
-            width: 100%;
+        /* OPRAVA CSS: Vyšší priorita pravidla, aby přepsalo .card img */
+        .card img.carousel-slide {
+            display: none; 
+            border-radius: 0;
         }
         
-        .carousel-slide.active {
+        .card img.carousel-slide.active {
             display: block;
         }
         
@@ -144,23 +146,22 @@
         <p class="card-description">Demonstration of basic quadcopter behavior during fire detection and maintaining a stable hover over the ignition source.</p>
     </div>
 
-    <!-- Sekce 2: Scout Dema Carousel -->
+    <!-- Sekce 2: Pouze "multiple" scout dema -->
     <div class="card">
         <div class="carousel-container" id="carousel-scout">
-            <img src="site_demos/scout_demo.gif" class="carousel-slide active" alt="Scout Demo">
-            <img src="site_demos/scout_s203_n5_800m.gif" class="carousel-slide" alt="Scout 800m">
+            <img src="site_demos/scout_s203_n5_800m.gif" class="carousel-slide active" alt="Scout 800m">
             <img src="site_demos/scout_s203_n5_1200m.gif" class="carousel-slide" alt="Scout 1200m">
             <img src="site_demos/scout_s203_n5_2000m.gif" class="carousel-slide" alt="Scout 2000m">
             
             <a class="prev" onclick="changeSlide('carousel-scout', -1)">&#10094;</a>
             <a class="next" onclick="changeSlide('carousel-scout', 1)">&#10095;</a>
-            <div class="slide-counter">1 / 4</div>
+            <div class="slide-counter">1 / 3</div>
         </div>
         <span class="card-title">2. Dual Scouts: Emergent Cooperation</span>
         <p class="card-description">Coordination of multiple reconnaissance drones to efficiently cover larger territories and provide redundant tracking.</p>
     </div>
 
-    <!-- Sekce 3: Both Dema Carousel -->
+    <!-- Sekce 3: Both dema -->
     <div class="card">
         <div class="carousel-container" id="carousel-both">
             <img src="site_demos/both_seed208.gif" class="carousel-slide active" alt="Both Demo Seed 208">
@@ -206,7 +207,7 @@
         // Zobrazení nového obrázku
         slides[newIndex].classList.add('active');
         
-        // Aktualizace ukazatele čísel (např. 2 / 4)
+        // Aktualizace ukazatele čísel (např. 2 / 3)
         if (counter) {
             counter.innerText = (newIndex + 1) + " / " + slides.length;
         }
