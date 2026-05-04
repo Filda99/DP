@@ -558,7 +558,7 @@ if __name__ == "__main__":
     # Load actor once — shared across all map sizes (obs shape is independent of map size)
     _tmp_env  = DroneFireEnv(num_quads=n_quads, num_fixed=0, grid_size_m=1000.0, max_steps=10)
     obs_space = _tmp_env.observation_space("quad_0")
-    _tmp_env.sim.stop_simulation()
+    # sim is only created after reset() — skip stop_simulation() here
 
     scout_actor = ScoutActor(self_state_dim=obs_space["self_state"].shape[0],
                              msg_dim=5, hidden_dim=128).to(device)
