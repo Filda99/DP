@@ -47,17 +47,60 @@
             background-color: #eee;
         }
         
-        .placeholder-box {
+        /* Styly pro Carousel (Přepínač) */
+        .carousel-container {
+            position: relative;
             width: 100%;
-            aspect-ratio: 16 / 9;
-            background: #e1e1e1;
             border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #777;
+            overflow: hidden;
+            background-color: #eee;
+        }
+        
+        .carousel-slide {
+            display: none;
+            width: 100%;
+        }
+        
+        .carousel-slide.active {
+            display: block;
+        }
+        
+        .prev, .next {
+            cursor: pointer;
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            width: auto;
+            padding: 12px 16px;
+            color: white;
             font-weight: bold;
-            font-style: italic;
+            font-size: 20px;
+            transition: 0.3s ease;
+            border-radius: 0 4px 4px 0;
+            user-select: none;
+            background-color: rgba(0,0,0,0.4);
+            text-decoration: none;
+        }
+        
+        .next {
+            right: 0;
+            border-radius: 4px 0 0 4px;
+        }
+        
+        .prev:hover, .next:hover {
+            background-color: rgba(0,0,0,0.8);
+            text-decoration: none;
+        }
+
+        .slide-counter {
+            position: absolute;
+            bottom: 8px;
+            right: 16px;
+            color: white;
+            font-size: 12px;
+            padding: 4px 8px;
+            background-color: rgba(0,0,0,0.5);
+            border-radius: 12px;
         }
         
         .card-title {
@@ -94,23 +137,39 @@
 </header>
 
 <main class="gallery">
+    <!-- Sekce 1: Původní zůstává -->
     <div class="card">
-        <img src="scout_demo.gif" alt="Single Scout Demo">
+        <img src="site_demos/scout_demo.gif" alt="Single Scout Demo">
         <span class="card-title">1. Single Scout: Autonomous Fire Tracking</span>
         <p class="card-description">Demonstration of basic quadcopter behavior during fire detection and maintaining a stable hover over the ignition source.</p>
     </div>
 
+    <!-- Sekce 2: Scout Dema Carousel -->
     <div class="card">
-        <div class="placeholder-box">
-            TBD - as soon as possible
+        <div class="carousel-container" id="carousel-scout">
+            <img src="site_demos/scout_demo.gif" class="carousel-slide active" alt="Scout Demo">
+            <img src="site_demos/scout_s203_n5_800m.gif" class="carousel-slide" alt="Scout 800m">
+            <img src="site_demos/scout_s203_n5_1200m.gif" class="carousel-slide" alt="Scout 1200m">
+            <img src="site_demos/scout_s203_n5_2000m.gif" class="carousel-slide" alt="Scout 2000m">
+            
+            <a class="prev" onclick="changeSlide('carousel-scout', -1)">&#10094;</a>
+            <a class="next" onclick="changeSlide('carousel-scout', 1)">&#10095;</a>
+            <div class="slide-counter">1 / 4</div>
         </div>
         <span class="card-title">2. Dual Scouts: Emergent Cooperation</span>
         <p class="card-description">Coordination of multiple reconnaissance drones to efficiently cover larger territories and provide redundant tracking.</p>
     </div>
 
+    <!-- Sekce 3: Both Dema Carousel -->
     <div class="card">
-        <div class="placeholder-box">
-            TBD - as soon as possible
+        <div class="carousel-container" id="carousel-both">
+            <img src="site_demos/both_seed208.gif" class="carousel-slide active" alt="Both Demo Seed 208">
+            <img src="site_demos/both_seed210.gif" class="carousel-slide" alt="Both Demo Seed 210">
+            <img src="site_demos/both_seed214.gif" class="carousel-slide" alt="Both Demo Seed 214">
+            
+            <a class="prev" onclick="changeSlide('carousel-both', -1)">&#10094;</a>
+            <a class="next" onclick="changeSlide('carousel-both', 1)">&#10095;</a>
+            <div class="slide-counter">1 / 3</div>
         </div>
         <span class="card-title">3. Heterogeneous Swarm: Full Mission Cycle</span>
         <p class="card-description">Complete mission sequence: Commander approach based on real-time Scout data, precision water drop, and strategic refill maneuver.</p>
@@ -121,6 +180,38 @@
     <p>&copy; 2026 Filip Jahn | BUT FIT Brno</p>
     <p><a href="https://github.com/Filda99/DP">Project source code on GitHub</a></p>
 </footer>
+
+<script>
+    function changeSlide(carouselId, step) {
+        // Získání kontejneru a všech obrázků v něm
+        const carousel = document.getElementById(carouselId);
+        const slides = carousel.getElementsByClassName('carousel-slide');
+        const counter = carousel.querySelector('.slide-counter');
+        
+        // Zjištění aktuálně aktivního indexu
+        let activeIndex = 0;
+        for (let i = 0; i < slides.length; i++) {
+            if (slides[i].classList.contains('active')) {
+                activeIndex = i;
+                break;
+            }
+        }
+        
+        // Skrytí aktuálního obrázku
+        slides[activeIndex].classList.remove('active');
+        
+        // Výpočet nového indexu s ošetřením přetečení na začátek/konec
+        let newIndex = (activeIndex + step + slides.length) % slides.length;
+        
+        // Zobrazení nového obrázku
+        slides[newIndex].classList.add('active');
+        
+        // Aktualizace ukazatele čísel (např. 2 / 4)
+        if (counter) {
+            counter.innerText = (newIndex + 1) + " / " + slides.length;
+        }
+    }
+</script>
 
 </body>
 </html>
