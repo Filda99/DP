@@ -148,7 +148,7 @@ class DroneFireEnv(ParallelEnv):
         })
 
         # --- 2. Commander (Fixed-wing) observation ---
-        # self_state vector (19 floats):
+        # self_state vector (23 floats):
         #   0-2  : normalised position  x, y, z
         #   3-5  : normalised velocity  vx, vy, vz
         #   6-9  : normalised distances to the four map edges
@@ -156,12 +156,17 @@ class DroneFireEnv(ParallelEnv):
         #   11-12: relative compass to the refill zone  (rel_x, rel_y)
         #   13-15: orientation angles  (roll, pitch, yaw) normalised by π
         #   16   : danger flag — 1.0 if within 300 m of any edge, else 0.0
-        #   17-18: compass to fire start position
+        #   17-18: compass to fire start position (kept as zeros — unused)
+        #   19-20: fire compass  (unit vector FW→fire-scout centroid, derived
+        #          from scout messages; zeros when no scout reports fire)
+        #   21   : normalised distance FW→fire-scout centroid  (dist/1000, cap 2)
+        #   22   : max fire intensity reported by any scout  (0 if none)
         #
-        # NOTE: scout messages are NOT part of this observation dict.
-        # They are concatenated in train.py and injected as a separate
-        # input to the CommanderActor network.
-        self.fixed_self_dim = 19
+        # NOTE: indices 19-22 are filled by the training / eval loop from
+        # scout NN messages, NOT by the env (env has no access to NN outputs).
+        # The env sets them to 0.0; callers must inject them before each
+        # CommanderActor forward pass.
+        self.fixed_self_dim = 23
 
         fixed_obs_space = gym.spaces.Dict({
             "self_state": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.fixed_self_dim,), dtype=np.float32)
@@ -410,7 +415,8 @@ class DroneFireEnv(ParallelEnv):
             rel_base_x, rel_base_y,                                           # 11-12: compass to refill zone
             norm_rpy[0], norm_rpy[1], norm_rpy[2],                            # 13-15: roll, pitch, yaw
             danger_flag,                                                      # 16   : proximity alert
-            fire_dir_x, fire_dir_y                                            # 17-18: compass to fire start position
+            fire_dir_x, fire_dir_y,                                           # 17-18: unused (always 0)
+            0.0, 0.0, 2.0, 0.0,                                               # 19-22: fire compass placeholder
         ], dtype=np.float32)
 
         return {"self_state": self_state}
@@ -780,6 +786,15 @@ class DroneFireEnv(ParallelEnv):
         # Track which FW agents triggered water this step (for waste penalty)
         self._fw_water_triggered = {a: False for a in self.fixed_agents}
 
+        # Track FW water level for refill-success detection
+        self._prev_fw_water = {}
+        for a in self.fixed_agents:
+            if a in self.sim.drones:
+                d = self.sim.drones[a]
+                self._prev_fw_water[a] = d.current_water / d.water_capacity if d.water_capacity > 0 else 1.0
+            else:
+                self._prev_fw_water[a] = 1.0
+
         # --- 6. Build and return initial observations (PettingZoo requirement) ---
         observations = {agent: self._get_obs(agent) for agent in self.agents}
         infos = {agent: {} for agent in self.agents}
@@ -996,27 +1011,33 @@ class DroneFireEnv(ParallelEnv):
                     if q_agent in rewards:
                         rewards[q_agent] += fire_bonus * 0.15
             elif self._fw_water_triggered.get(f_agent, False):
-                # FW střílel vodu ale nenapadl oheň.
-                # Soft gradient: bonus za drop u scoutu (kde pravděpodobně dostal zprávu s fire pos),
-                # penalizace za drop zcela mimo dosah všech scoutů.
-                # Scout pozice jsou v cross-attention observaci FW — není to ground-truth leakage.
+                # FW střílel vodu ale nenapadl oheň. Tři pásma:
+                #   1. Blízko ohně (< fire_radius)  → graded bonus (max water_guidance_bonus)
+                #   2. Blízko scoutu (< comm_range)  → nula (neutrální)
+                #   3. Daleko od všech scoutů        → penalizace
+                # Tím agent ví: "u scoutu je bezpečné zkusit", ale bonus dostane jen za přesný zásah.
                 fw_drone = self.sim.drones.get(f_agent)
                 if fw_drone is not None:
                     fw_pos = fw_drone.get_position()
-                    comm_range = FIXED["communication_range_m"]
-                    min_dist_to_scout = min(
-                        (np.hypot(fw_pos[0] - self.sim.drones[q].get_position()[0],
-                                  fw_pos[1] - self.sim.drones[q].get_position()[1])
-                         for q in self.quad_agents if q in self.sim.drones),
-                        default=float('inf')
-                    )
-                    if min_dist_to_scout < comm_range:
-                        # U scoutu: měkký bonus (max 0.2 vedle scoutu, 0 na hranici)
-                        partial = FIXED["water_guidance_bonus"] * (1.0 - min_dist_to_scout / comm_range)
+                    dist_to_fire = np.hypot(fw_pos[0] - self.fire_x, fw_pos[1] - self.fire_y)
+                    fire_radius = FIXED["water_trigger_dist"]    # 200 m — fire proximity zone
+                    comm_range  = 150.0                          # 150 m — neutrální pásmo u scoutu
+                    if dist_to_fire < fire_radius:
+                        # Pásmo 1: blízko ohně → bonus (graded, max nad ohněm)
+                        partial = FIXED["water_guidance_bonus"] * (1.0 - dist_to_fire / fire_radius)
                         rewards[f_agent] += partial
                     else:
-                        # Zcela mimo scouty — plýtvání
-                        rewards[f_agent] -= FIXED["water_waste_penalty"]
+                        min_dist_to_scout = min(
+                            (np.hypot(fw_pos[0] - self.sim.drones[q].get_position()[0],
+                                      fw_pos[1] - self.sim.drones[q].get_position()[1])
+                             for q in self.quad_agents if q in self.sim.drones),
+                            default=float('inf')
+                        )
+                        if min_dist_to_scout < comm_range:
+                            pass  # Pásmo 2: u scoutu ale mimo oheň → neutrální (0)
+                        else:
+                            # Pásmo 3: daleko od scoutů i ohně → plýtvání
+                            rewards[f_agent] -= FIXED["water_waste_penalty"]
              
         if self.sim.environment.fire_grid is not None:
             total_burning = int(np.sum(self.sim.environment.fire_grid.B))
@@ -1243,15 +1264,29 @@ class DroneFireEnv(ParallelEnv):
 
         reward = 0.0
 
-        if water_lvl < 0.05:
-            # PRÁZDNÝ TANK → gradient k refill zóně
-            # Refill poloha je v observaci FW (slots 11-12), takže tohle je OK
+        low_water = water_lvl < 0.50   # tank pod 50 % → začni myslet na refill
+
+        if low_water:
+            # Gradient k refill zóně — škálovaný podle nedostatku vody.
+            # Rádius 2000 m pokrývá celou mapu (fire je na opačné straně ~1200m).
+            water_deficit = 1.0 - water_lvl   # 0 = plný, 1 = prázdný
             if self.sim.environment.refill_zone is not None:
                 rz = self.sim.environment.refill_zone['position']
                 dist_to_refill = np.hypot(pos[0] - rz[0], pos[1] - rz[1])
-                reward += max(0.0, 0.3 * (1.0 - dist_to_refill / 500.0))
-                if dist_to_refill < 100:
-                    reward += 0.5
+                # Graded bonus: max 2.0 přímo u zóny, cítit i 2000 m daleko
+                proximity = max(0.0, 1.0 - dist_to_refill / 2000.0)
+                reward += water_deficit * 2.0 * proximity
+
+        # Úspěšný refill — jedorázový bonus za doplnění tanku
+        prev_water = self._prev_fw_water.get(agent, water_lvl)
+        if water_lvl > prev_water + 0.05:   # hladina skočila nahoru = refill nastal
+            filled_fraction = water_lvl - prev_water   # 0–1
+            reward += filled_fraction * 5.0   # max +5 za plné doplnění z 0
+        self._prev_fw_water[agent] = water_lvl
+
+        if water_lvl < 0.05:
+            # Prázdný tank → urgentní penalizace (nezávisle na ohni)
+            reward -= 1.0   # čas je drahý, prázdný tank = plýtvání
 
         return reward
 

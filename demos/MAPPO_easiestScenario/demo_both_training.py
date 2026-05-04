@@ -17,7 +17,7 @@ Output: demo_training.gif  +  demo_training_analysis.png
 
 import torch
 import numpy as np
-import os, sys, glob
+import os, sys, glob, argparse
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.patches as mpatches
@@ -71,6 +71,28 @@ WP_REACHED_DIST = 30.0    # metres
 def _wrap_angle(a):
     """Wrap angle to [-pi, pi]."""
     return (a + np.pi) % (2 * np.pi) - np.pi
+
+
+def _inject_fire_compass(ss, scout_msgs_dict, quad_names, fw_pos, norm_dist=1000.0):
+    """Vyplň indices 19-22 FW self_state kompasem k ohni ze scout zpráv."""
+    fire_x_list, fire_y_list, max_intensity = [], [], 0.0
+    for q in quad_names:
+        msg = scout_msgs_dict[q]["latest"].squeeze(0)
+        intensity = float(msg[2])
+        if intensity > 0.01:
+            fire_x_list.append(float(msg[0]) * norm_dist)
+            fire_y_list.append(float(msg[1]) * norm_dist)
+            max_intensity = max(max_intensity, intensity)
+    if fire_x_list:
+        cx, cy = float(np.mean(fire_x_list)), float(np.mean(fire_y_list))
+        dx, dy = cx - fw_pos[0], cy - fw_pos[1]
+        dist = float(np.hypot(dx, dy))
+        dist_norm = min(dist / norm_dist, 2.0)
+        compass_x, compass_y = (dx / dist, dy / dist) if dist > 1.0 else (0.0, 0.0)
+    else:
+        compass_x, compass_y, dist_norm, max_intensity = 0.0, 0.0, 2.0, 0.0
+    ss[19] = compass_x; ss[20] = compass_y
+    ss[21] = dist_norm; ss[22] = max_intensity
 
 
 # ── OSM terrain helpers ─────────────────────────────────────────
@@ -315,25 +337,12 @@ def _render_frame(step, fire_map, b,
     plt.close(fig)
     return arr
 
-def run_demo():
-    print("Demo: Heterogeneous MAPPO team (Scout + Commander)")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    scout_actor, commander_actor, _, _ = _load_models(device)
+def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
+                terrain_collections=None, save_gif=False, gif_path=None):
+    """Spustí jednu epizodu. Vrací dict metrik."""
+    quad_names = [f"quad_{i}" for i in range(N_QUADS)]
 
-    # Load OSM terrain for visualisation
-    terrain_collections = None
-    if USE_OSM:
-        print("Loading OSM terrain...")
-        gdfs = _load_terrain_gdfs()
-        if gdfs:
-            water, buildings, forests = _classify_features(gdfs)
-            terrain_collections = _build_terrain_collections(water, buildings, forests)
-            print(f"  Water: {len(water)}  Buildings: {len(buildings)}  Forest: {len(forests)}")
-
-    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=GRID_SIZE,
-                       max_steps=MAX_STEPS, use_osm=USE_OSM, osm_lat=OSM_LAT,
-                       osm_lon=OSM_LON, osm_cache_dir=OSM_CACHE)
-    obs, _ = env.reset(seed=EPISODE_SEED, epizode_number=30000)
+    obs, _ = env.reset(seed=seed, epizode_number=ep_num)
     
     refill_info = env.sim.environment.refill_zone
     refill_pos = refill_info['position'] if refill_info else None
@@ -344,17 +353,17 @@ def run_demo():
     print(f"📐 map_bounds={env.map_bounds}, safe_limit={safe_limit}, "
           f"boundary_emergency={boundary_emergency}")
 
-    h_scout = {f"quad_{i}": torch.zeros(1, 1, 128).to(device) for i in range(N_QUADS)}
+    h_scout = {q: torch.zeros(1, 1, 128).to(device) for q in quad_names}
     h_cmdr  = torch.zeros(1, 1, 64).to(device)
 
-    hist = { "q_r": {f"quad_{i}": [] for i in range(N_QUADS)},
-             "f_r": [], "q_alt": {f"quad_{i}": [] for i in range(N_QUADS)},
+    hist = { "q_r": {q: [] for q in quad_names},
+             "f_r": [], "q_alt": {q: [] for q in quad_names},
              "f_alt": [], "fire": [], "water": [] }
     frames, total_rf = [], 0.0
-    total_rq = {f"quad_{i}": 0.0 for i in range(N_QUADS)}
-    q_paths = {f"quad_{i}": {"x": [], "y": []} for i in range(N_QUADS)}
+    total_rq = {q: 0.0 for q in quad_names}
+    q_paths = {q: {"x": [], "y": []} for q in quad_names}
     f_path_x, f_path_y = [], []
-    last_local_maps = {f"quad_{i}": None for i in range(N_QUADS)}
+    last_local_maps = {q: None for q in quad_names}
 
     # Commander waypoint state
     need_new_waypoint = True
@@ -362,14 +371,18 @@ def run_demo():
     target_alt_raw, water_raw = 0.0, -0.5
     steps_in_segment = 0
     # Per-scout message tracking: latest + best-fire
-    scout_msgs = {f"quad_{i}": {"latest": torch.zeros(1, 5).to(device),
-                                 "best": torch.zeros(1, 5).to(device),
-                                 "valid": False, "best_intensity": -1.0}
-                  for i in range(N_QUADS)}
+    scout_msgs = {q: {"latest": torch.zeros(1, 5).to(device),
+                      "best": torch.zeros(1, 5).to(device),
+                      "valid": False, "best_intensity": -1.0}
+                  for q in quad_names}
 
-    print("🚀 Mise začíná...")
-    for step in tqdm.tqdm(range(MAX_STEPS)):
+    print(f"  Seed {seed} | 🚀 Mise začíná...")
+    fire_cells_peak = 0
+    for step in tqdm.tqdm(range(MAX_STEPS), desc=f"seed={seed}", leave=False):
         if not env.agents: break
+        # Peak fire
+        if env.sim.environment.fire_grid is not None:
+            fire_cells_peak = max(fire_cells_peak, int(np.sum(env.sim.environment.fire_grid.B)))
         actions = {}
 
         # ── Scouts ───────────────────────────────────────────────────────
@@ -419,17 +432,19 @@ def run_demo():
                     need_new_waypoint = True
 
                 if need_new_waypoint:
+                    # Inject fire compass (indices 19-22)
+                    if drone is not None:
+                        _inject_fire_compass(obs["fixed_0"]["self_state"],
+                                             scout_msgs, quad_names, drone.get_position())
+
                     s_st_f = torch.FloatTensor(obs["fixed_0"]["self_state"]).to(device).unsqueeze(0)
 
-                    # Build 4-slot message tensor: [latest_q0, best_q0, latest_q1, best_q1]
                     msgs_for_cmdr = []
                     masks_for_cmdr = []
                     for qi in range(N_QUADS):
                         sm = scout_msgs[f"quad_{qi}"]
-                        msgs_for_cmdr.append(sm["latest"])   # each is [1, 5]
+                        msgs_for_cmdr.append(sm["latest"])
                         masks_for_cmdr.append(not sm["valid"])
-                        # msgs_for_cmdr.append(sm["best"])     # each is [1, 5]
-                        # masks_for_cmdr.append(not sm["valid"])
 
                     # msgs_t = torch.stack(msgs_for_cmdr, dim=1)    # [1, 2*N_QUADS, 5]
                     # msgs_m = torch.tensor([masks_for_cmdr])       # [1, 2*N_QUADS]
@@ -490,8 +505,6 @@ def run_demo():
             q_name = f"quad_{qi}"
             total_rq[q_name] += rewards.get(q_name, 0.0)
         total_rf += rewards.get("fixed_0", 0.0)
-
-        # Sběr dat pro vizualizaci
         f_water_pct = 0.0
         f_alive = "fixed_0" in env.sim.drones
         f_pos = None
@@ -528,29 +541,52 @@ def run_demo():
         if f_alive: hist["f_alt"].append(f_pos[2])
 
         if step % GIF_EVERY == 0:
-            # Gather scout positions
-            q_positions = {}
-            q_alive_map = {}
-            for qi in range(N_QUADS):
-                q_name = f"quad_{qi}"
-                q_alive_map[q_name] = q_name in env.sim.drones
-                q_positions[q_name] = env.sim.drones[q_name].get_position() if q_alive_map[q_name] else None
+            if save_gif:
+                # Gather scout positions
+                q_positions = {}
+                q_alive_map = {}
+                for qi in range(N_QUADS):
+                    q_name = f"quad_{qi}"
+                    q_alive_map[q_name] = q_name in env.sim.drones
+                    q_positions[q_name] = env.sim.drones[q_name].get_position() if q_alive_map[q_name] else None
 
-            frame = _render_frame(
-                step, env.sim.environment.fire_grid.I.copy(), env.map_bounds,
-                q_paths, q_positions, q_alive_map,
-                list(f_path_x), list(f_path_y), f_pos, f_water_pct,
-                refill_pos, refill_size,
-                best_local_map.copy() if best_local_map is not None else None,
-                sum(total_rq.values()), total_rf, fire_seen, f_alive,
-                terrain_collections=terrain_collections,
-            )
-            frames.append(frame)
+                frame = _render_frame(
+                    step, env.sim.environment.fire_grid.I.copy(), env.map_bounds,
+                    q_paths, q_positions, q_alive_map,
+                    list(f_path_x), list(f_path_y), f_pos, f_water_pct,
+                    refill_pos, refill_size,
+                    best_local_map.copy() if best_local_map is not None else None,
+                    sum(total_rq.values()), total_rf, fire_seen, f_alive,
+                    terrain_collections=terrain_collections,
+                )
+                frames.append(frame)
 
-    imageio.mimsave(os.path.join(project_root, "demo_training.gif"), frames, fps=GIF_FPS, loop=0)
-    _save_analysis(hist, project_root)
+    if save_gif and frames:
+        out_gif = gif_path or os.path.join(project_root, f"demo_seed{seed}.gif")
+        imageio.mimsave(out_gif, frames, fps=GIF_FPS, loop=0)
+        print(f"  GIF → {out_gif}")
+        _save_analysis(hist, project_root, suffix=f"_seed{seed}")
 
-def _save_analysis(hist, project_root):
+    # Metriky
+    end_cells = int(np.sum(env.sim.environment.fire_grid.B)) \
+                if env.sim.environment.fire_grid is not None else 0
+    supp_pct = (1.0 - end_cells / fire_cells_peak) * 100.0 if fire_cells_peak > 0 else 100.0
+    fw_survived = "fixed_0" in env.sim.drones
+    scouts_survived = {q: q in env.sim.drones for q in quad_names}
+
+    return {
+        "seed": seed,
+        "peak_cells": fire_cells_peak,
+        "end_cells": end_cells,
+        "supp_pct": supp_pct,
+        "fw_survived": fw_survived,
+        "scouts_survived": scouts_survived,
+        "total_rq": total_rq,
+        "total_rf": total_rf,
+        "water_used_pct": (1.0 - hist["water"][-1]) * 100.0 if hist["water"] else 0.0,
+    }
+
+def _save_analysis(hist, project_root, suffix=""):
     fig, axes = plt.subplots(6, 1, figsize=(12, 16))
     fig.patch.set_facecolor('white')
 
@@ -582,9 +618,76 @@ def _save_analysis(hist, project_root):
         ax.set_xlabel('Step', fontsize=8)
 
     plt.tight_layout()
-    plt.savefig(os.path.join(project_root, "demo_training_analysis.png"), dpi=120,
+    plt.savefig(os.path.join(project_root, f"demo_training_analysis{suffix}.png"), dpi=120,
                 facecolor='white', edgecolor='none')
     print("Analysis saved.")
 
 if __name__ == "__main__":
-    run_demo()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--scout",      default=MODEL_SCOUT)
+    parser.add_argument("--commander",  default=MODEL_COMMANDER)
+    parser.add_argument("--episodes",   type=int, default=1)
+    parser.add_argument("--seed-start", type=int, default=EPISODE_SEED)
+    parser.add_argument("--ep-num",     type=int, default=30000,
+                        help="Curriculum episode number (30000 = full difficulty)")
+    parser.add_argument("--gif-all",    action="store_true",
+                        help="Uložit GIF pro všechny epizody (default: jen první)")
+    args = parser.parse_args()
+
+    # Přepis cestám z argumentu
+    MODEL_SCOUT     = args.scout
+    MODEL_COMMANDER = args.commander
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    scout_actor, commander_actor, _, _ = _load_models(device)
+
+    # Terrain (načte se jednou)
+    terrain_collections = None
+    if USE_OSM:
+        print("Loading OSM terrain...")
+        gdfs = _load_terrain_gdfs()
+        if gdfs:
+            water, buildings, forests = _classify_features(gdfs)
+            terrain_collections = _build_terrain_collections(water, buildings, forests)
+
+    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=GRID_SIZE,
+                       max_steps=MAX_STEPS, use_osm=USE_OSM, osm_lat=OSM_LAT,
+                       osm_lon=OSM_LON, osm_cache_dir=OSM_CACHE)
+
+    print(f"\nSpouštím {args.episodes} epizod, seed {args.seed_start}–"
+          f"{args.seed_start + args.episodes - 1}\n")
+
+    results = []
+    for i in range(args.episodes):
+        seed = args.seed_start + i
+        save_gif = (i == 0) or args.gif_all
+        gif_path = os.path.join(project_root, f"demo_seed{seed}.gif") if save_gif else None
+        m = run_episode(env, scout_actor, commander_actor, seed, args.ep_num,
+                        device, terrain_collections=terrain_collections,
+                        save_gif=save_gif, gif_path=gif_path)
+        results.append(m)
+        fw_icon  = "✓" if m["fw_survived"] else "✗"
+        s_icons  = " ".join("✓" if v else "✗" for v in m["scouts_survived"].values())
+        print(f"  [{i+1:2d}/{args.episodes}] seed={seed:3d} | "
+              f"S={s_icons} FW={fw_icon} | "
+              f"peak={m['peak_cells']:4d} end={m['end_cells']:4d} "
+              f"supp={m['supp_pct']:5.1f}% | "
+              f"R_cmdr={m['total_rf']:+.1f}")
+
+    env.sim.stop_simulation()
+
+    # Souhrnná tabulka
+    n = len(results)
+    print(f"\n{'='*70}")
+    print(f"  SOUHRN  ({n} epizod, seeds {args.seed_start}–{args.seed_start+n-1})")
+    print(f"{'='*70}")
+    fw_surv = sum(1 for r in results if r["fw_survived"])
+    all_s_surv = sum(1 for r in results if all(r["scouts_survived"].values()))
+    avg_supp = float(np.mean([r["supp_pct"] for r in results]))
+    avg_rf   = float(np.mean([r["total_rf"] for r in results]))
+    avg_peak = float(np.mean([r["peak_cells"] for r in results]))
+    print(f"  Přežil FW           : {fw_surv}/{n} ({fw_surv/n*100:.0f}%)")
+    print(f"  Přežili oba scouti : {all_s_surv}/{n} ({all_s_surv/n*100:.0f}%)")
+    print(f"  Prům. potlačení   : {avg_supp:.1f}%")
+    print(f"  Prům. peak buněk  : {avg_peak:.0f}")
+    print(f"  Prům. R_cmdr      : {avg_rf:+.1f}")

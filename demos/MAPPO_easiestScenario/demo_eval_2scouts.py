@@ -40,6 +40,41 @@ def _wrap_angle(a):
     return (a + np.pi) % (2 * np.pi) - np.pi
 
 
+def _inject_fire_compass(ss, scout_msg_dict, quad_names, fw_pos, norm_dist=1000.0):
+    """Fill indices 19-22 of FW self_state with fire compass from scout messages.
+
+    19-20: unit vector FW→fire-scout centroid  (compass_x, compass_y)
+    21   : normalised distance FW→centroid      (dist/1000, capped at 2.0)
+    22   : max fire intensity from any fire-reporting scout
+    Zeros when no scout reports intensity > 0.01.
+    """
+    fire_x_list, fire_y_list = [], []
+    max_intensity = 0.0
+    for q in quad_names:
+        msg = scout_msg_dict[q].squeeze(0)          # [MSG_DIM]
+        intensity = float(msg[2])
+        if intensity > 0.01:
+            fire_x_list.append(float(msg[0]) * norm_dist)
+            fire_y_list.append(float(msg[1]) * norm_dist)
+            max_intensity = max(max_intensity, intensity)
+    if fire_x_list:
+        cx = float(np.mean(fire_x_list))
+        cy = float(np.mean(fire_y_list))
+        dx, dy = cx - fw_pos[0], cy - fw_pos[1]
+        dist = float(np.hypot(dx, dy))
+        dist_norm = min(dist / norm_dist, 2.0)
+        if dist > 1.0:
+            compass_x, compass_y = dx / dist, dy / dist
+        else:
+            compass_x, compass_y = 0.0, 0.0
+    else:
+        compass_x, compass_y, dist_norm, max_intensity = 0.0, 0.0, 2.0, 0.0
+    ss[19] = compass_x
+    ss[20] = compass_y
+    ss[21] = dist_norm
+    ss[22] = max_intensity
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # DEFAULT KONFIGURACE  (musí odpovídat demo_both_training.py)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -220,6 +255,13 @@ def run_episode(env, scout_actor, cmdr_actor, seed, ep_num, device):
                     need_new_waypoint = True
 
                 if need_new_waypoint:
+                    # Inject fire compass (indices 19-22) from scout messages
+                    if drone is not None:
+                        _inject_fire_compass(
+                            obs[f_agent]["self_state"],
+                            {q: scout_msgs[q]["msg"] for q in quad_names},
+                            quad_names, drone.get_position())
+
                     s_st_f = torch.FloatTensor(obs[f_agent]["self_state"]).unsqueeze(0).to(device)
                     msgs_t = torch.stack(
                         [scout_msgs[q]["msg"] for q in quad_names], dim=1)      # [1, N, MSG_DIM]

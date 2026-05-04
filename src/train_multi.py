@@ -68,6 +68,41 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     from env_core import DroneFireEnv
     from models import ScoutActor, CommanderActor, PrivilegedCritic
 
+    def _inject_fire_compass(ss, scout_msg_tensors, quad_agents, fw_pos,
+                             norm_dist=1000.0):
+        """Fill indices 19-22 of FW self_state with fire compass from scout msgs.
+
+        19-20: unit vector FW→fire-scout centroid (compass_x, compass_y)
+        21   : normalised distance FW→centroid  (dist/1000, capped at 2.0)
+        22   : max fire intensity from any fire-reporting scout
+        Zeros when no scout reports intensity > 0.01.
+        """
+        fire_x_list, fire_y_list = [], []
+        max_intensity = 0.0
+        for q in quad_agents:
+            msg = scout_msg_tensors[q].squeeze(0)   # [msg_dim]
+            intensity = float(msg[2])
+            if intensity > 0.01:
+                fire_x_list.append(float(msg[0]) * norm_dist)
+                fire_y_list.append(float(msg[1]) * norm_dist)
+                max_intensity = max(max_intensity, intensity)
+        if fire_x_list:
+            cx = float(np.mean(fire_x_list))
+            cy = float(np.mean(fire_y_list))
+            dx, dy = cx - fw_pos[0], cy - fw_pos[1]
+            dist = float(np.hypot(dx, dy))
+            dist_norm = min(dist / norm_dist, 2.0)
+            if dist > 1.0:
+                compass_x, compass_y = dx / dist, dy / dist
+            else:
+                compass_x, compass_y = 0.0, 0.0
+        else:
+            compass_x, compass_y, dist_norm, max_intensity = 0.0, 0.0, 2.0, 0.0
+        ss[19] = compass_x
+        ss[20] = compass_y
+        ss[21] = dist_norm
+        ss[22] = max_intensity
+
     max_steps = config['max_steps']
     waypoint_steps = config['waypoint_steps']
     waypoint_range = config['waypoint_range']
@@ -104,7 +139,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
     # Critics (privileged — see global state)
     scout_priv_dim = config['scout_self_dim'] + 6   # 16 + 6 = 22
-    cmdr_priv_dim = config['fixed_self_dim'] + 6    # 19 + 6 = 25
+    cmdr_priv_dim = config['fixed_self_dim'] + 6    # 23 + 6 = 29
     local_critic_scout = PrivilegedCritic(scout_priv_dim, hidden_dim=hidden_dim_scout)
     local_critic_scout.load_state_dict(critic_scout_w)
     local_critic_scout.eval()
@@ -133,6 +168,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     scout_h0_list = []
     cmdr_h0_list = []
     all_rewards = []
+    all_cmdr_rewards = []
     all_scout_lifespans = []
     all_cmdr_lifespans = []
     all_deaths = []
@@ -287,6 +323,13 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
                     # Forward pass
                     with torch.no_grad():
+                        # Inject fire compass (indices 19-22) from scout messages
+                        if f_agent in local_env.sim.drones:
+                            _inject_fire_compass(
+                                obs[f_agent]["self_state"],
+                                scout_msg_tensors, quad_agents,
+                                local_env.sim.drones[f_agent].get_position())
+
                         s_st_f = torch.FloatTensor(
                             obs[f_agent]["self_state"]).unsqueeze(0)
 
@@ -340,27 +383,6 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     # Approach reward: navigovat k scoutům, kteří VIDÍ oheň.
                     # Centroid pouze přes scouty s intensity > 0 – nikoli všechny.
                     # Pozice scoutů čteme z jejich zpráv (msg[0]*1000, msg[1]*1000).
-                    fire_scout_positions = []
-                    for i in range(len(msgs_for_cmdr)):
-                        msg_vec = msgs_for_cmdr[i].squeeze(0)
-                        if float(msg_vec[2]) > 0.01:   # scout vidí oheň
-                            sx = float(msg_vec[0]) * 1000.0
-                            sy = float(msg_vec[1]) * 1000.0
-                            fire_scout_positions.append((sx, sy))
-                    if fire_scout_positions and drone is not None:
-                        sc_cx = np.mean([p[0] for p in fire_scout_positions])
-                        sc_cy = np.mean([p[1] for p in fire_scout_positions])
-                        prev_dist = np.hypot(cur_pos[0] - sc_cx, cur_pos[1] - sc_cy)
-                        new_dist  = np.hypot(target_x  - sc_cx, target_y  - sc_cy)
-                        approach_delta = prev_dist - new_dist
-                        # Norm: max reward +0.5 za 200m přiblížení (plný waypoint range)
-                        approach_reward = float(np.clip(
-                            approach_delta / waypoint_range * 0.5, -0.3, 0.5))
-                        # Přidej approach reward k PŘEDCHOZÍMU segmentu
-                        # (current segment se hned vynuluje níže)
-                        if cmdr_ep_data:
-                            cmdr_ep_data[-1]["reward"] += approach_reward
-
                     steps_in_segment = 0
                     wp_reached = False
                     segment_reward = 0.0
@@ -426,6 +448,26 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                 # Commander segment reward
                 r_cmdr = rewards.get(f_agent, 0.0) if f_agent else 0.0
                 segment_reward += r_cmdr
+
+                # Dense approach reward: per-step bonus/penalty za pohyb k/od scoutů s ohněm.
+                # Čteme poslední zprávy ze scout_msg_tensors (live, každý krok aktuální).
+                # Tím dáme criticovi hustý signál — namísto jednoho sparse bonusu/segmentu.
+                if cmdr_alive and f_agent and f_agent in local_env.sim.drones:
+                    fw_pos = local_env.sim.drones[f_agent].get_position()
+                    fire_scout_pos = []
+                    for q in quad_agents:
+                        if scout_alive[q] and q in scout_msg_tensors:
+                            mv = scout_msg_tensors[q].squeeze(0)
+                            if float(mv[2]) > 0.01:   # scout vidí oheň
+                                fire_scout_pos.append(
+                                    (float(mv[0]) * 1000.0, float(mv[1]) * 1000.0))
+                    if fire_scout_pos:
+                        sc_cx = np.mean([p[0] for p in fire_scout_pos])
+                        sc_cy = np.mean([p[1] for p in fire_scout_pos])
+                        dist = np.hypot(fw_pos[0] - sc_cx, fw_pos[1] - sc_cy)
+                        # Normalizovaný bonus: +0.05 vedle scoutu, 0 ve vzdálenosti 1200m
+                        dense_bonus = 0.05 * max(0.0, 1.0 - dist / 1200.0)
+                        segment_reward += dense_bonus
 
                 if f_agent and (terms.get(f_agent, False) or truncs.get(f_agent, False)):
                     cmdr_alive = False
@@ -586,6 +628,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         avg_scout_reward = sum(ep_reward_scout.values()) / max(1, N_QUADS)
         ep_reward_total = avg_scout_reward + ep_reward_cmdr
         all_rewards.append(ep_reward_total)
+        all_cmdr_rewards.append(ep_reward_cmdr)
 
         # Per-scout lifespans and deaths
         for q in quad_agents:
@@ -644,7 +687,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         "cmdr": torch.cat(cmdr_h0_list, dim=0) if cmdr_h0_list else None,
     }
 
-    return out_scout, out_cmdr, out_init_h, all_rewards, (all_scout_lifespans, all_cmdr_lifespans), all_deaths
+    return out_scout, out_cmdr, out_init_h, all_rewards, all_cmdr_rewards, (all_scout_lifespans, all_cmdr_lifespans), all_deaths
 
 
 # =============================================================================
@@ -701,7 +744,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     episodes_per_batch = num_workers * eps_per_worker
 
     lr_scout = 1e-5             # very low — fine-tuning pre-trained scout, prevent policy collapse
-    lr_cmdr = 1e-4              # sníženo z 5e-4 — commander PPO loss byl nestabilní
+    lr_cmdr = 2e-4              # zvýšeno z 1e-4 — critic loss ~1.0 ukazuje undertrained commander
     lr_critic = 5e-4
     hidden_dim_scout = 128
     hidden_dim_cmdr = 64
@@ -767,9 +810,9 @@ def train_multi(resume_scout="", resume_cmdr="",
             print(f"  Skipped (shape mismatch): {skipped}")
         print(f"  Loaded scout from {resume_scout}")
 
-        with torch.no_grad():
-            scout_actor.action_logstd.fill_(-0.5)
-            print("  [INFO] Resetován action_logstd Scouta pro lepší exploraci.")
+        # with torch.no_grad():
+        #     scout_actor.action_logstd.fill_(-0.5)
+        #     print("  [INFO] Resetován action_logstd Scouta pro lepší exploraci.")
 
     cmdr_actor = CommanderActor(
         self_state_dim=fixed_self_dim,
@@ -874,6 +917,7 @@ def train_multi(resume_scout="", resume_cmdr="",
         ]}
         agg_h = {"scout": [], "cmdr": []}
         batch_rewards = []
+        batch_cmdr_rewards = []
         batch_deaths = []
         batch_scout_lifespans = []
         batch_cmdr_lifespans = []
@@ -898,12 +942,13 @@ def train_multi(resume_scout="", resume_cmdr="",
             failed = 0
             for fut in futures:
                 try:
-                    w_scout, w_cmdr, w_h, w_rew, (w_scout_life, w_cmdr_life), w_deaths = fut.result()
+                    w_scout, w_cmdr, w_h, w_rew, w_cmdr_rew, (w_scout_life, w_cmdr_life), w_deaths = fut.result()
                 except Exception as e:
                     failed += 1
                     print(f"   ⚠ Worker failed: {e}")
                     continue
                 batch_rewards.extend(w_rew)
+                batch_cmdr_rewards.extend(w_cmdr_rew)
                 batch_deaths.extend(w_deaths)
                 batch_scout_lifespans.extend(w_scout_life)
                 batch_cmdr_lifespans.extend(w_cmdr_life)
@@ -929,6 +974,7 @@ def train_multi(resume_scout="", resume_cmdr="",
 
         # Logging
         avg_batch = float(np.mean(batch_rewards))
+        avg_cmdr_r = float(np.mean(batch_cmdr_rewards)) if batch_cmdr_rewards else 0.0
         reward_per_batch.append(avg_batch)
         win = min(60, len(reward_history))
         avg_roll = float(np.mean(reward_history[-win:]))
@@ -961,7 +1007,7 @@ def train_multi(resume_scout="", resume_cmdr="",
 
         print(f"{datetime.datetime.now().strftime('%H:%M:%S')} | "
               f"Batch {batch_idx:04d} (Ep {episodes_played:05d}) | "
-              f"R: {avg_batch:+8.1f} ({avg_roll:+8.1f})  "
+              f"R: {avg_batch:+8.1f} ({avg_roll:+8.1f})  Cmdr_R: {avg_cmdr_r:+7.1f}  "
               f"Scout:{scout_life_pct:.0f}% Cmdr:{cmdr_life_pct:.0f}%  "
               f"scout:[{s_str}] cmdr:[{c_str}]  "
               f"{rollout_time:.1f}s")
@@ -1245,8 +1291,8 @@ def train_multi(resume_scout="", resume_cmdr="",
                 # Průměrujeme jen přes živé kroky
                 aux_loss = (aux_error.sum(dim=-1) * mb_alive).sum() / n_alive 
 
-                # Přičteme aux_loss k celkové ztrátě (zvýšeno na 0.5 — silnější supervised signal pro cross-attention encoder)
-                loss_c = policy_loss - entropy_cmdr * entropy_loss + 0.5 * aux_loss
+                # Fire compass (obs 19-22) už dává fire pos přímo — aux_loss je teď jen slabý doplněk
+                loss_c = policy_loss - entropy_cmdr * entropy_loss + 0.05 * aux_loss
 
                 if torch.isfinite(loss_c):
                     optimizer_cmdr.zero_grad()

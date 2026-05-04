@@ -84,14 +84,14 @@ FIXED = {
     "survival_base":     0.02,
     "rubber_band_k":     0.02,
 
-    # Water trigger bonus — FW teď dostane reward za pokus u aktivního scoutu
-    "water_trigger_dist":   150.0,
+    # Water trigger bonus — FW dostane reward za drop blízko ohně (ground-truth vzdálenost)
+    "water_trigger_dist":   200.0,     # radius [m] pro fire-proximity bonus (bylo 150)
     "water_trigger_alt":    150.0,
     "water_trigger_bonus":    1.5,
     "water_trigger_thresh":   0.0,
     "communication_range_m": 400.0,   # dosah cross-attention zpráv (použito v team reward)
-    "water_guidance_bonus": 0.2,       # max bonus za drop u scoutu (0 na hranici dosahu, 0.2 vedle scoutu)
-    "water_waste_penalty": 0.3,        # penalizace za drop zcela mimo dosah scoutů
+    "water_guidance_bonus": 1.0,       # max bonus za drop přímo nad ohněm (bylo 0.2 u scoutu)
+    "water_waste_penalty": 1.5,        # penalizace za drop mimo oheň (bylo 0.3)
 
     # Refill bonus
     "refill_state_bonus":  0.0,
