@@ -1,0 +1,9 @@
+  map=  800m  scouts=1  n=  5  surv=100.0%  disc=5/5  dwell= 79.3%  dw_mean= 79.3%  sep=   nanm  R/sc= +251.7
+  map=  800m  scouts=2  n=  5  surv=100.0%  disc=5/5  dwell= 88.8%  dw_mean= 80.0%  sep=    90m  R/sc= +172.1
+  map=  800m  scouts=3  n=  5  surv=100.0%  disc=5/5  dwell= 93.6%  dw_mean= 84.9%  sep=    61m  R/sc= +304.2
+  map= 1200m  scouts=1  n=  5  surv=100.0%  disc=5/5  dwell= 76.4%  dw_mean= 76.4%  sep=   nanm  R/sc= +245.5
+  map= 1200m  scouts=2  n=  5  surv=100.0%  disc=5/5  dwell= 88.7%  dw_mean= 76.0%  sep=    85m  R/sc= +271.7
+  map= 1200m  scouts=3  n=  5  surv=100.0%  disc=5/5  dwell= 91.9%  dw_mean= 73.1%  sep=    95m  R/sc= +161.7
+  map= 2000m  scouts=1  n=  5  surv=100.0%  disc=2/5  dwell= 31.6%  dw_mean= 31.6%  sep=   nanm  R/sc=  +44.8
+  map= 2000m  scouts=2  n=  5  surv= 90.0%  disc=4/5  dwell= 58.7%  dw_mean= 56.0%  sep=   287m  R/sc= -144.5
+  map= 2000m  scouts=3  n=  5  surv=100.0%  disc=5/5  dwell= 71.7%  dw_mean= 64.0%  sep=   142m  R/sc= +141.2

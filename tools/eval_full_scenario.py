@@ -48,36 +48,12 @@ LOCATIONS = [
 MAP_SIZES = [800.0, 1200.0, 2000.0]   # metry
 
 HIDDEN_DIM_SCOUT = 128
-HIDDEN_DIM_CMDR  = 128
+HIDDEN_DIM_CMDR  = 64   # musí souhlasit s train_multi.py hidden_dim_cmdr
 WAYPOINT_STEPS   = 30     # FW dostane nový waypoint každých N kroků
 NORM_DIST        = 1000.0
 WATER_CAPACITY   = 200.0  # litrů (musí souhlasit s FixedWing)
 
 # ── Utility ──────────────────────────────────────────────────────────────────
-
-def _inject_fire_compass(ss: np.ndarray, scout_msgs: dict,
-                          quad_agents: list, fw_pos: np.ndarray) -> None:
-    """Vloží fire compass do indexů 19-22 FW self_state (in-place)."""
-    fire_x, fire_y, max_int = [], [], 0.0
-    for q in quad_agents:
-        msg = scout_msgs.get(q)
-        if msg is None:
-            continue
-        intensity = float(msg[2])
-        if intensity > 0.01:
-            fire_x.append(float(msg[0]) * NORM_DIST)
-            fire_y.append(float(msg[1]) * NORM_DIST)
-            max_int = max(max_int, intensity)
-    if fire_x:
-        cx, cy = float(np.mean(fire_x)), float(np.mean(fire_y))
-        dx, dy = cx - fw_pos[0], cy - fw_pos[1]
-        dist   = float(np.hypot(dx, dy))
-        dnorm  = min(dist / NORM_DIST, 2.0)
-        cx_u, cy_u = (dx / dist, dy / dist) if dist > 1.0 else (0.0, 0.0)
-    else:
-        cx_u, cy_u, dnorm, max_int = 0.0, 0.0, 2.0, 0.0
-    if len(ss) > 22:
-        ss[19], ss[20], ss[21], ss[22] = cx_u, cy_u, dnorm, max_int
 
 
 def _fire_stats(env) -> dict:
@@ -208,9 +184,6 @@ def run_episode(scout_actor, cmdr_actor, device,
             # Waypoint mode: nová akce jen každých WAYPOINT_STEPS kroků
             if wp_countdown[f] <= 0:
                 ss_f = obs[f]["self_state"].copy()
-                if f in env.sim.drones:
-                    fw_pos = env.sim.drones[f].get_position()
-                    _inject_fire_compass(ss_f, last_scout_msgs, quad_agents, fw_pos)
                 with torch.no_grad():
                     ss_t = torch.FloatTensor(ss_f).unsqueeze(0).to(device)
                     # Sestavíme tensor zpráv scoutů
@@ -386,10 +359,13 @@ COLS_PRINT = [
     ("disc",    "fire_discovered"),
     ("dwell%",  "scout_dwell_pct"),
     ("H2O[L]",  "fw_water_dropped_L"),
+    ("refills",  "fw_refills"),
     ("val%",    "fw_valve_open_pct"),
     ("brn%",    "burned_frac_pct"),
     ("extin",   "fire_extinguished"),
     ("sc_R",    "scout_avg_reward"),
+    ("fw_surv%","fw_surv_pct"),
+    ("fw_R",    "fw_avg_reward"),
 ]
 
 def print_table(rows):

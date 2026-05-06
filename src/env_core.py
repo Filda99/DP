@@ -1311,7 +1311,7 @@ class DroneFireEnv(ParallelEnv):
 
         reward = 0.0
 
-        low_water = water_lvl < 0.50   # tank pod 50 % → začni myslet na refill
+        low_water = water_lvl < 0.25   # tank pod 25 % → začni myslet na refill
 
         if low_water:
             # Gradient k refill zóně — škálovaný podle nedostatku vody.

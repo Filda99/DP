@@ -114,7 +114,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
     local_env = DroneFireEnv(
         num_quads=N_QUADS, num_fixed=config.get('N_FIXED', 1),
-        grid_size_m=config['grid_size_m'], max_steps=max_steps
+        grid_size_m=config['grid_size_m'], max_steps=max_steps,
+        n_fires_range=config.get('n_fires_range', (1, 1))
     )
     local_env.map_size_range = map_size_range
 
@@ -679,7 +680,8 @@ def train_multi(resume_scout="", resume_cmdr="",
     N_QUADS = 2                   # 2 scouts + 1 commander
     N_FIXED = 1
     grid_size_m = 1200.0          # výchozí mapa (přepsána map_size_range při každém epizodě)
-    map_size_range = None
+    map_size_range = (800.0, 2000.0)  # domain randomization — klíčové pro generalizaci na různé mapy
+    n_fires_range = (1, 2)         # 1–2 ohně per epizoda — 2 scouti krytí různé ohně
     num_episodes = 30_000
     max_steps = 1000              # delší epizody — scouts i FW mají čas doletět
     steps_range = None            # fixní délka — proměnná délka rozbíjela commander buffer
@@ -733,7 +735,7 @@ def train_multi(resume_scout="", resume_cmdr="",
         'N_QUADS': N_QUADS, 'N_FIXED': N_FIXED,
         'grid_size_m': grid_size_m,
         'map_size_range': map_size_range,
-        'max_steps': max_steps,
+        'n_fires_range': n_fires_range,
         'steps_range': steps_range,
         'waypoint_steps': waypoint_steps,
         'waypoint_range': waypoint_range,

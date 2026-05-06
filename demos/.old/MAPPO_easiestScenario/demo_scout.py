@@ -185,28 +185,36 @@ def _render_frame(step, fire_map, b, n_quads,
     extent = [-b, b, -b, b]
     fire_masked = np.ma.masked_where(fire_map < 0.01, fire_map)
     ax_map.imshow(fire_masked, extent=extent, origin='lower',
-                  cmap='YlOrRd', vmin=0, vmax=1.0, alpha=0.78, zorder=4)
-
     for qi in range(n_quads):
         clr = scout_colors[qi]
         mk  = scout_markers[qi]
         px, py = scout_paths[qi]
         if len(px) > 1:
-            ax_map.plot(px, py, color=clr, alpha=0.35, linewidth=1.2,
-                        linestyle=':', zorder=5)
+            # Full history: thin faded
+            ax_map.plot(px, py, color=clr, alpha=0.20, linewidth=0.9,
+                        linestyle='-', zorder=5)
+            # Recent 60 steps: thick solid trail
+            tail = 60
+            ax_map.plot(px[-tail:], py[-tail:], color=clr, alpha=0.90,
+                        linewidth=3.0, linestyle='-', zorder=6)
         if scout_alive[qi] and scout_positions[qi] is not None:
             pos = scout_positions[qi]
             fov = scout_fovs[qi]
             rect = plt.Rectangle((pos[0] - fov / 2, pos[1] - fov / 2), fov, fov,
-                                  fill=False, edgecolor=clr, linewidth=1.2,
-                                  alpha=0.75, zorder=6)
+                                  fill=False, edgecolor=clr, linewidth=2.0,
+                                  alpha=0.85, zorder=7)
             ax_map.add_patch(rect)
-            ax_map.scatter(pos[0], pos[1], c=clr, s=90, marker=mk,
-                           edgecolors='#333333', linewidths=0.6, zorder=7)
-            ax_map.annotate(f"S{qi}", (pos[0], pos[1]),
-                            textcoords="offset points", xytext=(4, 4),
-                            fontsize=6.5, color=clr, fontweight='bold', zorder=8)
-
+            # White halo for visibility on any background
+            ax_map.scatter(pos[0], pos[1], c='white', s=320, marker=mk,
+                           edgecolors=clr, linewidths=3.0, zorder=8)
+            ax_map.scatter(pos[0], pos[1], c=clr, s=160, marker=mk,
+                           edgecolors='#111111', linewidths=0.8, zorder=9)
+            ax_map.annotate(f' S{qi}', (pos[0], pos[1]),
+                            textcoords='offset points', xytext=(6, 6),
+                            fontsize=10, color=clr, fontweight='bold',
+                            bbox=dict(boxstyle='round,pad=0.2', fc='white',
+                                      ec=clr, alpha=0.80, linewidth=1.0),
+                            zorder=10)
     ax_map.set_xlim(-b, b); ax_map.set_ylim(-b, b)
     ax_map.set_aspect('equal')
     ax_map.set_facecolor(CLR_GRASS)
