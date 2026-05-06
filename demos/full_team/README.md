@@ -5,16 +5,6 @@ Visualisation demo for the **full heterogeneous team**: N quadcopter scouts +
 network and navigates toward fire exclusively through scout messages (cross-attention).
 Scouts are frozen (`scout_b0030.pt`); the commander is the component under training.
 
-## Why it exists
-
-Serves as a **visual sanity-check** after training runs — allows verification that:
-- The commander navigates toward fire correctly (do scout messages help?)
-- The commander refills its water tank (refill zone is on the opposite side of the map)
-- Drones survive 1 000 steps (boundary and altitude management)
-- The commander drops water near fire (water trigger working?)
-
-Also generates per-seed metrics for objective checkpoint comparison.
-
 ## Outputs
 
 | File | Description |
@@ -34,25 +24,24 @@ Also generates per-seed metrics for objective checkpoint comparison.
 ## Usage
 
 ```bash
-# From the project root:
-cd /homes/eva/xj/xjahnf00/tmp/DP
+cd ~/tmp/DP
 
 # Default — auto-detect latest checkpoints
-python demos/MAPPO_easiestScenario/demo_both_training.py
+python demos/full_team/demo_both_training.py
 
 # 30 episodes from seed=200 with specific checkpoints
-python demos/MAPPO_easiestScenario/demo_both_training.py \
+python demos/full_team/demo_both_training.py \
     --scout     saved_models/multi/scout_b0030.pt \
     --commander saved_models/multi/cmdr_b0780.pt \
     --episodes  30 \
     --seed-start 200
 
 # GIF for every episode
-python demos/MAPPO_easiestScenario/demo_both_training.py \
+python demos/full_team/demo_both_training.py \
     --episodes 10 --seed-start 200 --gif-all
 
 # Fast run without GIF
-python demos/MAPPO_easiestScenario/demo_both_training.py \
+python demos/full_team/demo_both_training.py \
     --episodes 30 --seed-start 200 --no-gif
 ```
 
@@ -86,6 +75,6 @@ The compass is computed from `msg[2] > 0.01` (scout sees fire).
 ## Notes
 
 - The scout checkpoint is **frozen** — only the commander trains
-- The FW operates in **waypoint mode**: every 30 steps the NN outputs a new waypoint;
+- The FW operates in **waypoint mode**: every 50 steps the NN outputs a new waypoint;
   between waypoints a heading controller tracks the target
 - The refill zone is on the opposite side of the map from the fire (~1 000 m away)

@@ -542,15 +542,15 @@ def run_episode(env, scout_actor, seed, ep_num, n_quads, device,
         out = gif_path or os.path.join(project_root, f"scout_s{seed}_n{n_quads}.gif")
         imageio.mimsave(out, frames, fps=gif_fps, loop=0)
         print(f"  GIF → {out}")        # Auto-extract 3 presentation frames
-        if fixed_fire:
-            n_f = len(frames)
-            for lbl, pct in [('1_approach', 0.05),
-                              ('2_arrival',  0.25),
-                              ('3_hover',    0.8)]:
-                idx  = min(int(pct * n_f), n_f - 1)
-                base = out.replace('.gif', f'_{lbl}.pdf')
-                Image.fromarray(frames[idx]).save(base)
-                print(f"  Frame → {base}")
+        # if fixed_fire:
+        n_f = len(frames)
+        for lbl, pct in [('1_approach', 0.05),
+                            ('2_arrival',  0.25),
+                            ('3_hover',    0.8)]:
+            idx  = min(int(pct * n_f), n_f - 1)
+            base = out.replace('.gif', f'_{lbl}.pdf')
+            Image.fromarray(frames[idx]).save(base)
+            print(f"  Frame → {base}")
     if analysis_path:
         _save_analysis(hist, n_quads, scout_colors, scout_labels,
                        analysis_path, seed, ep_num)

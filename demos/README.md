@@ -1,53 +1,29 @@
 # demos/
 
-Collection of demo and evaluation scripts for the heterogeneous MAPPO team (Scout + Commander).
+Visualisation and evaluation scripts for the heterogeneous MAPPO team.  
+Each subdirectory contains its own `README.md` with full usage details.
 
-## Structure
+## Contents
 
-```
-demos/
-├── scout/              ← Quadcopter scouts only (no commander)
-│   ├── README.md
-│   └── demo_scout.py → (symlink to MAPPO_easiestScenario/)
-│
-├── full_team/          ← Full heterogeneous team: scouts + commander
-│   ├── README.md
-│   └── demo_both_training.py → (symlink)
-│
-├── evaluation/         ← Quantitative evaluation over N episodes
-│   ├── README.md
-│   └── demo_eval_2scouts.py → (symlink)
-│
-└── MAPPO_easiestScenario/   ← Source files (run directly from here)
-    ├── demo_scout.py
-    ├── demo_both_training.py
-    └── demo_eval_2scouts.py
-```
+| Directory | What it contains |
+|---|---|
+| [`scout/`](scout/README.md) | Scout-only demo — N quadcopters searching for fire, no commander |
+| [`full_team/`](full_team/README.md) | Full team demo — scouts + fixed-wing commander |
+| [`evaluation/`](evaluation/README.md) | Quantitative evaluation harness over many episodes |
 
-## Quick Start
+## Quick start
 
 ```bash
-cd /homes/eva/xj/xjahnf00/tmp/DP
+cd ~/tmp/DP
 
-# 1. Scout fire search — scouts look for 3 fires on the map
-python demos/MAPPO_easiestScenario/demo_scout.py \
-    --scouts 3 --fires 3 --seeds 200 201 202 203 204
+# Scout demo — 2 scouts, 5 episodes
+python demos/scout/demo_scout.py
 
-# 2. Visual demo of full team — scouts + commander
-python demos/MAPPO_easiestScenario/demo_both_training.py \
-    --episodes 5 --seed-start 200
+# Full team demo — scouts + commander
+python demos/full_team/demo_both_training.py
 
-# 3. Quantitative evaluation — 30 episodes, results table
-python demos/MAPPO_easiestScenario/demo_eval_2scouts.py \
-    --episodes 30 --seed-start 0
+# Quantitative evaluation — 30 episodes
+python demos/evaluation/demo_eval_2scouts.py --episodes 30
 ```
 
-## Checkpoints
-
-| Model | Path | Description |
-|---|---|---|
-| Scout (frozen) | `saved_models/multi/scout_b0030.pt` | Frozen scout trained in solo phase |
-| Scout (best) | `saved_models/multi/scout_best.pt` | Best multi-agent scout checkpoint |
-| Commander | `saved_models/multi/cmdr_b{N}.pt` | Commander at batch N |
-
-All scripts auto-detect the latest checkpoint if `--model` / `--commander` is not specified.
+All scripts auto-detect the latest checkpoint from `saved_models/`. Use `--model` / `--scout` / `--commander` to specify a path.
