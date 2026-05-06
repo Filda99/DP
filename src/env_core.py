@@ -153,7 +153,7 @@ class DroneFireEnv(ParallelEnv):
         })
 
         # --- 2. Commander (Fixed-wing) observation ---
-        # self_state vector (23 floats):
+        # self_state vector (19 floats):
         #   0-2  : normalised position  x, y, z
         #   3-5  : normalised velocity  vx, vy, vz
         #   6-9  : normalised distances to the four map edges
@@ -161,17 +161,9 @@ class DroneFireEnv(ParallelEnv):
         #   11-12: relative compass to the refill zone  (rel_x, rel_y)
         #   13-15: orientation angles  (roll, pitch, yaw) normalised by π
         #   16   : danger flag — 1.0 if within 300 m of any edge, else 0.0
-        #   17-18: compass to fire start position (kept as zeros — unused)
-        #   19-20: fire compass  (unit vector FW→fire-scout centroid, derived
-        #          from scout messages; zeros when no scout reports fire)
-        #   21   : normalised distance FW→fire-scout centroid  (dist/1000, cap 2)
-        #   22   : max fire intensity reported by any scout  (0 if none)
-        #
-        # NOTE: indices 19-22 are filled by the training / eval loop from
-        # scout NN messages, NOT by the env (env has no access to NN outputs).
-        # The env sets them to 0.0; callers must inject them before each
-        # CommanderActor forward pass.
-        self.fixed_self_dim = 23
+        #   17-18: compass to fire start position (always 0 — commander learns
+        #          fire location exclusively from scout messages via cross-attention)
+        self.fixed_self_dim = 19
 
         fixed_obs_space = gym.spaces.Dict({
             "self_state": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.fixed_self_dim,), dtype=np.float32)
@@ -419,8 +411,7 @@ class DroneFireEnv(ParallelEnv):
             rel_base_x, rel_base_y,                                           # 11-12: compass to refill zone
             norm_rpy[0], norm_rpy[1], norm_rpy[2],                            # 13-15: roll, pitch, yaw
             danger_flag,                                                      # 16   : proximity alert
-            fire_dir_x, fire_dir_y,                                           # 17-18: unused (always 0)
-            0.0, 0.0, 2.0, 0.0,                                               # 19-22: fire compass placeholder
+            fire_dir_x, fire_dir_y,                                           # 17-18: always 0 — FW learns from cross-attention
         ], dtype=np.float32)
 
         return {"self_state": self_state}

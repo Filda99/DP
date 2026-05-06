@@ -68,41 +68,6 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     from env_core import DroneFireEnv
     from models import ScoutActor, CommanderActor, PrivilegedCritic
 
-    def _inject_fire_compass(ss, scout_msg_tensors, quad_agents, fw_pos,
-                             norm_dist=1000.0):
-        """Fill indices 19-22 of FW self_state with fire compass from scout msgs.
-
-        19-20: unit vector FW→fire-scout centroid (compass_x, compass_y)
-        21   : normalised distance FW→centroid  (dist/1000, capped at 2.0)
-        22   : max fire intensity from any fire-reporting scout
-        Zeros when no scout reports intensity > 0.01.
-        """
-        fire_x_list, fire_y_list = [], []
-        max_intensity = 0.0
-        for q in quad_agents:
-            msg = scout_msg_tensors[q].squeeze(0)   # [msg_dim]
-            intensity = float(msg[2])
-            if intensity > 0.01:
-                fire_x_list.append(float(msg[0]) * norm_dist)
-                fire_y_list.append(float(msg[1]) * norm_dist)
-                max_intensity = max(max_intensity, intensity)
-        if fire_x_list:
-            cx = float(np.mean(fire_x_list))
-            cy = float(np.mean(fire_y_list))
-            dx, dy = cx - fw_pos[0], cy - fw_pos[1]
-            dist = float(np.hypot(dx, dy))
-            dist_norm = min(dist / norm_dist, 2.0)
-            if dist > 1.0:
-                compass_x, compass_y = dx / dist, dy / dist
-            else:
-                compass_x, compass_y = 0.0, 0.0
-        else:
-            compass_x, compass_y, dist_norm, max_intensity = 0.0, 0.0, 2.0, 0.0
-        ss[19] = compass_x
-        ss[20] = compass_y
-        ss[21] = dist_norm
-        ss[22] = max_intensity
-
     max_steps = config['max_steps']
     waypoint_steps = config['waypoint_steps']
     waypoint_range = config['waypoint_range']
@@ -139,7 +104,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
     # Critics (privileged — see global state)
     scout_priv_dim = config['scout_self_dim'] + 6   # 16 + 6 = 22
-    cmdr_priv_dim = config['fixed_self_dim'] + 6    # 23 + 6 = 29
+    cmdr_priv_dim = config['fixed_self_dim'] + 6    # 19 + 6 = 25
     local_critic_scout = PrivilegedCritic(scout_priv_dim, hidden_dim=hidden_dim_scout)
     local_critic_scout.load_state_dict(critic_scout_w)
     local_critic_scout.eval()
@@ -323,13 +288,6 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
                     # Forward pass
                     with torch.no_grad():
-                        # Inject fire compass (indices 19-22) from scout messages
-                        if f_agent in local_env.sim.drones:
-                            _inject_fire_compass(
-                                obs[f_agent]["self_state"],
-                                scout_msg_tensors, quad_agents,
-                                local_env.sim.drones[f_agent].get_position())
-
                         s_st_f = torch.FloatTensor(
                             obs[f_agent]["self_state"]).unsqueeze(0)
 
@@ -721,19 +679,19 @@ def train_multi(resume_scout="", resume_cmdr="",
     N_QUADS = 2                   # 2 scouts + 1 commander
     N_FIXED = 1
     grid_size_m = 1200.0          # výchozí mapa (přepsána map_size_range při každém epizodě)
-    map_size_range = (800.0, 2000.0)  # domain randomization — klíčové pro generalizaci na různé mapy
+    map_size_range = None
     num_episodes = 30_000
     max_steps = 1000              # delší epizody — scouts i FW mají čas doletět
     steps_range = None            # fixní délka — proměnná délka rozbíjela commander buffer
     bptt_chunk = 128              # GRU backprop limit per chunk
     waypoint_steps = 30
-    waypoint_range = 300.0        # zvýšeno z 200 — větší dosah pro větší mapy (2000m)
+    waypoint_range = 200.0        # waypoint dosah v metrech (fixní)
     num_decisions_cmdr = max_steps // waypoint_steps  # 33 (odpovídá max_steps=1000)
 
-    # Scout freeze: scouti jsou natrénovaní, ale odmrazujeme pro jemnou adaptaci
-    # na různé velikosti map (domain randomization). Velmi nízké lr_scout zabrání
-    # kolapsu naučené politiky.
-    scout_freeze_batches = 0      # scouti NEFREEZNUTI — jemné doladění s různými mapami
+    # Scout freeze: scouti jsou hotovi. Odmrazení při domain randomization způsobilo
+    # ground_crash kolaps (boundary gradient na 800m mapách destabilizoval politiku).
+    # Scouty zmrazujeme — commander se učí sám.
+    scout_freeze_batches = 0  # permanent freeze — scouts are frozen
 
     gamma = 0.99
     gamma_cmdr = 0.95          # shorter horizon for commander decisions
@@ -744,8 +702,8 @@ def train_multi(resume_scout="", resume_cmdr="",
     eps_per_worker = 2
     episodes_per_batch = num_workers * eps_per_worker
 
-    lr_scout = 3e-6             # velmi nízký — jen adaptace na různé mapy, zabrání přeučení
-    lr_cmdr = 3e-4              # mírně zvýšeno — commander se stále učí efektivně hasit
+    lr_scout = 1e-5             # very low — fine-tuning pre-trained scout, prevent policy collapse
+    lr_cmdr = 1e-4              # stabilní pro commander PPO
     lr_critic = 5e-4
     hidden_dim_scout = 128
     hidden_dim_cmdr = 64
@@ -1292,8 +1250,8 @@ def train_multi(resume_scout="", resume_cmdr="",
                 # Průměrujeme jen přes živé kroky
                 aux_loss = (aux_error.sum(dim=-1) * mb_alive).sum() / n_alive 
 
-                # Fire compass (obs 19-22) už dává fire pos přímo — aux_loss je teď jen slabý doplněk
-                loss_c = policy_loss - entropy_cmdr * entropy_loss + 0.05 * aux_loss
+                # aux_loss je jediný supervised signal pro fire position — nesnižovat
+                loss_c = policy_loss - entropy_cmdr * entropy_loss + 0.3 * aux_loss
 
                 if torch.isfinite(loss_c):
                     optimizer_cmdr.zero_grad()

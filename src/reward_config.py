@@ -97,7 +97,7 @@ FIXED = {
     "water_trigger_thresh":   0.0,
     "communication_range_m": 400.0,   # dosah cross-attention zpráv (použito v team reward)
     "water_guidance_bonus": 1.0,       # max bonus za drop přímo nad ohněm (bylo 0.2 u scoutu)
-    "water_waste_penalty": 1.5,        # penalizace za drop mimo oheň (bylo 0.3)
+    "water_waste_penalty": 0.5,        # penalizace za drop mimo oheň (bylo 0.3, zkusili 1.5 — příliš agresivní)
 
     # Refill bonus
     "refill_state_bonus":  0.0,
