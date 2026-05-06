@@ -1,0 +1,2 @@
+seed,n_quads,peak_cells,end_cells,fire_discovered,coverage_pct,avg_fire_seen,scouts_survived,total_r,avg_r_per_scout,grid_size
+42,1,483,483,True,90.2,179.712,1,889.26,889.26,1200.0
