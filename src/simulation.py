@@ -262,7 +262,7 @@ class Simulation:
             # Water effectiveness decreases with height
             effectiveness = max(0.0, 1.0 - (altitude / 200.0))
             # 240 RL steps until the water is completely off
-            water_amount = drone.consume_water(5.0 * dt) * effectiveness
+            water_amount = drone.consume_water(100.0 * dt) * effectiveness
             
             if water_amount <= 0: continue
 

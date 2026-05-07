@@ -737,12 +737,27 @@ class DroneFireEnv(ParallelEnv):
         _quad_idx = 0  # counter for assigning fires to scouts
         for agent in self.agents:
             if "fixed" in agent:
-                # Normální spawn pro fixed-wing
-                fw_spawn_radius = random.uniform(0.0, self.map_bounds * 0.30)
-                spawn_angle  = random.uniform(0, 2 * np.pi)
-                fw_start_x   = float(fw_spawn_radius * np.cos(spawn_angle))
-                fw_start_y   = float(fw_spawn_radius * np.sin(spawn_angle))
-                fw_yaw       = random.uniform(-np.pi, np.pi)
+                # Curriculum FW spawn: early episodes → start near refill zone so
+                # agent immediately experiences the refill reward signal.
+                # After ep 5000 the spawn gradually widens to the full random range.
+                FW_REFILL_CURRICULUM_END = 5000
+                rz = self.sim.environment.refill_zone
+                if ep < FW_REFILL_CURRICULUM_END and rz is not None:
+                    # t=0 → spawn within 50 m of refill zone
+                    # t=1 → spawn within full random range (map_bounds * 0.30)
+                    t_fw = min(1.0, ep / FW_REFILL_CURRICULUM_END)
+                    max_offset = 50.0 + (self.map_bounds * 0.30 - 50.0) * t_fw
+                    rz_pos = rz['position']
+                    fw_start_x = float(np.clip(rz_pos[0] + random.uniform(-max_offset, max_offset),
+                                               -self.map_bounds * 0.85, self.map_bounds * 0.85))
+                    fw_start_y = float(np.clip(rz_pos[1] + random.uniform(-max_offset, max_offset),
+                                               -self.map_bounds * 0.85, self.map_bounds * 0.85))
+                else:
+                    fw_spawn_radius = random.uniform(0.0, self.map_bounds * 0.30)
+                    spawn_angle  = random.uniform(0, 2 * np.pi)
+                    fw_start_x   = float(fw_spawn_radius * np.cos(spawn_angle))
+                    fw_start_y   = float(fw_spawn_radius * np.sin(spawn_angle))
+                fw_yaw = random.uniform(-np.pi, np.pi)
 
                 self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 100.0], water_capacity=200.0, yaw=fw_yaw)
 
@@ -807,6 +822,9 @@ class DroneFireEnv(ParallelEnv):
         # Track FW water level for refill-success detection
         self._prev_fw_water = {}
 
+        # Track FW previous distance to refill zone (for potential-based shaping)
+        self._prev_refill_dist = {}
+
         # Fire abandonment tracking: previous per-step mean fire intensity
         # seen by each scout's local camera (used in _get_quad_reward).
         self._prev_fire_seen = {q: 0.0 for q in self.quad_agents}
@@ -814,8 +832,16 @@ class DroneFireEnv(ParallelEnv):
             if a in self.sim.drones:
                 d = self.sim.drones[a]
                 self._prev_fw_water[a] = d.current_water / d.water_capacity if d.water_capacity > 0 else 1.0
+                # Init refill dist tracking for potential-based shaping
+                if self.sim.environment.refill_zone is not None:
+                    rp = self.sim.environment.refill_zone['position']
+                    dp = d.get_position()
+                    self._prev_refill_dist[a] = float(np.hypot(dp[0] - rp[0], dp[1] - rp[1]))
+                else:
+                    self._prev_refill_dist[a] = 0.0
             else:
                 self._prev_fw_water[a] = 1.0
+                self._prev_refill_dist[a] = 0.0
 
         # --- 6. Build and return initial observations (PettingZoo requirement) ---
         observations = {agent: self._get_obs(agent) for agent in self.agents}
@@ -1038,8 +1064,10 @@ class DroneFireEnv(ParallelEnv):
                 #   2. Blízko scoutu (< comm_range)  → nula (neutrální)
                 #   3. Daleko od všech scoutů        → penalizace
                 # Tím agent ví: "u scoutu je bezpečné zkusit", ale bonus dostane jen za přesný zásah.
+                # DŮLEŽITÉ: bonus jen pokud má dron skutečně vodu — jinak se naučí
+                # otevírat ventil u ohně s prázdným tankem pro falešný reward signal.
                 fw_drone = self.sim.drones.get(f_agent)
-                if fw_drone is not None:
+                if fw_drone is not None and fw_drone.current_water > 0:
                     fw_pos = fw_drone.get_position()
                     dist_to_fire = np.hypot(fw_pos[0] - self.fire_x, fw_pos[1] - self.fire_y)
                     fire_radius = FIXED["water_trigger_dist"]    # 200 m — fire proximity zone
@@ -1302,7 +1330,7 @@ class DroneFireEnv(ParallelEnv):
         létat k ohni sám bez nich.
 
         Odměny zde:
-          - Refill gradient když je prázdný tank (refill pos je v obs FW, takže OK)
+          - Refill potential shaping: odměna za POHYB k refill zóně (ne za bytí blízko)
           - Extinguish bonus přichází ze step() přes drone_extinguish_stats
         """
         drone = self.sim.drones[agent]
@@ -1311,18 +1339,21 @@ class DroneFireEnv(ParallelEnv):
 
         reward = 0.0
 
-        low_water = water_lvl < 0.25   # tank pod 25 % → začni myslet na refill
+        low_water = water_lvl < 0.5   # tank pod 50 % → začni navigovat k refill zóně
 
-        if low_water:
-            # Gradient k refill zóně — škálovaný podle nedostatku vody.
-            # Rádius 2000 m pokrývá celou mapu (fire je na opačné straně ~1200m).
+        if low_water and self.sim.environment.refill_zone is not None:
+            # Potential-based shaping: odměna za přiblížení k refill zóně.
+            # reward = k * (prev_dist - curr_dist) → kladné = přiblížení, záporné = odlet.
+            # Toto NEODMĚŇUJE bytí daleko s prázdným tankem — odměňuje jen pohyb správným směrem.
             water_deficit = 1.0 - water_lvl   # 0 = plný, 1 = prázdný
-            if self.sim.environment.refill_zone is not None:
-                rz = self.sim.environment.refill_zone['position']
-                dist_to_refill = np.hypot(pos[0] - rz[0], pos[1] - rz[1])
-                # Graded bonus: max 2.0 přímo u zóny, cítit i 2000 m daleko
-                proximity = max(0.0, 1.0 - dist_to_refill / 2000.0)
-                reward += water_deficit * 2.0 * proximity
+            rz = self.sim.environment.refill_zone['position']
+            dist_to_refill = np.hypot(pos[0] - rz[0], pos[1] - rz[1])
+            prev_dist = self._prev_refill_dist.get(agent, dist_to_refill)
+            delta = prev_dist - dist_to_refill   # kladné = přiblížení
+            # Škálujeme podle water_deficit: plný tank = žádný pull, prázdný = plný pull
+            # k=0.05 → při 10 m/s přiblížení: 10 * 0.05 = 0.5/step reward (citelné)
+            reward += delta * 0.05 * water_deficit
+            self._prev_refill_dist[agent] = dist_to_refill
 
         # Úspěšný refill — jedorázový bonus za doplnění tanku
         prev_water = self._prev_fw_water.get(agent, water_lvl)
@@ -1332,8 +1363,8 @@ class DroneFireEnv(ParallelEnv):
         self._prev_fw_water[agent] = water_lvl
 
         if water_lvl < 0.05:
-            # Prázdný tank → urgentní penalizace (nezávisle na ohni)
-            reward -= 1.0   # čas je drahý, prázdný tank = plýtvání
+            # Prázdný tank → penalizace (nezávisle na ohni)
+            reward -= 0.5   # mírná penalizace — gradient k refill zóně dělá hlavní práci
 
         return reward
 

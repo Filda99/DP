@@ -153,6 +153,16 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
         obs, _ = local_env.reset(epizode_number=batch_start_idx + ep_off)
 
+        # Curriculum: always start with empty water tank so commander MUST refill
+        # before it can extinguish. This creates non-zero advantages for refill
+        # trajectories (extinguish bonus is zero until tank is filled).
+        for a in local_env.fixed_agents:
+            if a in local_env.sim.drones:
+                d = local_env.sim.drones[a]
+                if d.water_capacity > 0:
+                    d.current_water = 0.0
+                    local_env._prev_fw_water[a] = 0.0
+
         # Recalculate after reset (map size may have changed)
         map_half = local_env.map_bounds
         safe_limit = max(50.0, map_half * 0.7)
@@ -654,7 +664,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 # =============================================================================
 
 def train_multi(resume_scout="", resume_cmdr="",
-                log_episodes=False, log_dir="/tmp/ep_logs", episodes_played=0):
+                log_episodes=False, log_dir="/tmp/ep_logs", episodes_played=0,
+                reset_cmdr_critic=False):
     print("=" * 70)
     print("  Multi-Agent Training: Scout (frame-by-frame) + Commander (waypoint)")
     print("  Commander: CommanderActor (with scout messages)")
@@ -734,6 +745,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     worker_config = {
         'N_QUADS': N_QUADS, 'N_FIXED': N_FIXED,
         'grid_size_m': grid_size_m,
+        'max_steps': max_steps,
         'map_size_range': map_size_range,
         'n_fires_range': n_fires_range,
         'steps_range': steps_range,
@@ -824,6 +836,16 @@ def train_multi(resume_scout="", resume_cmdr="",
 
     optimizer_critic_scout = optim.Adam(critic_scout.parameters(), lr=lr_critic)
     optimizer_critic_cmdr = optim.Adam(critic_cmdr.parameters(), lr=lr_critic)
+
+    if reset_cmdr_critic:
+        # Re-initialise CmdrCritic weights when reward landscape changed significantly.
+        # The old critic predicts values from a completely different reward scale,
+        # causing all advantages to be strongly negative → PPO policy collapse.
+        def _reinit(m):
+            if hasattr(m, 'reset_parameters'):
+                m.reset_parameters()
+        critic_cmdr.apply(_reinit)
+        print("  [INFO] CmdrCritic weights re-initialised (--reset-cmdr-critic).")
 
     # ── Tracking (all per-batch, not per-episode) ──────────────────────
     reward_history = []           # per-episode (for rolling avg)
@@ -1474,6 +1496,8 @@ if __name__ == "__main__":
         description="Multi-agent training: Scout + Commander")
     parser.add_argument("--resume-scout", type=str, default="")
     parser.add_argument("--resume-cmdr", type=str, default="")
+    parser.add_argument("--reset-cmdr-critic", action="store_true",
+                        help="Re-initialise CmdrCritic weights (use after reward landscape changes)")
     parser.add_argument("--log-episodes", action="store_true",
                         help="Save trajectory logs for replay (1 ep/worker/batch)")
     parser.add_argument("--log-dir", type=str, default="/tmp/ep_logs",
@@ -1486,5 +1510,6 @@ if __name__ == "__main__":
         resume_cmdr=args.resume_cmdr,
         log_episodes=args.log_episodes,
         log_dir=args.log_dir,
-        episodes_played = args.start_ep
+        episodes_played=args.start_ep,
+        reset_cmdr_critic=args.reset_cmdr_critic
     )
