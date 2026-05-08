@@ -135,6 +135,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     cmdr_h0_list = []
     all_rewards = []
     all_cmdr_rewards = []
+    all_refill_hits = []
     all_scout_lifespans = []
     all_cmdr_lifespans = []
     all_deaths = []
@@ -148,20 +149,30 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     ep_max_steps = config.get('ep_max_steps', max_steps)
     N_FIXED = config.get('N_FIXED', 1)
 
+    # Per-episode worker state (potential-based distance tracking etc.)
+    worker_state = {}
+
     for ep_off in range(num_eps):
+        worker_state.clear()   # reset per episode
         local_env.max_steps = ep_max_steps
 
         obs, _ = local_env.reset(epizode_number=batch_start_idx + ep_off)
 
-        # Curriculum: always start with empty water tank so commander MUST refill
-        # before it can extinguish. This creates non-zero advantages for refill
-        # trajectories (extinguish bonus is zero until tank is filled).
+        # Water init curriculum:
+        #   ep 0–9000  (~300 batchů): vždy prázdný tank → commander MUSÍ refillovat
+        #              → zaručí pozitivní advantage pro refill trajektorie
+        #   ep 9000+:  náhodná hladina 0–max → generalizace celého cyklu
+        ep_now = batch_start_idx + ep_off
+        WATER_CURRICULUM_END = 99999  # vždy prázdný tank dokud se naučí refill cyklus
         for a in local_env.fixed_agents:
             if a in local_env.sim.drones:
                 d = local_env.sim.drones[a]
                 if d.water_capacity > 0:
-                    d.current_water = 0.0
-                    local_env._prev_fw_water[a] = 0.0
+                    if ep_now < WATER_CURRICULUM_END:
+                        d.current_water = 0.0
+                    else:
+                        d.current_water = random.uniform(0.0, d.water_capacity)
+                    local_env._prev_fw_water[a] = d.current_water / d.water_capacity
 
         # Recalculate after reset (map size may have changed)
         map_half = local_env.map_bounds
@@ -418,25 +429,32 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                 r_cmdr = rewards.get(f_agent, 0.0) if f_agent else 0.0
                 segment_reward += r_cmdr
 
-                # Dense approach reward: per-step bonus/penalty za pohyb k/od scoutů s ohněm.
-                # Čteme poslední zprávy ze scout_msg_tensors (live, každý krok aktuální).
-                # Tím dáme criticovi hustý signál — namísto jednoho sparse bonusu/segmentu.
+                # Approach bonus: potential-based gradient k nejbližšímu živému scoutoví.
+                # Scouts jsou natrénovaní a drží se u ohně → letět ke scoutoví = letět k ohni.
+                # Podmínka: tank ≥ 30 % (jinak ho táhne refill gradient v env_core).
+                # Používáme přímé pozice dronů — žádné message thresholdy, žádné souřadnicové chyby.
+                # k=0.10 → při 10 m/s přiblížení: +1.0/step (stejná váha jako refill)
                 if cmdr_alive and f_agent and f_agent in local_env.sim.drones:
-                    fw_pos = local_env.sim.drones[f_agent].get_position()
-                    fire_scout_pos = []
-                    for q in quad_agents:
-                        if scout_alive[q] and q in scout_msg_tensors:
-                            mv = scout_msg_tensors[q].squeeze(0)
-                            if float(mv[2]) > 0.01:   # scout vidí oheň
-                                fire_scout_pos.append(
-                                    (float(mv[0]) * 1000.0, float(mv[1]) * 1000.0))
-                    if fire_scout_pos:
-                        sc_cx = np.mean([p[0] for p in fire_scout_pos])
-                        sc_cy = np.mean([p[1] for p in fire_scout_pos])
-                        dist = np.hypot(fw_pos[0] - sc_cx, fw_pos[1] - sc_cy)
-                        # Normalizovaný bonus: +0.05 vedle scoutu, 0 ve vzdálenosti 1200m
-                        dense_bonus = 0.05 * max(0.0, 1.0 - dist / 1200.0)
-                        segment_reward += dense_bonus
+                    fw_drone = local_env.sim.drones[f_agent]
+                    fw_pos = fw_drone.get_position()
+                    has_water = (fw_drone.water_capacity > 0 and
+                                 fw_drone.current_water / fw_drone.water_capacity >= 0.30)
+                    live_scouts = [q for q in quad_agents
+                                   if scout_alive[q] and q in local_env.sim.drones]
+                    if has_water and live_scouts:
+                        # Vzdálenost k nejbližšímu živému scoutoví
+                        dist = min(
+                            np.hypot(fw_pos[0] - local_env.sim.drones[q].get_position()[0],
+                                     fw_pos[1] - local_env.sim.drones[q].get_position()[1])
+                            for q in live_scouts
+                        )
+                        prev_dist_key = f"_prev_scout_dist_{f_agent}"
+                        prev_dist = worker_state.get(prev_dist_key, dist)
+                        delta = prev_dist - dist   # kladné = přiblížení
+                        segment_reward += delta * 0.10
+                        worker_state[prev_dist_key] = dist
+                    elif not live_scouts:
+                        worker_state.pop(f"_prev_scout_dist_{f_agent}", None)
 
                 if f_agent and (terms.get(f_agent, False) or truncs.get(f_agent, False)):
                     cmdr_alive = False
@@ -599,6 +617,13 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         all_rewards.append(ep_reward_total)
         all_cmdr_rewards.append(ep_reward_cmdr)
 
+        # Refill milestone counter — kolikrát commander dosáhl refill zóny s prázdnou nádrží
+        refill_hit = 0
+        for a in local_env.fixed_agents:
+            if local_env._refill_milestone_given.get(a, False):
+                refill_hit += 1
+        all_refill_hits.append(refill_hit)
+
         # Per-scout lifespans and deaths
         for q in quad_agents:
             all_scout_lifespans.append(scout_lifespan[q])
@@ -656,7 +681,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         "cmdr": torch.cat(cmdr_h0_list, dim=0) if cmdr_h0_list else None,
     }
 
-    return out_scout, out_cmdr, out_init_h, all_rewards, all_cmdr_rewards, (all_scout_lifespans, all_cmdr_lifespans), all_deaths
+    return out_scout, out_cmdr, out_init_h, all_rewards, all_cmdr_rewards, all_refill_hits, (all_scout_lifespans, all_cmdr_lifespans), all_deaths
 
 
 # =============================================================================
@@ -704,7 +729,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     # Scout freeze: scouti jsou hotovi. Odmrazení při domain randomization způsobilo
     # ground_crash kolaps (boundary gradient na 800m mapách destabilizoval politiku).
     # Scouty zmrazujeme — commander se učí sám.
-    scout_freeze_batches = 0  # permanent freeze — scouts are frozen
+    scout_freeze_batches = 9999  # permanent freeze — scouts are frozen
 
     gamma = 0.99
     gamma_cmdr = 0.95          # shorter horizon for commander decisions
@@ -723,7 +748,8 @@ def train_multi(resume_scout="", resume_cmdr="",
     scout_msg_dim = 5
 
     entropy_scout = 0.002       # sníženo z 0.01 — entropy term dominoval nad policy gradientem (entropy rostla na 3.95)
-    entropy_cmdr = 0.01         # prevent premature std collapse
+    entropy_cmdr = 0.01         # sníženo z 0.05: explorace proběhla, teď nechme policy konvergovat
+    critic_epochs_cmdr = 8      # více critic updateů než actor (4) → critic konverguje rychleji
 
     # ── Dims ─────────────────────────────────────────────────────────────
     temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED,
@@ -901,13 +927,25 @@ def train_multi(resume_scout="", resume_cmdr="",
         agg_h = {"scout": [], "cmdr": []}
         batch_rewards = []
         batch_cmdr_rewards = []
+        batch_refill_hits = []
         batch_deaths = []
         batch_scout_lifespans = []
         batch_cmdr_lifespans = []
 
-        # Pick episode length for this batch (same for all workers)
-        if steps_range is not None:
-            batch_ep_max = random.randint(steps_range[0] // 100, steps_range[1] // 100) * 100
+        # Pick episode length: curriculum zkracuje epizody v rané fázi tréninku.
+        # Kratší epizody = kratší temporal distance pro credit assignment.
+        # ep 0–9000:   300 kroků (1 refill cyklus)
+        # ep 9000–20000: lineárně roste na 1000
+        # ep 20000+:   plný max_steps
+        EP_SHORT_END = 9000
+        EP_FULL_END = 20000
+        ep_now_batch = episodes_played  # aktuální ep na začátku batche
+        if ep_now_batch < EP_SHORT_END:
+            batch_ep_max = 300
+        elif ep_now_batch < EP_FULL_END:
+            t_ep = (ep_now_batch - EP_SHORT_END) / (EP_FULL_END - EP_SHORT_END)
+            batch_ep_max = int(300 + (max_steps - 300) * t_ep)
+            batch_ep_max = (batch_ep_max // 100) * 100  # zaokrouhli na 100
         else:
             batch_ep_max = max_steps
         worker_config['ep_max_steps'] = batch_ep_max
@@ -925,7 +963,7 @@ def train_multi(resume_scout="", resume_cmdr="",
             failed = 0
             for fut in futures:
                 try:
-                    w_scout, w_cmdr, w_h, w_rew, w_cmdr_rew, (w_scout_life, w_cmdr_life), w_deaths = fut.result()
+                    w_scout, w_cmdr, w_h, w_rew, w_cmdr_rew, w_refill, (w_scout_life, w_cmdr_life), w_deaths = fut.result()
                 except Exception as e:
                     failed += 1
                     print(f"   ⚠ Worker failed: {e}")
@@ -958,6 +996,7 @@ def train_multi(resume_scout="", resume_cmdr="",
         # Logging
         avg_batch = float(np.mean(batch_rewards))
         avg_cmdr_r = float(np.mean(batch_cmdr_rewards)) if batch_cmdr_rewards else 0.0
+        refill_rate = int(sum(batch_refill_hits))  # celkem refill events v tomto batchi
         reward_per_batch.append(avg_batch)
         win = min(60, len(reward_history))
         avg_roll = float(np.mean(reward_history[-win:]))
@@ -992,7 +1031,7 @@ def train_multi(resume_scout="", resume_cmdr="",
               f"Batch {batch_idx:04d} (Ep {episodes_played:05d}) | "
               f"R: {avg_batch:+8.1f} ({avg_roll:+8.1f})  Cmdr_R: {avg_cmdr_r:+7.1f}  "
               f"Scout:{scout_life_pct:.0f}% Cmdr:{cmdr_life_pct:.0f}%  "
-              f"scout:[{s_str}] cmdr:[{c_str}]  "
+              f"scout:[{s_str}] cmdr:[{c_str}] refill={refill_rate}/{len(batch_refill_hits)}  "
               f"{rollout_time:.1f}s")
 
         # Save best
@@ -1227,7 +1266,7 @@ def train_multi(resume_scout="", resume_cmdr="",
 
         mb_size_c = max(1, eps_cmdr // num_minibatches)
 
-        for epoch in range(update_epochs):
+        for epoch in range(critic_epochs_cmdr):
             b_inds = np.random.permutation(eps_cmdr)
             for start in range(0, eps_cmdr, mb_size_c):
                 mb = b_inds[start:start + mb_size_c]

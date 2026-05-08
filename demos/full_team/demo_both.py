@@ -649,7 +649,7 @@ if __name__ == "__main__":
                         help="Spawn scouts this many metres from fire (default: env random)")
     parser.add_argument("--fw-dist",    type=float, default=None,
                         help="Spawn FW this many metres from fire (default: env random)")
-    parser.add_argument("--init-water",  type=float, default=None,
+    parser.add_argument("--init-water",  type=float, default=0.0,
                         help="Override FW initial water [L] (e.g. 0 = empty tank, default: full)")
     args = parser.parse_args()
 
