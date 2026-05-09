@@ -893,6 +893,9 @@ class DroneFireEnv(ParallelEnv):
         # Subgoal milestone: True once commander reached refill zone with low water this episode
         self._refill_milestone_given = {a: False for a in self.fixed_agents}
 
+        # Fire approach tracking: previous per-step distance to nearest scout (for FW)
+        self._fw_fire_approach = {}
+
         # Fire abandonment tracking: previous per-step mean fire intensity
         # seen by each scout's local camera (used in _get_quad_reward).
         self._prev_fire_seen = {q: 0.0 for q in self.quad_agents}
@@ -1152,7 +1155,9 @@ class DroneFireEnv(ParallelEnv):
                             default=float('inf')
                         )
                         if min_dist_to_scout < comm_range:
-                            pass  # Pásmo 2: u scoutu ale mimo oheň → neutrální (0)
+                            # Pásmo 2: u scoutu ale mimo oheň → malý bonus za pokus
+                            # Scouts jsou u ohně → drop blízko scouta je dobrý směr.
+                            rewards[f_agent] += 0.3
                         else:
                             # Pásmo 3: daleko od scoutů i ohně → plýtvání
                             waste_pen = getattr(self, 'waste_penalty_override', None)
@@ -1181,9 +1186,9 @@ class DroneFireEnv(ParallelEnv):
             current_burning = int(np.sum(self.sim.environment.fire_grid.B))
             delta_burned = max(0, current_burning - self._prev_burning_count)
             # V curriculum Phase 1+2 commander ještě neumí hasit → fire spread
-            # penalty je čistý šum, který sráží SNR advantagí. Zapneme až v Phase 3.
+            # penalty je čistý šum, který sráží SNR advantagí. Zapneme od Phase 3.
             curr_ph = getattr(self, 'curriculum_phase', None)
-            if delta_burned > 0 and curr_ph is None:
+            if delta_burned > 0 and (curr_ph is None or curr_ph >= 3):
                 spread_penalty = min(delta_burned * 0.05, 2.0)
                 for agent in rewards:
                     if "fixed" in agent:
@@ -1407,6 +1412,7 @@ class DroneFireEnv(ParallelEnv):
 
         Odměny zde:
           - Refill potential shaping: odměna za POHYB k refill zóně (ne za bytí blízko)
+          - Fire approach shaping: odměna za POHYB ke scoutům (proxy pro oheň)
           - Extinguish bonus přichází ze step() přes drone_extinguish_stats
         """
         drone = self.sim.drones[agent]
@@ -1416,6 +1422,27 @@ class DroneFireEnv(ParallelEnv):
         reward = 0.0
 
         low_water = water_lvl < 0.3   # tank pod 30 % → naviguj k refill zóně
+        has_water = not low_water      # tank ≥ 30 % → naviguj ke scoutům (proxy pro oheň)
+
+        # ── Fire approach: potential-based shaping k nejbližšímu scoutoví ──
+        # Scouts jsou natrénovaní a drží se u ohně → letět ke scoutoví ≈ letět k ohni.
+        # k=0.10 → při 10 m/s přiblížení: +1.0/step
+        # DŮLEŽITÉ: aktivní až od Phase 2 — v Phase 1 se commander učí JEN refill.
+        curr_ph = getattr(self, 'curriculum_phase', None)
+        approach_active = (curr_ph is None or curr_ph >= 2)
+        if has_water and approach_active:
+            live_quads = [q for q in self.quad_agents if q in self.sim.drones]
+            if live_quads:
+                dist_to_scout = min(
+                    np.hypot(pos[0] - self.sim.drones[q].get_position()[0],
+                             pos[1] - self.sim.drones[q].get_position()[1])
+                    for q in live_quads
+                )
+                prev_key = f"_fire_approach_{agent}"
+                prev_dist = self._fw_fire_approach.get(prev_key, dist_to_scout)
+                delta = prev_dist - dist_to_scout   # kladné = přiblížení
+                reward += delta * 0.10
+                self._fw_fire_approach[prev_key] = dist_to_scout
 
         if low_water and self.sim.environment.refill_zone is not None:
             # Potential-based shaping: odměna za přiblížení k refill zóně.
@@ -1439,12 +1466,12 @@ class DroneFireEnv(ParallelEnv):
 
         # Subgoal milestone: dosažení refill zóny s prázdnou nádrží
         # Okamžitý bonus jakmile se FW dostane blízko refill zóny s water<30%.
-        # V Phase 1 větší distance (250m) a silnější bonus (+5.0) — commander
+        # V Phase 1+2 větší distance (250m) a silnější bonus (+5.0) — commander
         # dostane signál DŘÍV a silnější, aby se naučil navigovat k refill.
         # One-shot per episode (tracked v _refill_milestone_given).
         curr_ph = getattr(self, 'curriculum_phase', None)
-        milestone_dist = 250.0 if curr_ph == 1 else 150.0
-        milestone_bonus = 5.0 if curr_ph == 1 else 2.0
+        milestone_dist = 250.0 if curr_ph in (1, 2) else 150.0
+        milestone_bonus = 5.0 if curr_ph in (1, 2) else 2.0
         if low_water and self.sim.environment.refill_zone is not None:
             if not self._refill_milestone_given.get(agent, False):
                 rz = self.sim.environment.refill_zone['position']
@@ -1458,8 +1485,8 @@ class DroneFireEnv(ParallelEnv):
             # Per-step penalizace (-0.1) a stagnace (-0.3) jsou redundantní a při
             # 500-krokových epizodách akumulují -100 až -200 → drtí pozitivní odměny.
             curr_ph = getattr(self, 'curriculum_phase', None)
-            if curr_ph is None:
-                # Phase 3 (plná obtížnost): extra penalty za prázdný tank
+            if curr_ph is None or curr_ph == 3:
+                # Phase 3+ (plná obtížnost): extra penalty za prázdný tank
                 reward -= 0.1
                 if self.sim.environment.refill_zone is not None:
                     rz = self.sim.environment.refill_zone['position']

@@ -128,7 +128,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     cmdr_buf = {k: [] for k in [
         "states", "messages", "msg_masks",
         "actions", "logprobs", "returns", "alive", "values",
-        "critic_states", "aux_targets"
+        "critic_states", "aux_targets", "expert_acts"
     ]}
 
     scout_h0_list = []
@@ -175,7 +175,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         #              → zaručí pozitivní advantage pro refill trajektorie
         #   ep 9000+:  náhodná hladina 0–max → generalizace celého cyklu
         ep_now = batch_start_idx + ep_off
-        WATER_CURRICULUM_END = 99999  # vždy prázdný tank dokud se naučí refill cyklus
+        WATER_CURRICULUM_END = 3000  # ep 0–3000: prázdný tank (100 batchů), pak náhodné
         for a in local_env.fixed_agents:
             if a in local_env.sim.drones:
                 d = local_env.sim.drones[a]
@@ -230,6 +230,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         wp_reached = False
         segment_reward = 0.0
         need_new_waypoint = True
+        scripted_segment = False  # True = refill autopilot, reward se neukládá do bufferu
 
         # Per-segment message buffer: list of (per_scout_msgs_dict, per_scout_valid_dict)
         msg_buffer = []
@@ -306,84 +307,160 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         in_boundary_emergency = True
 
                 if need_new_waypoint and not in_boundary_emergency:
-                    msgs_for_cmdr = []
-                    masks_for_cmdr = []
+                    # ── SCRIPTED REFILL AUTOPILOT ─────────────────────
+                    # Když water < 30 % → skriptovaný let do refill zóny.
+                    # Tento krok se NEVKLÁDÁ do PPO bufferu — NN se učí
+                    # JEN hasit (navigace k ohni + drop water).
+                    fw_drone_wp = local_env.sim.drones.get(f_agent)
+                    water_frac = (fw_drone_wp.current_water / fw_drone_wp.water_capacity
+                                  if fw_drone_wp and fw_drone_wp.water_capacity > 0 else 1.0)
+                    rz = local_env.sim.environment.refill_zone
+                    use_scripted_refill = (water_frac < 0.30 and rz is not None)
 
-                    for q in quad_agents:
-                        # Pouze LATEST zpráva
-                        latest_msg, latest_valid = msg_buffer[-1][q] if len(msg_buffer) > 0 else (torch.zeros(1, scout_msg_dim), False)
-                        
-                        msgs_for_cmdr.append(latest_msg)
-                        masks_for_cmdr.append(not latest_valid)
+                    if use_scripted_refill:
+                        # ── Skriptovaný waypoint → refill zóna ──
+                        c_pos_r = fw_drone_wp.get_position()
+                        rz_pos = rz['position']
+                        dx_r = rz_pos[0] - c_pos_r[0]
+                        dy_r = rz_pos[1] - c_pos_r[1]
+                        dx_raw = float(np.clip(dx_r / waypoint_range, -1.0, 1.0))
+                        dy_raw = float(np.clip(dy_r / waypoint_range, -1.0, 1.0))
+                        target_alt_raw = 0.0   # neutrální výška
+                        water_raw = -1.0       # neshazuj vodu
 
-                    # Stack: [1, N_QUADS, msg_dim]
-                    msgs_t = torch.stack(msgs_for_cmdr, dim=1)
-                    msgs_m = torch.tensor([masks_for_cmdr])
+                        cur_pos_r = fw_drone_wp.get_position()
+                        target_x = cur_pos_r[0] + dx_raw * waypoint_range
+                        target_y = cur_pos_r[1] + dy_raw * waypoint_range
+                        target_x = np.clip(target_x, -safe_limit, safe_limit)
+                        target_y = np.clip(target_y, -safe_limit, safe_limit)
 
-                    # Forward pass
-                    with torch.no_grad():
-                        s_st_f = torch.FloatTensor(
-                            obs[f_agent]["self_state"]).unsqueeze(0)
+                        # GRU stav udržuj — proženeme dummy forward pass aby
+                        # hidden state zůstal aktuální (jinak po refill bude stale)
+                        # Použijeme aktuální scout zprávy (latest z hlavního bufferu)
+                        with torch.no_grad():
+                            s_st_dummy = torch.FloatTensor(
+                                obs[f_agent]["self_state"]).unsqueeze(0)
+                            msgs_for_dummy = []
+                            masks_for_dummy = []
+                            for q in quad_agents:
+                                msgs_for_dummy.append(scout_msg_tensors[q].clone()
+                                                      if scout_msg_valid[q]
+                                                      else torch.zeros(1, scout_msg_dim))
+                                masks_for_dummy.append(not scout_msg_valid[q])
+                            msgs_d = torch.stack(msgs_for_dummy, dim=1)
+                            msgs_dm = torch.tensor([masks_for_dummy])
+                            _, _, h_out_dummy = local_cmdr(
+                                s_st_dummy, msgs_d, msgs_dm, cmdr_h)
+                        cmdr_h = h_out_dummy
 
-                        dist_c, _, h_out_c = local_cmdr(
-                            s_st_f, msgs_t, msgs_m, cmdr_h)
+                        # Resetuj segment counters — ale NEPŘIDÁVEJ do cmdr_ep_data
+                        steps_in_segment = 0
+                        wp_reached = False
+                        segment_reward = 0.0
+                        need_new_waypoint = False
+                        scripted_segment = True  # tento segment se neukládá do PPO
+                        msg_buffer = []
 
-                        act_c = dist_c.sample()
+                        if log_this_ep:
+                            traj_cmdr_waypoints.append(
+                                [step, target_x, target_y, target_alt_raw, water_raw])
 
-                        priv_c = torch.FloatTensor(
-                            local_env.get_privileged_state(f_agent)).unsqueeze(0)
-                        v_c, critic_cmdr_h = local_critic_cmdr(priv_c, critic_cmdr_h)
+                    else:
+                        # ── NN ROZHODNUTÍ — hasící režim ──────────────
+                        msgs_for_cmdr = []
+                        masks_for_cmdr = []
 
-                    c_pos = local_env.sim.drones[f_agent].get_position()
-                    vec_x = local_env.fire_x - c_pos[0]
-                    vec_y = local_env.fire_y - c_pos[1]
-                    dist_to_f = np.hypot(vec_x, vec_y)
-                    true_dir = [vec_x/dist_to_f, vec_y/dist_to_f] if dist_to_f > 1.0 else [0.0, 0.0]
+                        for q in quad_agents:
+                            # Pouze LATEST zpráva
+                            latest_msg, latest_valid = msg_buffer[-1][q] if len(msg_buffer) > 0 else (torch.zeros(1, scout_msg_dim), False)
+                            
+                            msgs_for_cmdr.append(latest_msg)
+                            masks_for_cmdr.append(not latest_valid)
 
-                    cmdr_ep_data.append({
-                        "alive": True,
-                        "state": s_st_f,
-                        "msgs": msgs_t,
-                        "msg_mask": msgs_m,
-                        "h": cmdr_h,
-                        "act": act_c,
-                        "lp": dist_c.log_prob(act_c).sum(1),
-                        "reward": 0.0,
-                        "value": v_c.item(),
-                        "critic_state": priv_c,
-                        "aux_target": torch.FloatTensor([true_dir]),
-                    })
-                    cmdr_h = h_out_c
+                        # Stack: [1, N_QUADS, msg_dim]
+                        msgs_t = torch.stack(msgs_for_cmdr, dim=1)
+                        msgs_m = torch.tensor([masks_for_cmdr])
 
-                    # Parse waypoint
-                    act_np = act_c.squeeze(0).numpy()
-                    dx_raw = float(act_np[0])
-                    dy_raw = float(act_np[1])
-                    target_alt_raw = float(act_np[2])
-                    water_raw = float(act_np[3])
+                        # Forward pass
+                        with torch.no_grad():
+                            s_st_f = torch.FloatTensor(
+                                obs[f_agent]["self_state"]).unsqueeze(0)
 
-                    drone = local_env.sim.drones.get(f_agent)
-                    cur_pos = drone.get_position() if drone else np.zeros(3)
-                    target_x = cur_pos[0] + dx_raw * waypoint_range
-                    target_y = cur_pos[1] + dy_raw * waypoint_range
-                    target_x = np.clip(target_x, -safe_limit, safe_limit)
-                    target_y = np.clip(target_y, -safe_limit, safe_limit)
+                            dist_c, _, h_out_c = local_cmdr(
+                                s_st_f, msgs_t, msgs_m, cmdr_h)
 
-                    # ── Approach reward: bonus za waypoint směrující ke scoutům ────────
-                    # Spočítej centroid aktivních scoutů (jsou vídeni z msg bufferu).
-                    # Scout pozice jsou v msg[0]*NORM_DIST, msg[1]*NORM_DIST — to jsou
-                    # Approach reward: navigovat k scoutům, kteří VIDÍ oheň.
-                    # Centroid pouze přes scouty s intensity > 0 – nikoli všechny.
-                    # Pozice scoutů čteme z jejich zpráv (msg[0]*1000, msg[1]*1000).
-                    steps_in_segment = 0
-                    wp_reached = False
-                    segment_reward = 0.0
-                    need_new_waypoint = False
-                    msg_buffer = []
+                            act_c = dist_c.sample()
 
-                    if log_this_ep:
-                        traj_cmdr_waypoints.append(
-                            [step, target_x, target_y, target_alt_raw, water_raw])
+                            priv_c = torch.FloatTensor(
+                                local_env.get_privileged_state(f_agent)).unsqueeze(0)
+                            v_c, critic_cmdr_h = local_critic_cmdr(priv_c, critic_cmdr_h)
+
+                        c_pos = local_env.sim.drones[f_agent].get_position()
+                        vec_x = local_env.fire_x - c_pos[0]
+                        vec_y = local_env.fire_y - c_pos[1]
+                        dist_to_f = np.hypot(vec_x, vec_y)
+                        true_dir = [vec_x/dist_to_f, vec_y/dist_to_f] if dist_to_f > 1.0 else [0.0, 0.0]
+
+                        # ── BC expert: leť k nejbližšímu scoutovi, shoď vodu ──
+                        c_pos_e = fw_drone_wp.get_position()
+                        expert_act = np.zeros(4, dtype=np.float32)
+                        live_sq = [q for q in quad_agents
+                                   if scout_alive[q] and q in local_env.sim.drones]
+                        if live_sq:
+                            dists_sq = [(np.hypot(c_pos_e[0] - local_env.sim.drones[q].get_position()[0],
+                                                  c_pos_e[1] - local_env.sim.drones[q].get_position()[1]), q)
+                                        for q in live_sq]
+                            min_d, closest_q = min(dists_sq, key=lambda x: x[0])
+                            sq_pos = local_env.sim.drones[closest_q].get_position()
+                            dx_e = sq_pos[0] - c_pos_e[0]
+                            dy_e = sq_pos[1] - c_pos_e[1]
+                            expert_act[0] = np.clip(dx_e / waypoint_range, -1.0, 1.0)
+                            expert_act[1] = np.clip(dy_e / waypoint_range, -1.0, 1.0)
+                            expert_act[2] = 0.0
+                            expert_act[3] = 1.0 if min_d < 200.0 else -1.0
+                        else:
+                            expert_act[3] = -1.0
+
+                        cmdr_ep_data.append({
+                            "alive": True,
+                            "state": s_st_f,
+                            "msgs": msgs_t,
+                            "msg_mask": msgs_m,
+                            "h": cmdr_h,
+                            "act": act_c,
+                            "lp": dist_c.log_prob(act_c).sum(1),
+                            "reward": 0.0,
+                            "value": v_c.item(),
+                            "critic_state": priv_c,
+                            "aux_target": torch.FloatTensor([true_dir]),
+                            "expert_act": torch.from_numpy(expert_act).unsqueeze(0),
+                        })
+                        cmdr_h = h_out_c
+
+                        # Parse waypoint
+                        act_np = act_c.squeeze(0).numpy()
+                        dx_raw = float(act_np[0])
+                        dy_raw = float(act_np[1])
+                        target_alt_raw = float(act_np[2])
+                        water_raw = float(act_np[3])
+
+                        drone = local_env.sim.drones.get(f_agent)
+                        cur_pos = drone.get_position() if drone else np.zeros(3)
+                        target_x = cur_pos[0] + dx_raw * waypoint_range
+                        target_y = cur_pos[1] + dy_raw * waypoint_range
+                        target_x = np.clip(target_x, -safe_limit, safe_limit)
+                        target_y = np.clip(target_y, -safe_limit, safe_limit)
+
+                        steps_in_segment = 0
+                        wp_reached = False
+                        segment_reward = 0.0
+                        need_new_waypoint = False
+                        scripted_segment = False  # NN segment → ukládá se do PPO
+                        msg_buffer = []
+
+                        if log_this_ep:
+                            traj_cmdr_waypoints.append(
+                                [step, target_x, target_y, target_alt_raw, water_raw])
 
                 # Heading controller
                 fw = local_env.sim.drones.get(f_agent)
@@ -445,28 +522,9 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                 # Scouts jsou natrénovaní a drží se u ohně → letět ke scoutoví = letět k ohni.
                 # Podmínka: tank ≥ 30 % (jinak ho táhne refill gradient v env_core).
                 # Používáme přímé pozice dronů — žádné message thresholdy, žádné souřadnicové chyby.
-                # k=0.10 → při 10 m/s přiblížení: +1.0/step (stejná váha jako refill)
-                if cmdr_alive and f_agent and f_agent in local_env.sim.drones:
-                    fw_drone = local_env.sim.drones[f_agent]
-                    fw_pos = fw_drone.get_position()
-                    has_water = (fw_drone.water_capacity > 0 and
-                                 fw_drone.current_water / fw_drone.water_capacity >= 0.30)
-                    live_scouts = [q for q in quad_agents
-                                   if scout_alive[q] and q in local_env.sim.drones]
-                    if has_water and live_scouts:
-                        # Vzdálenost k nejbližšímu živému scoutoví
-                        dist = min(
-                            np.hypot(fw_pos[0] - local_env.sim.drones[q].get_position()[0],
-                                     fw_pos[1] - local_env.sim.drones[q].get_position()[1])
-                            for q in live_scouts
-                        )
-                        prev_dist_key = f"_prev_scout_dist_{f_agent}"
-                        prev_dist = worker_state.get(prev_dist_key, dist)
-                        delta = prev_dist - dist   # kladné = přiblížení
-                        segment_reward += delta * 0.10
-                        worker_state[prev_dist_key] = dist
-                    elif not live_scouts:
-                        worker_state.pop(f"_prev_scout_dist_{f_agent}", None)
+                # Approach bonus: now handled in env_core._get_fixed_reward_nav()
+                # (potential-based gradient to nearest scout, k=0.15, per-step)
+                # Cleaning up duplicate worker-side shaping to avoid double-counting.
 
                 if f_agent and (terms.get(f_agent, False) or truncs.get(f_agent, False)):
                     cmdr_alive = False
@@ -476,7 +534,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                             f_agent, {}).get("death_cause", "unknown")
                     else:
                         cmdr_death_cause = "survived"
-                    if cmdr_ep_data:
+                    if not scripted_segment and cmdr_ep_data:
                         cmdr_ep_data[-1]["reward"] = segment_reward
                     ep_reward_cmdr += segment_reward
             else:
@@ -520,7 +578,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     if not wp_reached and steps_in_segment >= waypoint_steps:
                         segment_reward += wp_timeout_penalty
 
-                    if cmdr_ep_data:
+                    if not scripted_segment and cmdr_ep_data:
+                        # Pouze NN segmenty ukládají reward do PPO bufferu
                         cmdr_ep_data[-1]["reward"] = segment_reward
                     ep_reward_cmdr += segment_reward - r_cmdr
                     need_new_waypoint = True
@@ -531,7 +590,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         # Bug #3 fix: poslední nekompletni segment může mít reward=0 pokud epizoda
         # skončila truncaci (cmdr_alive=False) před segment_done check.
         # Ulož segment_reward do posledního záznamu jestli ještě neuložen.
-        if cmdr_ep_data and segment_reward != 0.0:
+        if cmdr_ep_data and segment_reward != 0.0 and not scripted_segment:
             last = cmdr_ep_data[-1]
             if last.get("reward", 0.0) == 0.0:
                 last["reward"] = segment_reward
@@ -614,6 +673,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                 cmdr_buf["values"].append(d["value"])
                 cmdr_buf["critic_states"].append(d["critic_state"])
                 cmdr_buf["aux_targets"].append(d["aux_target"])
+                cmdr_buf["expert_acts"].append(d.get("expert_act", torch.zeros(1, 4)))
             else:
                 cmdr_buf["states"].append(
                     torch.zeros(1, config['fixed_self_dim']))
@@ -629,6 +689,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                 cmdr_buf["critic_states"].append(
                     torch.zeros(1, cmdr_priv_dim))
                 cmdr_buf["aux_targets"].append(torch.zeros(1, 2))
+                cmdr_buf["expert_acts"].append(torch.zeros(1, 4))
 
         # Episode totals
         avg_scout_reward = sum(ep_reward_scout.values()) / max(1, N_QUADS)
@@ -734,16 +795,16 @@ def train_multi(resume_scout="", resume_cmdr="",
     # ── Hyperparameters ──────────────────────────────────────────────────
     N_QUADS = 2                   # 2 scouts + 1 commander
     N_FIXED = 1
-    grid_size_m = 1200.0          # výchozí mapa (přepsána map_size_range při každém epizodě)
-    map_size_range = (800.0, 2000.0)  # domain randomization — klíčové pro generalizaci na různé mapy
-    n_fires_range = (1, 2)         # 1–2 ohně per epizoda — 2 scouti krytí různé ohně
+    grid_size_m = 1200.0          # výchozí mapa
+    map_size_range = None           # BEZ domain randomization — nejdřív se nauč hasit na fixní mapě
+    n_fires_range = (1, 1)          # jeden oheň — jednoznačný signál pro commandera
     num_episodes = 30_000
-    max_steps = 1000              # delší epizody — scouts i FW mají čas doletět
+    max_steps = 500               # kratší epizody = kratší credit assignment chain
     steps_range = None            # fixní délka — proměnná délka rozbíjela commander buffer
     bptt_chunk = 128              # GRU backprop limit per chunk
     waypoint_steps = 30
     waypoint_range = 200.0        # waypoint dosah v metrech (fixní)
-    num_decisions_cmdr = max_steps // waypoint_steps  # 33 (odpovídá max_steps=1000)
+    num_decisions_cmdr = max_steps // waypoint_steps  # 16 (odpovídá max_steps=500)
 
     # Scout freeze: scouti jsou hotovi. Odmrazení při domain randomization způsobilo
     # ground_crash kolaps (boundary gradient na 800m mapách destabilizoval politiku).
@@ -751,7 +812,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     scout_freeze_batches = 9999  # permanent freeze — scouts are frozen
 
     gamma = 0.99
-    gamma_cmdr = 0.95          # shorter horizon for commander decisions
+    gamma_cmdr = 0.95          # krátký horizont — commander má jen 16 rozhodnutí, GAE musí být čistá
     gae_lambda = 0.95
     clip_coef = 0.2
     update_epochs = 4
@@ -760,7 +821,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     episodes_per_batch = num_workers * eps_per_worker
 
     lr_scout = 1e-5             # very low — fine-tuning pre-trained scout, prevent policy collapse
-    lr_cmdr = 3e-5              # sníženo z 1e-4: stabilizace po critic resetu
+    lr_cmdr = 5e-4              # ZPĚT na pracující hodnotu — 3e-5 bylo 16× pomalejší a commander se nic nenaučil
     lr_critic = 5e-4
     hidden_dim_scout = 128
     hidden_dim_cmdr = 64
@@ -768,15 +829,20 @@ def train_multi(resume_scout="", resume_cmdr="",
 
     entropy_scout = 0.002       # sníženo z 0.01 — entropy term dominoval nad policy gradientem (entropy rostla na 3.95)
     entropy_cmdr = 0.01         # sníženo z 0.05: explorace proběhla, teď nechme policy konvergovat
-    critic_epochs_cmdr = 8      # více critic updateů než actor (4) → critic konverguje rychleji
+    critic_epochs_cmdr = 4      # shodné s update_epochs — asymetrie actor/critic způsobovala nestabilitu
 
     # ── Curriculum fáze (commander) ───────────────────────────────────────
-    # Fáze 1: malá mapa (200m), oheň u centra, refill 80m, FW 20m od refill, bez waste_penalty
-    # Fáze 2: střední mapa (400m), refill 150m, waste_penalty = 0.1
-    # Fáze 3 (None): plná mapa, současné nastavení
-    CURR_PHASE1_END = 100   # batch 1–100
-    CURR_PHASE2_END = 200   # batch 101–200
+    # Fáze 1: jen refill — malá mapa, oheň u centra, silné refill odměny
+    # Fáze 2: refill + navigace ke scoutům/ohni — approach shaping
+    # Fáze 3: plná mise na fixní mapě — water drop + mírný waste penalty
+    # Fáze 4 (None): plná obtížnost — domain randomization, plný waste penalty
+    CURR_PHASE1_END = 50    # batch 1–50:   refill only
+    CURR_PHASE2_END = 120   # batch 51–120: refill + approach
+    CURR_PHASE3_END = 200   # batch 121–200: full mission, fixed map
     # Po batch 200: přechod na fázi None (plná obtížnost)
+
+    # BC (behavioral cloning) loss coefficient — decays linearly to 0 at CURR_PHASE3_END
+    bc_coef = 0.5
 
     # ── Dims ─────────────────────────────────────────────────────────────
     temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED,
@@ -955,7 +1021,8 @@ def train_multi(resume_scout="", resume_cmdr="",
         ]}
         agg_cmdr = {k: [] for k in [
             "states", "messages", "msg_masks",
-            "actions", "logprobs", "returns", "alive", "values", "critic_states", "aux_targets"
+            "actions", "logprobs", "returns", "alive", "values", "critic_states", "aux_targets",
+            "expert_acts"
         ]}
         agg_h = {"scout": [], "cmdr": []}
         batch_rewards = []
@@ -965,33 +1032,23 @@ def train_multi(resume_scout="", resume_cmdr="",
         batch_scout_lifespans = []
         batch_cmdr_lifespans = []
 
-        # Pick episode length: curriculum zkracuje epizody v rané fázi tréninku.
-        # Kratší epizody = kratší temporal distance pro credit assignment.
-        # ep 0–9000:   500 kroků (16 commander rozhodnutí — dost na celý refill cyklus + toleranci)
-        # ep 9000–20000: lineárně roste na 1000
-        # ep 20000+:   plný max_steps
-        EP_SHORT_END = 9000
-        EP_FULL_END = 20000
-        ep_now_batch = episodes_played  # aktuální ep na začátku batche
-        if ep_now_batch < EP_SHORT_END:
-            batch_ep_max = 500
-        elif ep_now_batch < EP_FULL_END:
-            t_ep = (ep_now_batch - EP_SHORT_END) / (EP_FULL_END - EP_SHORT_END)
-            batch_ep_max = int(300 + (max_steps - 300) * t_ep)
-            batch_ep_max = (batch_ep_max // 100) * 100  # zaokrouhli na 100
-        else:
-            batch_ep_max = max_steps
+        # Episode length: fixní 500 kroků (16 commander rozhodnutí)
+        batch_ep_max = max_steps
         worker_config['ep_max_steps'] = batch_ep_max
 
         # ── Curriculum phase per batch ────────────────────────────────────
         if batch_idx <= CURR_PHASE1_END:
             curr_phase = 1
-            curr_map_range = (1200.0, 1200.0)  # fixní mapa — curriculum jen na vzdálenostech
+            curr_map_range = (1200.0, 1200.0)  # fixní mapa — jen refill learning
             curr_waste_pen = 0.0
         elif batch_idx <= CURR_PHASE2_END:
             curr_phase = 2
-            curr_map_range = (1200.0, 1200.0)  # fixní mapa
-            curr_waste_pen = 0.1
+            curr_map_range = (1200.0, 1200.0)  # fixní mapa — refill + approach
+            curr_waste_pen = 0.0
+        elif batch_idx <= CURR_PHASE3_END:
+            curr_phase = 3
+            curr_map_range = (1200.0, 1200.0)  # fixní mapa — full mission
+            curr_waste_pen = 0.3
         else:
             curr_phase = None
             curr_map_range = map_size_range
@@ -1082,11 +1139,16 @@ def train_multi(resume_scout="", resume_cmdr="",
         c_str = " ".join(f"{k}={v}" for k, v in cmdr_deaths_c.most_common())
         scout_death_history.append(dict(scout_deaths_c))
 
+        # Count NN decisions vs total slots
+        nn_decisions = int(sum(float(a) for al in agg_cmdr["alive"] for a in al))
+        total_slots = sum(len(al) for al in agg_cmdr["alive"])
+
         print(f"{datetime.datetime.now().strftime('%H:%M:%S')} | "
               f"Batch {batch_idx:04d} (Ep {episodes_played:05d}) | "
               f"R: {avg_batch:+8.1f} ({avg_roll:+8.1f})  Cmdr_R: {avg_cmdr_r:+7.1f}  "
               f"Scout:{scout_life_pct:.0f}% Cmdr:{cmdr_life_pct:.0f}%  "
               f"scout:[{s_str}] cmdr:[{c_str}] refill={refill_rate}/{len(batch_refill_hits)}  "
+              f"NN_dec={nn_decisions}/{total_slots}  "
               f"{rollout_time:.1f}s")
 
         # Save best
@@ -1286,6 +1348,7 @@ def train_multi(resume_scout="", resume_cmdr="",
         c_values = torch.cat(agg_cmdr["values"]).to(device)
         c_cstates = torch.cat(agg_cmdr["critic_states"]).to(device)
         c_aux_targets = torch.cat(agg_cmdr["aux_targets"]).to(device)
+        c_expert_acts = torch.cat(agg_cmdr["expert_acts"]).to(device)
 
         h_cmdr = (torch.cat(agg_h["cmdr"], dim=0)
                   .squeeze(1).unsqueeze(0).to(device))
@@ -1318,6 +1381,7 @@ def train_multi(resume_scout="", resume_cmdr="",
         c_cstates_seq = c_cstates.view(eps_cmdr, nd, -1)
         h_cmdr_seq = h_cmdr.transpose(0, 1)
         c_aux_targets_seq = c_aux_targets.view(eps_cmdr, nd, -1)
+        c_expert_acts_seq = c_expert_acts.view(eps_cmdr, nd, -1)
 
         mb_size_c = max(1, eps_cmdr // num_minibatches)
 
@@ -1338,6 +1402,7 @@ def train_multi(resume_scout="", resume_cmdr="",
                 mb_cs = c_cstates_seq[mb]
                 mb_h = h_cmdr_seq[mb].transpose(0, 1)
                 mb_aux_targets = c_aux_targets_seq[mb].reshape(-1, 2)
+                mb_expert = c_expert_acts_seq[mb].reshape(-1, 4)
 
                 # Bug #2 fix: actor se updatuje pouze v prvních update_epochs epochách,
                 # critic všech critic_epochs_cmdr. Jinak actor dostává 2× více PPO
@@ -1362,8 +1427,16 @@ def train_multi(resume_scout="", resume_cmdr="",
                     aux_error = (mb_aux_pred - mb_aux_targets)**2
                     aux_loss = (aux_error.sum(dim=-1) * mb_alive).sum() / n_alive
 
-                    # Aux_loss vrácen s 0.01 koeficientem jako regularizátor (brání ground_crashům)
-                    loss_c = policy_loss - entropy_cmdr * entropy_loss + 0.01 * aux_loss
+                    # ── BC loss: MSE between policy mean and expert action ──
+                    # Coefficient decays over batches but NEVER reaches 0.
+                    # Floor of 0.03 keeps the expert signal alive permanently —
+                    # without it commander forgets refill after BC turns off.
+                    bc_coef_now = max(0.03, bc_coef * (1.0 - batch_idx / CURR_PHASE3_END))
+                    bc_error = (dist.mean - mb_expert) ** 2
+                    bc_loss = (bc_error.sum(dim=-1) * mb_alive).sum() / n_alive
+
+                    # Aux_loss 0.5 — silný regularizátor, nutí GRU pamatovat pozici ohně
+                    loss_c = policy_loss - entropy_cmdr * entropy_loss + 0.5 * aux_loss + bc_coef_now * bc_loss
 
                     if torch.isfinite(loss_c):
                         optimizer_cmdr.zero_grad()
