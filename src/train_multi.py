@@ -152,8 +152,20 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     # Per-episode worker state (potential-based distance tracking etc.)
     worker_state = {}
 
+    # Curriculum config — čteme jednou, aplikujeme před každým reset()
+    curr_phase = config.get('curriculum_phase', None)
+    curr_map_range = config.get('curriculum_map_range', config.get('map_size_range'))
+    curr_waste_pen = config.get('curriculum_waste_penalty', None)
+
     for ep_off in range(num_eps):
         worker_state.clear()   # reset per episode
+
+        # Nastav curriculum atributy PŘED každým reset() — env je sdílen přes epizody
+        local_env.curriculum_phase = curr_phase
+        local_env.waste_penalty_override = curr_waste_pen
+        if curr_map_range is not None:
+            local_env.map_size_range = curr_map_range
+
         local_env.max_steps = ep_max_steps
 
         obs, _ = local_env.reset(epizode_number=batch_start_idx + ep_off)
@@ -516,6 +528,13 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         # ==================================================================
         # Fix ep_reward_cmdr: sum from cmdr_ep_data
         # ==================================================================
+        # Bug #3 fix: poslední nekompletni segment může mít reward=0 pokud epizoda
+        # skončila truncaci (cmdr_alive=False) před segment_done check.
+        # Ulož segment_reward do posledního záznamu jestli ještě neuložen.
+        if cmdr_ep_data and segment_reward != 0.0:
+            last = cmdr_ep_data[-1]
+            if last.get("reward", 0.0) == 0.0:
+                last["reward"] = segment_reward
         ep_reward_cmdr = sum(d["reward"] for d in cmdr_ep_data)
 
         # ==================================================================
@@ -741,7 +760,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     episodes_per_batch = num_workers * eps_per_worker
 
     lr_scout = 1e-5             # very low — fine-tuning pre-trained scout, prevent policy collapse
-    lr_cmdr = 1e-4              # stabilní pro commander PPO
+    lr_cmdr = 3e-5              # sníženo z 1e-4: stabilizace po critic resetu
     lr_critic = 5e-4
     hidden_dim_scout = 128
     hidden_dim_cmdr = 64
@@ -750,6 +769,14 @@ def train_multi(resume_scout="", resume_cmdr="",
     entropy_scout = 0.002       # sníženo z 0.01 — entropy term dominoval nad policy gradientem (entropy rostla na 3.95)
     entropy_cmdr = 0.01         # sníženo z 0.05: explorace proběhla, teď nechme policy konvergovat
     critic_epochs_cmdr = 8      # více critic updateů než actor (4) → critic konverguje rychleji
+
+    # ── Curriculum fáze (commander) ───────────────────────────────────────
+    # Fáze 1: malá mapa (200m), oheň u centra, refill 80m, FW 20m od refill, bez waste_penalty
+    # Fáze 2: střední mapa (400m), refill 150m, waste_penalty = 0.1
+    # Fáze 3 (None): plná mapa, současné nastavení
+    CURR_PHASE1_END = 100   # batch 1–100
+    CURR_PHASE2_END = 200   # batch 101–200
+    # Po batch 200: přechod na fázi None (plná obtížnost)
 
     # ── Dims ─────────────────────────────────────────────────────────────
     temp_env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED,
@@ -833,8 +860,14 @@ def train_multi(resume_scout="", resume_cmdr="",
         print(f"  Loaded commander from {resume_cmdr}")
 
         with torch.no_grad():
-            cmdr_actor.action_logstd.fill_(-0.5) 
+            cmdr_actor.action_logstd.fill_(-0.5)
             print("  [INFO] Resetován action_logstd Commandera pro lepší exploraci.")
+            # Bug #4 fix: refill compass dims 11-12 byly vždy 0 v old training
+            # → encoder weights pro tyto dims jsou fakticky mrtvé.
+            # Reinitializujeme je aby gradient mohl tečt přes refill compass signal.
+            if hasattr(cmdr_actor, 'encoder') and hasattr(cmdr_actor.encoder, '0'):
+                nn.init.normal_(cmdr_actor.encoder[0].weight[:, 11:13], std=0.01)
+                print("  [INFO] Reinit encoder weights pro refill compass dims (11-12)")
 
     # ── Optimizers (fully separate) ──────────────────────────────────────
     optimizer_scout = optim.Adam(scout_actor.parameters(), lr=lr_scout)
@@ -888,7 +921,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     scout_death_history = []      # list of Counter dicts per batch
 
     save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "..", "saved_models", "finetune_07")  # nová složka — nepřepisuje předchozí checkpointy
+                            "..", "saved_models", "finetune")  # nová složka — nepřepisuje předchozí checkpointy
     os.makedirs(save_dir, exist_ok=True)
     print(f"Checkpoints → {save_dir}\n")
 
@@ -934,14 +967,14 @@ def train_multi(resume_scout="", resume_cmdr="",
 
         # Pick episode length: curriculum zkracuje epizody v rané fázi tréninku.
         # Kratší epizody = kratší temporal distance pro credit assignment.
-        # ep 0–9000:   300 kroků (1 refill cyklus)
+        # ep 0–9000:   500 kroků (16 commander rozhodnutí — dost na celý refill cyklus + toleranci)
         # ep 9000–20000: lineárně roste na 1000
         # ep 20000+:   plný max_steps
         EP_SHORT_END = 9000
         EP_FULL_END = 20000
         ep_now_batch = episodes_played  # aktuální ep na začátku batche
         if ep_now_batch < EP_SHORT_END:
-            batch_ep_max = 300
+            batch_ep_max = 500
         elif ep_now_batch < EP_FULL_END:
             t_ep = (ep_now_batch - EP_SHORT_END) / (EP_FULL_END - EP_SHORT_END)
             batch_ep_max = int(300 + (max_steps - 300) * t_ep)
@@ -949,6 +982,27 @@ def train_multi(resume_scout="", resume_cmdr="",
         else:
             batch_ep_max = max_steps
         worker_config['ep_max_steps'] = batch_ep_max
+
+        # ── Curriculum phase per batch ────────────────────────────────────
+        if batch_idx <= CURR_PHASE1_END:
+            curr_phase = 1
+            curr_map_range = (1200.0, 1200.0)  # fixní mapa — curriculum jen na vzdálenostech
+            curr_waste_pen = 0.0
+        elif batch_idx <= CURR_PHASE2_END:
+            curr_phase = 2
+            curr_map_range = (1200.0, 1200.0)  # fixní mapa
+            curr_waste_pen = 0.1
+        else:
+            curr_phase = None
+            curr_map_range = map_size_range
+            curr_waste_pen = None  # použij FIXED["water_waste_penalty"] = 1.0
+        if worker_config.get('_prev_phase') != curr_phase:
+            print(f"   [CURRICULUM] Batch {batch_idx}: přechod na fázi {curr_phase} "
+                  f"(map={curr_map_range}, waste_pen={curr_waste_pen})")
+            worker_config['_prev_phase'] = curr_phase
+        worker_config['curriculum_phase'] = curr_phase
+        worker_config['curriculum_map_range'] = curr_map_range
+        worker_config['curriculum_waste_penalty'] = curr_waste_pen
 
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
             futures = [
@@ -973,6 +1027,7 @@ def train_multi(resume_scout="", resume_cmdr="",
                 batch_deaths.extend(w_deaths)
                 batch_scout_lifespans.extend(w_scout_life)
                 batch_cmdr_lifespans.extend(w_cmdr_life)
+                batch_refill_hits.extend(w_refill)
                 reward_history.extend(w_rew)
                 episodes_played += len(w_rew)
 
@@ -1184,7 +1239,7 @@ def train_multi(resume_scout="", resume_cmdr="",
                           - entropy_scout * (entropy * flat_alive_s).sum() / n_alive_s)
 
                 if torch.isfinite(loss_s):
-                    if loss_s.requires_grad:
+                    if loss_s.requires_grad and not scout_frozen:  # double-guard: never update frozen scouts
                         optimizer_scout.zero_grad()
                         loss_s.backward()
                         nn.utils.clip_grad_norm_(scout_actor.parameters(), max_norm=0.5)
@@ -1284,52 +1339,47 @@ def train_multi(resume_scout="", resume_cmdr="",
                 mb_h = h_cmdr_seq[mb].transpose(0, 1)
                 mb_aux_targets = c_aux_targets_seq[mb].reshape(-1, 2)
 
-                # dist, _, _ = cmdr_actor(mb_states, mb_msgs, mb_mm, mb_h)
-                dist, mb_aux_pred, _ = cmdr_actor(mb_states, mb_msgs, mb_mm, mb_h)
+                # Bug #2 fix: actor se updatuje pouze v prvních update_epochs epochách,
+                # critic všech critic_epochs_cmdr. Jinak actor dostává 2× více PPO
+                # updateů než je bezpečné → policy divergence.
+                if epoch < update_epochs:
+                    dist, mb_aux_pred, _ = cmdr_actor(mb_states, mb_msgs, mb_mm, mb_h)
 
-                flat_acts = mb_acts.view(-1, 4)
-                # Phase 1
-                # new_lp = dist.log_prob(flat_acts)[:, :2].sum(1)
-                # entropy = dist.entropy()[:, :2].sum(1)
-                # Phase 2
-                # new_lp = dist.log_prob(flat_acts)[:, :3].sum(1)
-                # entropy = dist.entropy()[:, :3].sum(1)
-                # Phase 3 (full)
-                new_lp = dist.log_prob(flat_acts).sum(1)
-                entropy = dist.entropy().sum(1)
-                
-                log_ratio = (new_lp - mb_old_lp).clamp(-10.0, 10.0)
-                ratio = torch.exp(log_ratio)
-                pg1 = -mb_adv * ratio
-                pg2 = -mb_adv * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
-                surr = torch.max(pg1, pg2)
+                    flat_acts = mb_acts.view(-1, 4)
+                    new_lp = dist.log_prob(flat_acts).sum(1)
+                    entropy = dist.entropy().sum(1)
 
-                n_alive = mb_alive.sum().clamp(min=1.0)
-                policy_loss = (surr * mb_alive).sum() / n_alive
-                entropy_loss = (entropy * mb_alive).sum() / n_alive
+                    log_ratio = (new_lp - mb_old_lp).clamp(-10.0, 10.0)
+                    ratio = torch.exp(log_ratio)
+                    pg1 = -mb_adv * ratio
+                    pg2 = -mb_adv * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
+                    surr = torch.max(pg1, pg2)
 
-                # Výpočet Auxiliary Loss (Chyba predikce ohně)
-                aux_error = (mb_aux_pred - mb_aux_targets)**2 # MSE
-                # Průměrujeme jen přes živé kroky
-                aux_loss = (aux_error.sum(dim=-1) * mb_alive).sum() / n_alive 
+                    n_alive = mb_alive.sum().clamp(min=1.0)
+                    policy_loss = (surr * mb_alive).sum() / n_alive
+                    entropy_loss = (entropy * mb_alive).sum() / n_alive
 
-                # aux_loss je jediný supervised signal pro fire position — nesnižovat
-                loss_c = policy_loss - entropy_cmdr * entropy_loss + 0.3 * aux_loss
+                    aux_error = (mb_aux_pred - mb_aux_targets)**2
+                    aux_loss = (aux_error.sum(dim=-1) * mb_alive).sum() / n_alive
 
-                if torch.isfinite(loss_c):
-                    optimizer_cmdr.zero_grad()
-                    loss_c.backward()
-                    nn.utils.clip_grad_norm_(cmdr_actor.parameters(), max_norm=0.5)
-                    optimizer_cmdr.step()
-                    cmdr_loss_total += loss_c.item()
-                    cmdr_policy_loss_total += policy_loss.item()
-                    cmdr_entropy_total     += entropy_loss.item()
-                    cmdr_aux_loss_total    += aux_loss.item()
+                    # Aux_loss vrácen s 0.01 koeficientem jako regularizátor (brání ground_crashům)
+                    loss_c = policy_loss - entropy_cmdr * entropy_loss + 0.01 * aux_loss
 
-                # Critic value loss (separate optimizer, masked by alive)
+                    if torch.isfinite(loss_c):
+                        optimizer_cmdr.zero_grad()
+                        loss_c.backward()
+                        nn.utils.clip_grad_norm_(cmdr_actor.parameters(), max_norm=0.5)
+                        optimizer_cmdr.step()
+                        cmdr_loss_total += loss_c.item()
+                        cmdr_policy_loss_total += policy_loss.item()
+                        cmdr_entropy_total     += entropy_loss.item()
+                        cmdr_aux_loss_total    += aux_loss.item()
+
+                # Critic: vždy (všech critic_epochs_cmdr epoch)
                 v_pred, _ = critic_cmdr(mb_cs, None)
                 v_err = (v_pred - mb_rets) ** 2
-                v_loss_c = (v_err * mb_alive).sum() / n_alive
+                n_alive_c = mb_alive.sum().clamp(min=1.0)
+                v_loss_c = (v_err * mb_alive).sum() / n_alive_c
                 if torch.isfinite(v_loss_c):
                     optimizer_critic_cmdr.zero_grad()
                     v_loss_c.backward()

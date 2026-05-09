@@ -674,43 +674,54 @@ class DroneFireEnv(ParallelEnv):
         # =========================================================
         # EPISODE-DEPENDENT CURRICULUM — plynulá interpolace
         # =========================================================
-        # Lineární nárůst obtížnosti místo skokových fází.
-        # Agent se postupně učí navigovat na stále větší vzdálenosti.
-        #
-        # ep 0–3000:      warmup — spawn 20m, oheň u centra (naučí se: oheň=dobro)
-        # ep 3000–25000:  lineární ramp — spawn i fire zone plynule rostou
-        # ep 25000+:      plná obtížnost
-        #
-        # Navíc 15% epizod je vždy easy (refresher) → zabraňuje catastrophic forgetting.
+        # curriculum_phase (nastavitelné workerem):
+        #   1 — fáze 1: fixní 1200m mapa, oheň do 100m od středu, refill 150m od ohně, FW 50m od refill
+        #   2 — fáze 2: fixní 1200m mapa, oheň do 300m od středu, refill 300m od ohně, FW 150m od refill
+        #   None — standardní episode-based curriculum (plná obtížnost)
+        # Mapa zůstává 1200m po celou dobu — commander nikdy nenarazí na hranici.
+        # Curriculum škáluje pouze vzdálenosti mezi objekty, ne velikost mapy.
         ep = epizode_number
+        curr_phase = getattr(self, 'curriculum_phase', None)
 
-        WARMUP_END = 3000
+        WARMUP_END = 5000
         RAMP_END = 25000
 
-        # Vždy 15% šance na easy episode (refresher)
-        is_easy = random.random() < 0.15
-
-        if ep < WARMUP_END or is_easy:
-            safe_zone_fire = self.map_bounds * 0.1
-            spawn_radius = random.uniform(30.0, 80.0)
-        elif ep < RAMP_END:
-            # Lineární interpolace: t goes 0→1
-            t = (ep - WARMUP_END) / (RAMP_END - WARMUP_END)
-            safe_zone_fire = self.map_bounds * (0.1 + 0.3 * t)   # 0.1 → 0.4
-            spawn_radius_min = 20.0 + 80.0 * t                   # 20 → 100
-            spawn_radius_max = 100.0 + (self.map_bounds * 0.8 - 100.0) * t  # 100 → 400
-            spawn_radius = random.uniform(spawn_radius_min, spawn_radius_max)
+        if curr_phase == 1:
+            safe_zone_fire = 100.0   # oheň do 100m od středu mapy
+            spawn_radius = 30.0       # scouti 30m od ohně
+            is_easy = True
+        elif curr_phase == 2:
+            safe_zone_fire = 300.0   # oheň do 300m od středu mapy
+            spawn_radius = 80.0
+            is_easy = False
         else:
-            # Plná obtížnost
-            safe_zone_fire = self.map_bounds * 0.4
-            spawn_radius = random.uniform(50.0, self.map_bounds * 0.8)
+            # Vždy 15% šance na easy episode (refresher)
+            is_easy = random.random() < 0.15
+
+            if ep < WARMUP_END or is_easy:
+                safe_zone_fire = self.map_bounds * 0.1
+                spawn_radius = random.uniform(30.0, 80.0)
+            elif ep < RAMP_END:
+                # Lineární interpolace: t goes 0→1
+                t = (ep - WARMUP_END) / (RAMP_END - WARMUP_END)
+                safe_zone_fire = self.map_bounds * (0.1 + 0.3 * t)   # 0.1 → 0.4
+                spawn_radius_min = 20.0 + 80.0 * t                   # 20 → 100
+                spawn_radius_max = 100.0 + (self.map_bounds * 0.8 - 100.0) * t  # 100 → 400
+                spawn_radius = random.uniform(spawn_radius_min, spawn_radius_max)
+            else:
+                # Plná obtížnost
+                safe_zone_fire = self.map_bounds * 0.4
+                spawn_radius = random.uniform(50.0, self.map_bounds * 0.8)
 
         # ── Place 1–N fires spread across the map ──────────────────────────
-        n_fires = random.randint(*getattr(self, 'n_fires_range', (1, 1)))
-        # During warmup / easy episodes always use a single fire so the
-        # curriculum gradient is not diluted.
-        if is_easy or ep < WARMUP_END:
+        if curr_phase in (1, 2):
             n_fires = 1
+        else:
+            n_fires = random.randint(*getattr(self, 'n_fires_range', (1, 1)))
+            # During warmup / easy episodes always use a single fire so the
+            # curriculum gradient is not diluted.
+            if is_easy or ep < WARMUP_END:
+                n_fires = 1
 
         fire_positions = []
         _attempts = 0
@@ -728,9 +739,27 @@ class DroneFireEnv(ParallelEnv):
             self.sim.start_fire([fx, fy], intensity=0.5)
         self.current_episode = epizode_number
 
-        # Refill zona na náhodné pozici, ale s jistou korelací k ohni (aby nebyla úplně mimo mapu)
-        refill_x = float(np.clip(-self.fire_x + random.uniform(-50, 50), -self.map_bounds * 0.8, self.map_bounds * 0.8))
-        refill_y = float(np.clip(-self.fire_y + random.uniform(-50, 50), -self.map_bounds * 0.8, self.map_bounds * 0.8))
+        # Refill zone placement — curriculum_phase determines distance from fire
+        if curr_phase == 1:
+            # 150m od ohně v náhodném směru (fáze 1: krátká trasa refill→oheň)
+            angle = random.uniform(0, 2 * np.pi)
+            refill_x = float(np.clip(self.fire_x + 150.0 * np.cos(angle),
+                                     -self.map_bounds * 0.8, self.map_bounds * 0.8))
+            refill_y = float(np.clip(self.fire_y + 150.0 * np.sin(angle),
+                                     -self.map_bounds * 0.8, self.map_bounds * 0.8))
+        elif curr_phase == 2:
+            # 300m od ohně v náhodném směru (fáze 2: střední trasa)
+            angle = random.uniform(0, 2 * np.pi)
+            refill_x = float(np.clip(self.fire_x + 300.0 * np.cos(angle),
+                                     -self.map_bounds * 0.8, self.map_bounds * 0.8))
+            refill_y = float(np.clip(self.fire_y + 300.0 * np.sin(angle),
+                                     -self.map_bounds * 0.8, self.map_bounds * 0.8))
+        else:
+            # Standardní: refill na opačné straně mapy od ohně
+            refill_x = float(np.clip(-self.fire_x + random.uniform(-50, 50),
+                                     -self.map_bounds * 0.8, self.map_bounds * 0.8))
+            refill_y = float(np.clip(-self.fire_y + random.uniform(-50, 50),
+                                     -self.map_bounds * 0.8, self.map_bounds * 0.8))
         self.sim.environment.create_refill_zone(center_pos=[refill_x, refill_y, 0.0])
 
         # --- 4. Spawn every agent at its starting position ---
@@ -745,7 +774,24 @@ class DroneFireEnv(ParallelEnv):
                 FW_REFILL_CURRICULUM_END = 20000
                 FW_REFILL_CLOSE_END = 500   # velmi blízko v úplném začátku
                 rz = self.sim.environment.refill_zone
-                if ep < FW_REFILL_CURRICULUM_END and rz is not None:
+                if curr_phase == 1:
+                    # Fáze 1: 250m od refill — FW musí navigovat k refill zóně
+                    # (refill radius = 150m, takže 250m = bezpečně mimo zónu)
+                    max_offset = 250.0
+                    rz_pos = rz['position'] if rz else [0.0, 0.0, 0.0]
+                    fw_start_x = float(np.clip(rz_pos[0] + random.uniform(-max_offset, max_offset),
+                                               -self.map_bounds * 0.85, self.map_bounds * 0.85))
+                    fw_start_y = float(np.clip(rz_pos[1] + random.uniform(-max_offset, max_offset),
+                                               -self.map_bounds * 0.85, self.map_bounds * 0.85))
+                elif curr_phase == 2:
+                    # Fáze 2: do 150m od refill
+                    max_offset = 150.0
+                    rz_pos = rz['position'] if rz else [0.0, 0.0, 0.0]
+                    fw_start_x = float(np.clip(rz_pos[0] + random.uniform(-max_offset, max_offset),
+                                               -self.map_bounds * 0.85, self.map_bounds * 0.85))
+                    fw_start_y = float(np.clip(rz_pos[1] + random.uniform(-max_offset, max_offset),
+                                               -self.map_bounds * 0.85, self.map_bounds * 0.85))
+                elif ep < FW_REFILL_CURRICULUM_END and rz is not None:
                     if ep < FW_REFILL_CLOSE_END:
                         # Fáze 1: téměř přímo u refill zóny (do 20 m)
                         max_offset = 20.0
@@ -839,6 +885,10 @@ class DroneFireEnv(ParallelEnv):
 
         # Track FW previous distance to refill zone (for potential-based shaping)
         self._prev_refill_dist = {}
+
+        # Separate slot for stagnation penalty (bug fix: prev_refill_dist gets
+        # overwritten in the same step, so we need a separate prev value)
+        self._prev_stag_dist = {}
 
         # Subgoal milestone: True once commander reached refill zone with low water this episode
         self._refill_milestone_given = {a: False for a in self.fixed_agents}
@@ -1105,7 +1155,10 @@ class DroneFireEnv(ParallelEnv):
                             pass  # Pásmo 2: u scoutu ale mimo oheň → neutrální (0)
                         else:
                             # Pásmo 3: daleko od scoutů i ohně → plýtvání
-                            rewards[f_agent] -= FIXED["water_waste_penalty"]
+                            waste_pen = getattr(self, 'waste_penalty_override', None)
+                            if waste_pen is None:
+                                waste_pen = FIXED["water_waste_penalty"]
+                            rewards[f_agent] -= waste_pen
              
         if self.sim.environment.fire_grid is not None:
             total_burning = int(np.sum(self.sim.environment.fire_grid.B))
@@ -1127,7 +1180,10 @@ class DroneFireEnv(ParallelEnv):
         if self.sim.environment.fire_grid is not None:
             current_burning = int(np.sum(self.sim.environment.fire_grid.B))
             delta_burned = max(0, current_burning - self._prev_burning_count)
-            if delta_burned > 0:
+            # V curriculum Phase 1+2 commander ještě neumí hasit → fire spread
+            # penalty je čistý šum, který sráží SNR advantagí. Zapneme až v Phase 3.
+            curr_ph = getattr(self, 'curriculum_phase', None)
+            if delta_burned > 0 and curr_ph is None:
                 spread_penalty = min(delta_burned * 0.05, 2.0)
                 for agent in rewards:
                     if "fixed" in agent:
@@ -1162,7 +1218,9 @@ class DroneFireEnv(ParallelEnv):
         dist_to_edge = min(dist_boundaries)
 
         if "fixed" in agent:
-            threshold = FIXED["boundary_threshold_m"]
+            # Škáluj threshold s mapou — na malých mapách (fáze 1: 200m)
+            # fixních 300m by znamenalo permanentní penalty → crash.
+            threshold = min(FIXED["boundary_threshold_m"], self.map_bounds * 0.5)
         else:
             threshold = QUAD["boundary_threshold_m"]
 
@@ -1380,28 +1438,36 @@ class DroneFireEnv(ParallelEnv):
         self._prev_fw_water[agent] = water_lvl
 
         # Subgoal milestone: dosažení refill zóny s prázdnou nádrží
-        # Okamžitý +2.0 jakmile se FW dostane do 150m od refill zóny s water<30%.
-        # Tím se credit assignment zkrátí — PPO nemusí propagovat přes 140 kroků,
-        # stačí dosáhnout tohoto milníku. One-shot per episode (tracked v _refill_milestone_given).
+        # Okamžitý bonus jakmile se FW dostane blízko refill zóny s water<30%.
+        # V Phase 1 větší distance (250m) a silnější bonus (+5.0) — commander
+        # dostane signál DŘÍV a silnější, aby se naučil navigovat k refill.
+        # One-shot per episode (tracked v _refill_milestone_given).
+        curr_ph = getattr(self, 'curriculum_phase', None)
+        milestone_dist = 250.0 if curr_ph == 1 else 150.0
+        milestone_bonus = 5.0 if curr_ph == 1 else 2.0
         if low_water and self.sim.environment.refill_zone is not None:
             if not self._refill_milestone_given.get(agent, False):
                 rz = self.sim.environment.refill_zone['position']
                 dist_to_refill = np.hypot(pos[0] - rz[0], pos[1] - rz[1])
-                if dist_to_refill < 150.0:
-                    reward += 2.0
+                if dist_to_refill < milestone_dist:
+                    reward += milestone_bonus
                     self._refill_milestone_given[agent] = True
 
         if water_lvl < 0.05:
-            # Prázdný tank → mírná penalizace; hlavní pull dělá refill gradient výše
-            reward -= 0.1
-            # Stagnace s prázdnou nádrží: refill dist roste → extra penalta
-            # Zabrauje idle strategii (stay near scouts with empty tank)
-            if self.sim.environment.refill_zone is not None:
-                rz = self.sim.environment.refill_zone['position']
-                dist_now = np.hypot(pos[0] - rz[0], pos[1] - rz[1])
-                prev_d = self._prev_refill_dist.get(agent, dist_now)
-                if dist_now > prev_d + 1.0:   # vzdálenost roste (odletá od refill)
-                    reward -= 0.3
+            # V Phase 1+2: refill gradient + milestone stačí jako navigační signál.
+            # Per-step penalizace (-0.1) a stagnace (-0.3) jsou redundantní a při
+            # 500-krokových epizodách akumulují -100 až -200 → drtí pozitivní odměny.
+            curr_ph = getattr(self, 'curriculum_phase', None)
+            if curr_ph is None:
+                # Phase 3 (plná obtížnost): extra penalty za prázdný tank
+                reward -= 0.1
+                if self.sim.environment.refill_zone is not None:
+                    rz = self.sim.environment.refill_zone['position']
+                    dist_now = np.hypot(pos[0] - rz[0], pos[1] - rz[1])
+                    prev_d_stag = self._prev_stag_dist.get(agent, dist_now)
+                    if dist_now > prev_d_stag + 1.0:
+                        reward -= 0.3
+                    self._prev_stag_dist[agent] = dist_now
 
         return reward
 

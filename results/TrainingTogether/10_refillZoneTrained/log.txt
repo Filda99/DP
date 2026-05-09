@@ -1,0 +1,124 @@
+pybullet build time: Mar 10 2026 14:33:15
+✅ Scout: results/TrainingQuad/050626_TrainingMultipleScoutsOnMultipleFires/scout_b0120.pt
+✅ Commander: saved_models/finetune_07/cmdr_b0200.pt
+Loading OSM terrain...
+Spouštím 1 epizod, seed 111–111
+📂 Loading from cache: /homes/eva/xj/xjahnf00/tmp/DP/data/49.35_16.42_*
+    Processing map data...
+    Found for physics engine:
+      💧 Water bodies (Rivers/Lakes): 3
+      🏢 Buildings/Urban: 801
+      🌲 Forests: 9
+    Creating 3D visual objects...
+✅ Map processing complete.
+📐 map_bounds=600.0, safe_limit=420.0, boundary_emergency=360.0
+  Seed 111 | 🚀 Mise začíná...
+  GIF → /homes/eva/xj/xjahnf00/tmp/DP/demo_seed111.gif                                                                                                                                                            
+Analysis saved.
+  [ 1/1] seed=111 | S=✓ ✓ FW=✓ | peak= 232 end= 232 supp=  0.0% | R_cmdr=-317.3
+======================================================================
+  SOUHRN  (1 epizod, seeds 111–111)
+======================================================================
+  Přežil FW           : 1/1 (100%)
+  Přežili oba scouti : 1/1 (100%)
+  Prům. potlačení   : 0.0%
+  Prům. peak buněk  : 232
+  Prům. R_cmdr      : -317.3
+xjahnf00@aeroworks:~/tmp/DP$ 
+
+A z trenovani vypis:
+: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=0.0295 std=0.8170 | lp_diff: mean=-0.0000 std=0.0000 | alive=6000/15000
+17:20:12 | Batch 0194 (Ep 10920) | R:   +113.7 (  +124.4)  Cmdr_R:   -13.2  Scout:100% Cmdr:100%  scout:[survived=60] cmdr:[survived=30] refill=4/30  18.7s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=-0.0276 std=0.8883 | lp_diff: mean=-0.0000 std=0.0000 | alive=6000/15000
+17:20:43 | Batch 0195 (Ep 10950) | R:   +153.9 (  +133.8)  Cmdr_R:   +26.7  Scout:100% Cmdr:97%  scout:[survived=60] cmdr:[survived=29 boundary=1] refill=3/30  17.6s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=-0.4595 std=1.3093 | lp_diff: mean=-0.0000 std=0.0000 | alive=6000/15000
+17:21:12 | Batch 0196 (Ep 10980) | R:   +118.5 (  +136.2)  Cmdr_R:   -24.2  Scout:100% Cmdr:100%  scout:[survived=60] cmdr:[survived=30] refill=4/30  17.1s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=-0.1252 std=1.0896 | lp_diff: mean=-0.0000 std=0.0000 | alive=6000/15000
+17:21:44 | Batch 0197 (Ep 11010) | R:   +142.3 (  +130.4)  Cmdr_R:    +0.4  Scout:100% Cmdr:97%  scout:[survived=60] cmdr:[survived=29 boundary=1] refill=6/30  18.7s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=0.1097 std=1.1352 | lp_diff: mean=0.0000 std=0.0000 | alive=6000/15000
+17:22:14 | Batch 0198 (Ep 11040) | R:    +82.1 (  +112.2)  Cmdr_R:   -28.9  Scout:100% Cmdr:97%  scout:[survived=60] cmdr:[survived=29 boundary=1] refill=6/30  17.3s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=0.1091 std=0.8865 | lp_diff: mean=-0.0000 std=0.0000 | alive=6000/15000
+17:22:44 | Batch 0199 (Ep 11070) | R:   +142.1 (  +112.1)  Cmdr_R:    -6.1  Scout:100% Cmdr:97%  scout:[survived=60] cmdr:[survived=29 boundary=1] refill=6/30  17.4s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=-0.3005 std=1.0938 | lp_diff: mean=0.0000 std=0.0000 | alive=6000/15000
+17:23:14 | Batch 0200 (Ep 11100) | R:   +171.4 (  +156.8)  Cmdr_R:    -3.8  Scout:100% Cmdr:100%  scout:[survived=60] cmdr:[survived=30] refill=6/30  17.8s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=-0.0282 std=0.8983 | lp_diff: mean=0.0000 std=0.0000 | alive=6000/15000
+17:23:46 | Batch 0201 (Ep 11130) | R:   +106.1 (  +138.8)  Cmdr_R:   -45.5  Scout:100% Cmdr:97%  scout:[survived=60] cmdr:[survived=29 boundary=1] refill=5/30  16.8s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=-0.1218 std=1.1580 | lp_diff: mean=-0.0000 std=0.0000 | alive=6000/15000
+17:24:17 | Batch 0202 (Ep 11160) | R:   +140.1 (  +123.1)  Cmdr_R:   -12.0  Scout:100% Cmdr:100%  scout:[survived=60] cmdr:[survived=30] refill=8/30  18.1s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=0.0732 std=1.0252 | lp_diff: mean=0.0000 std=0.0000 | alive=6000/15000
+17:24:48 | Batch 0203 (Ep 11190) | R:   +110.2 (  +125.1)  Cmdr_R:   -39.5  Scout:100% Cmdr:100%  scout:[survived=60] cmdr:[survived=30] refill=7/30  18.2s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=0.1055 std=0.7742 | lp_diff: mean=-0.0000 std=0.0000 | alive=6000/15000
+17:25:17 | Batch 0204 (Ep 11220) | R:   +144.0 (  +127.1)  Cmdr_R:   -21.8  Scout:100% Cmdr:99%  scout:[survived=60] cmdr:[survived=29 boundary=1] refill=4/30  17.3s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=0.0585 std=1.1243 | lp_diff: mean=0.0000 std=0.0000 | alive=6000/15000
+17:25:47 | Batch 0205 (Ep 11250) | R:   +104.9 (  +124.4)  Cmdr_R:   -63.3  Scout:100% Cmdr:98%  scout:[survived=60] cmdr:[survived=29 boundary=1] refill=7/30  17.3s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=-0.0004 std=0.7386 | lp_diff: mean=0.0000 std=0.0000 | alive=6000/15000
+17:26:18 | Batch 0206 (Ep 11280) | R:   +152.7 (  +128.8)  Cmdr_R:   -15.3  Scout:100% Cmdr:100%  scout:[survived=60] cmdr:[survived=30] refill=6/30  18.9s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=-0.1876 std=1.0160 | lp_diff: mean=0.0000 std=0.0000 | alive=6000/15000
+17:26:49 | Batch 0207 (Ep 11310) | R:   +143.7 (  +148.2)  Cmdr_R:   -25.7  Scout:100% Cmdr:92%  scout:[survived=60] cmdr:[survived=27 boundary=3] refill=4/30  17.1s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=-0.0709 std=1.0059 | lp_diff: mean=0.0000 std=0.0000 | alive=6000/15000
+17:27:21 | Batch 0208 (Ep 11340) | R:    +79.3 (  +111.5)  Cmdr_R:   -49.9  Scout:100% Cmdr:100%  scout:[survived=60] cmdr:[survived=30] refill=3/30  19.0s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=-0.0253 std=0.8659 | lp_diff: mean=-0.0000 std=0.0000 | alive=6000/15000
+17:27:52 | Batch 0209 (Ep 11370) | R:   +127.8 (  +103.5)  Cmdr_R:   -13.6  Scout:100% Cmdr:100%  scout:[survived=60] cmdr:[survived=30] refill=9/30  18.0s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=0.0300 std=0.9604 | lp_diff: mean=-0.0000 std=0.0000 | alive=6000/15000
+17:28:24 | Batch 0210 (Ep 11400) | R:    +64.3 (   +96.0)  Cmdr_R:   -38.5  Scout:100% Cmdr:100%  scout:[survived=60] cmdr:[survived=30] refill=5/30  18.6s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=0.0728 std=0.9108 | lp_diff: mean=0.0000 std=0.0000 | alive=6000/15000
+17:28:59 | Batch 0211 (Ep 11430) | R:   +104.8 (   +84.5)  Cmdr_R:   -39.0  Scout:100% Cmdr:100%  scout:[survived=60] cmdr:[survived=30] refill=3/30  19.2s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=0.1883 std=0.9281 | lp_diff: mean=0.0000 std=0.0000 | alive=6000/15000
+17:29:30 | Batch 0212 (Ep 11460) | R:   +106.0 (  +105.4)  Cmdr_R:   -41.8  Scout:100% Cmdr:97%  scout:[survived=60] cmdr:[survived=29 boundary=1] refill=6/30  17.8s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=0.1068 std=0.7677 | lp_diff: mean=-0.0000 std=0.0000 | alive=6000/15000
+17:30:02 | Batch 0213 (Ep 11490) | R:   +138.6 (  +122.3)  Cmdr_R:   -10.2  Scout:100% Cmdr:100%  scout:[survived=60] cmdr:[survived=30] refill=9/30  18.8s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=0.2778 std=0.7793 | lp_diff: mean=-0.0000 std=0.0000 | alive=6000/15000
+17:30:33 | Batch 0214 (Ep 11520) | R:   +113.9 (  +126.3)  Cmdr_R:    -3.1  Scout:100% Cmdr:97%  scout:[survived=60] cmdr:[survived=29 boundary=1] refill=4/30  17.1s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=0.0036 std=0.8983 | lp_diff: mean=0.0000 std=0.0000 | alive=6000/15000
+17:31:03 | Batch 0215 (Ep 11550) | R:   +174.3 (  +144.1)  Cmdr_R:   +12.8  Scout:100% Cmdr:100%  scout:[survived=60] cmdr:[survived=30] refill=9/30  17.7s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=0.0888 std=0.9744 | lp_diff: mean=0.0000 std=0.0000 | alive=6000/15000
+17:31:33 | Batch 0216 (Ep 11580) | R:    +97.0 (  +135.7)  Cmdr_R:   -77.6  Scout:100% Cmdr:97%  scout:[survived=60] cmdr:[survived=28 ground_crash=1 boundary=1] refill=5/30  17.5s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=-0.3001 std=1.1249 | lp_diff: mean=0.0000 std=0.0000 | alive=6000/15000
+17:32:02 | Batch 0217 (Ep 11610) | R:   +131.7 (  +114.4)  Cmdr_R:   -27.8  Scout:100% Cmdr:100%  scout:[survived=60] cmdr:[survived=30] refill=5/30  16.6s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=0.1403 std=0.6670 | lp_diff: mean=-0.0000 std=0.0000 | alive=6000/15000
+17:32:33 | Batch 0218 (Ep 11640) | R:   +118.0 (  +124.9)  Cmdr_R:    +3.1  Scout:100% Cmdr:100%  scout:[survived=60] cmdr:[survived=30] refill=10/30  17.6s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=0.0392 std=0.6711 | lp_diff: mean=0.0000 std=0.0000 | alive=6000/15000
+17:33:03 | Batch 0219 (Ep 11670) | R:    +86.2 (  +102.1)  Cmdr_R:   -38.0  Scout:100% Cmdr:100%  scout:[survived=60] cmdr:[survived=30] refill=8/30  16.5s
+   [SCOUT DIAG] ratio: mean=1.0000 std=0.0000 min=1.0000 max=1.0000 | adv: mean=-0.0835 std=1.1863 | lp_diff: mean=-0.0000 std=0.0000 | alive=6000/15000
+
+Furt to nevypada uplne dobre ze? Fw uz pochopil, ze refill mu dava vodu, ale pak odleti kousek od refill zony a vsechno vylije.
+Mam to jenom nechat, nebo ted mame zas nejake spatne signaly a neco se tam bije?
+
+Show less
+5:34 PM
+Claude responded: Tohle vypadá lépe než se zdá.
+
+Analyzoval trénink: refill se učí, ale agent plýtvá vodou blízko zóny
+Analyzoval trénink: refill se učí, ale agent plýtvá vodou blízko zóny
+Tohle vypadá lépe než se zdá. Nechej to běžet. Zde je proč.
+
+Co demo reálně ukazuje (Image 3)
+Water level curve: 4 kompletní refill cykly v 1000 krocích:
+
+Step   0→ 50: refill ✅
+Step  50→200: empty (drops water)
+Step 200→370: refill ✅  
+Step 370→650: empty
+Step 650→720: refill ✅
+Step 720→900: empty
+Step 900→end: refill ✅
+Commander ví co je refill zóna, ví jak ji opakovaně použít, ví že má tam létat s prázdným tankem. To je masivní pokrok oproti batch 0 kde seděl u scoutů celou epizodu.
+Jediný zbývající problém
+Commander vyprazdňuje tank ihned po refillu, ne až u ohně. Proč — matematika je jednoduchá:
+
+Tank: 200 jednotek, spotřeba 3.33/step → prázdný za 60 kroků
+Cesta k ohni: ~500m, při 20m/s ≈ 80–100 kroků
+
+Commander nemůže doletět k ohni dřív než je prázdný. Přitom waste penalty -0.5/step × 60 kroků = -30 per cyklus × 4 = -120 — to odpovídá Cmdr_R ≈ -286 v demu.
+
+Jedna konkrétní oprava
+Zdvojnásob waste penalty — -0.5 není dost silný signál na 60 kroků:
+python# reward_config.py
+"water_waste_penalty": 1.0,  # z 0.5
+A přidej bonus za doletění ke scouts S vodou — teď chybí:
+python# env_core.py, _get_fixed_reward_nav(), za refill milestone
+if not self._near_scout_with_water_given.get(agent, False):
+    if water_lvl > 0.5 and live_scouts_nearby:  # dist < 100m
+        reward += 2.0
+        self._near_scout_with_water_given[agent] = True
+Jinak nechej trénink běžet. refill_rate 9–10/30 je reálný pokrok. Policy se nezhroutila, jen chybí jeden krok v cyklu.

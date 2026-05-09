@@ -651,11 +651,14 @@ if __name__ == "__main__":
                         help="Spawn FW this many metres from fire (default: env random)")
     parser.add_argument("--init-water",  type=float, default=0.0,
                         help="Override FW initial water [L] (e.g. 0 = empty tank, default: full)")
+    parser.add_argument("--grid-size",   type=float, default=None,
+                        help="Override map size in metres (e.g. 300 for 300x300m)")
     args = parser.parse_args()
 
     # Přepis cestám z argumentu
     MODEL_SCOUT     = args.scout
     MODEL_COMMANDER = args.commander
+    grid_size_demo  = args.grid_size if args.grid_size is not None else GRID_SIZE
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     scout_actor, commander_actor, _, _ = _load_models(device)
@@ -669,7 +672,7 @@ if __name__ == "__main__":
             water, buildings, forests = _classify_features(gdfs)
             terrain_collections = _build_terrain_collections(water, buildings, forests)
 
-    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=GRID_SIZE,
+    env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=grid_size_demo,
                        max_steps=MAX_STEPS, use_osm=USE_OSM, osm_lat=OSM_LAT,
                        osm_lon=OSM_LON, osm_cache_dir=OSM_CACHE)
 
