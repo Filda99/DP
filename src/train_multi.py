@@ -162,6 +162,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     all_scout_lifespans = []
     all_cmdr_lifespans  = []
     all_deaths          = []
+    all_fire_stats      = []   # (peak_burning, final_burning, total_extinguish)
 
     # Dummy tensors for dead-scout padding
     d_map       = torch.zeros(1, 1, 32, 32)
@@ -239,6 +240,9 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         cmdr_ctrl.reset(safe_limit, boundary_emergency)
         segment_reward     = 0.0
         scripted_segment   = False   # True during scripted refill (not in PPO buffer)
+        scripted_refill_count = 0    # how many scripted refill segments this episode
+        ep_peak_burning   = 0
+        ep_total_extinguish = 0.0
 
         msg_buffer = []
 
@@ -333,6 +337,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     if wp_info['scripted']:
                         segment_reward   = 0.0
                         scripted_segment = True
+                        scripted_refill_count += 1
                         msg_buffer       = []
                     else:
                         # ── PPO buffer for NN decision ──
@@ -468,6 +473,14 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     c_drone.get_position().copy() if c_drone else np.full(3, np.nan))
                 traj_rewards_cmdr.append(r_cmdr if cmdr_alive else 0.0)
 
+            # Fire stats tracking
+            fg = local_env.sim.environment.fire_grid
+            if fg is not None:
+                burning_now = int(np.sum(fg.B))
+                ep_peak_burning = max(ep_peak_burning, burning_now)
+            for dname, eff in local_env.sim.drone_extinguish_stats.items():
+                ep_total_extinguish += eff
+
             # ---------------------------------------------------------
             #  4) Check waypoint segment end
             # ---------------------------------------------------------
@@ -581,9 +594,11 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         all_rewards.append(avg_scout_reward + ep_reward_cmdr)
         all_cmdr_rewards.append(ep_reward_cmdr)
 
-        refill_hit = sum(1 for a in local_env.fixed_agents
-                         if local_env._refill_milestone_given.get(a, False))
-        all_refill_hits.append(refill_hit)
+        all_refill_hits.append(scripted_refill_count)
+
+        fg_end = local_env.sim.environment.fire_grid
+        ep_final_burning = int(np.sum(fg_end.B)) if fg_end is not None else 0
+        all_fire_stats.append((ep_peak_burning, ep_final_burning, round(ep_total_extinguish, 1)))
 
         for q in quad_agents:
             all_scout_lifespans.append(scout_lifespan[q])
@@ -641,7 +656,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
     return (out_scout, out_cmdr, out_init_h,
             all_rewards, all_cmdr_rewards, all_refill_hits,
-            (all_scout_lifespans, all_cmdr_lifespans), all_deaths)
+            (all_scout_lifespans, all_cmdr_lifespans), all_deaths,
+            all_fire_stats)
 
 
 # =====================================================================
@@ -723,9 +739,9 @@ def train_multi(resume_scout="", resume_cmdr="",
     #                             waste penalty, spread penalty ON
     #  Phase 4+ (batch 181+):    full difficulty, domain randomisation
     # -----------------------------------------------------------------
-    CURR_PHASE1_END = 40
-    CURR_PHASE2_END = 100
-    CURR_PHASE3_END = 180
+    CURR_PHASE1_END = 0     # skip early phases — models are pre-trained
+    CURR_PHASE2_END = 0
+    CURR_PHASE3_END = 0
 
     # Behavioural cloning coefficient (decays, floor = 0.03)
     bc_coef = 0.5
@@ -865,6 +881,10 @@ def train_multi(resume_scout="", resume_cmdr="",
     scout_life_pct_history   = []
     cmdr_life_pct_history    = []
     scout_death_history      = []
+    fire_stats_history       = []   # (peak, final, extinguish, suppressed) per batch
+    refill_history           = []   # avg refills per episode per batch
+    cmdr_reward_history      = []
+    scout_reward_history     = []
 
     save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "..", "saved_models", "finetune")
@@ -910,6 +930,7 @@ def train_multi(resume_scout="", resume_cmdr="",
         batch_deaths          = []
         batch_scout_lifespans = []
         batch_cmdr_lifespans  = []
+        batch_fire_stats      = []
 
         batch_ep_max = max_steps
         worker_config['ep_max_steps'] = batch_ep_max
@@ -954,7 +975,8 @@ def train_multi(resume_scout="", resume_cmdr="",
             for fut in futures:
                 try:
                     (w_scout, w_cmdr, w_h, w_rew, w_cmdr_rew,
-                     w_refill, (w_scout_life, w_cmdr_life), w_deaths) = fut.result()
+                     w_refill, (w_scout_life, w_cmdr_life), w_deaths,
+                     w_fire_stats) = fut.result()
                 except Exception as e:
                     failed += 1
                     print(f"   Worker failed: {e}")
@@ -966,6 +988,7 @@ def train_multi(resume_scout="", resume_cmdr="",
                 batch_scout_lifespans.extend(w_scout_life)
                 batch_cmdr_lifespans.extend(w_cmdr_life)
                 batch_refill_hits.extend(w_refill)
+                batch_fire_stats.extend(w_fire_stats)
                 reward_history.extend(w_rew)
                 episodes_played += len(w_rew)
 
@@ -1014,13 +1037,27 @@ def train_multi(resume_scout="", resume_cmdr="",
         nn_decisions = int(sum(float(a) for al in agg_cmdr["alive"] for a in al))
         total_slots  = sum(len(al) for al in agg_cmdr["alive"])
 
+        # Fire stats aggregation
+        if batch_fire_stats:
+            avg_peak   = float(np.mean([s[0] for s in batch_fire_stats]))
+            avg_final  = float(np.mean([s[1] for s in batch_fire_stats]))
+            avg_ext    = float(np.mean([s[2] for s in batch_fire_stats]))
+            suppressed = avg_peak - avg_final
+        else:
+            avg_peak = avg_final = avg_ext = suppressed = 0.0
+        fire_stats_history.append((avg_peak, avg_final, avg_ext, suppressed))
+        refill_history.append(refill_rate / max(1, len(batch_refill_hits)))
+        cmdr_reward_history.append(avg_cmdr_r)
+        scout_reward_history.append(avg_scout_r)
+
         print(f"{datetime.datetime.now().strftime('%H:%M:%S')} | "
               f"Batch {batch_idx:04d} (Ep {episodes_played:05d}) | "
               f"R: {avg_batch:+8.1f} ({avg_roll:+8.1f})  "
               f"Scout_R: {avg_scout_r:+7.1f}  Cmdr_R: {avg_cmdr_r:+7.1f}  "
               f"Scout:{scout_life_pct:.0f}% Cmdr:{cmdr_life_pct:.0f}%  "
-              f"scout:[{s_str}] cmdr:[{c_str}] refill={refill_rate}/{len(batch_refill_hits)}  "
+              f"scout:[{s_str}] cmdr:[{c_str}] refills={refill_rate}  "
               f"NN_dec={nn_decisions}/{total_slots}  "
+              f"fire: peak={avg_peak:.0f} final={avg_final:.0f} supp={suppressed:.0f} ext={avg_ext:.1f}  "
               f"{rollout_time:.1f}s")
 
         # -- Checkpoint: best & periodic ------------------------------
@@ -1262,7 +1299,7 @@ def train_multi(resume_scout="", resume_cmdr="",
                     ratio = torch.exp(log_ratio)
 
                     # BC coefficient (computed early so diagnostic can print it)
-                    bc_coef_now = max(0.03, bc_coef * (1.0 - batch_idx / CURR_PHASE3_END))
+                    bc_coef_now = max(0.03, bc_coef * (1.0 - batch_idx / max(1, CURR_PHASE3_END)))
 
                     # Diagnostic on last epoch, first minibatch
                     if epoch == update_epochs - 1 and start == 0:
@@ -1339,7 +1376,9 @@ def train_multi(resume_scout="", resume_cmdr="",
                 scout_life_pct_history, cmdr_life_pct_history,
                 scout_death_history, save_dir, batch_idx,
                 critic_loss_history_scout, critic_loss_history_cmdr,
-                loss_components_scout, loss_components_cmdr)
+                loss_components_scout, loss_components_cmdr,
+                fire_stats_history, refill_history,
+                cmdr_reward_history, scout_reward_history)
 
     # Final save
     _save_plot_multi(
@@ -1347,7 +1386,9 @@ def train_multi(resume_scout="", resume_cmdr="",
         scout_life_pct_history, cmdr_life_pct_history,
         scout_death_history, save_dir, batch_idx,
         critic_loss_history_scout, critic_loss_history_cmdr,
-        loss_components_scout, loss_components_cmdr)
+        loss_components_scout, loss_components_cmdr,
+        fire_stats_history, refill_history,
+        cmdr_reward_history, scout_reward_history)
 
     print(f"\nTraining complete!")
     print(f"   Best: {save_dir}/scout_best.pt + cmdr_best.pt")
@@ -1361,10 +1402,11 @@ def _save_plot_multi(reward_batches, loss_s, loss_c,
                      scout_life_pct, cmdr_life_pct, scout_deaths,
                      save_dir, batch_idx,
                      critic_loss_s=None, critic_loss_c=None,
-                     loss_comp_s=None, loss_comp_c=None):
+                     loss_comp_s=None, loss_comp_c=None,
+                     fire_stats=None, refill_hist=None,
+                     cmdr_reward_hist=None, scout_reward_hist=None):
     """Generate training progress plots.  All data is per-batch."""
-    n_rows = 3 if (loss_comp_s or loss_comp_c) else 2
-    fig, axes = plt.subplots(n_rows, 3, figsize=(18, 5 * n_rows))
+    fig, axes = plt.subplots(3, 3, figsize=(18, 15))
     fig.suptitle(f"Multi-Agent — Batch {batch_idx}", fontsize=13)
     batches = np.arange(1, len(reward_batches) + 1)
 
@@ -1437,6 +1479,62 @@ def _save_plot_multi(reward_batches, loss_s, loss_c,
         ax.plot(range(1, len(critic_loss_c) + 1), critic_loss_c, color='tomato', linewidth=1, label='Commander')
     ax.set_title("Critic Value Loss (MSE)"); ax.set_xlabel("Batch")
     ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+
+    # ── Row 3: Operational metrics ──────────────────────────────────
+
+    # (2,0) Scout R vs Cmdr R breakdown
+    ax = axes[2, 0]
+    if scout_reward_hist and cmdr_reward_hist:
+        bx = np.arange(1, len(scout_reward_hist) + 1)
+        ax.bar(bx, scout_reward_hist, color='green', alpha=0.4, width=1.0, label='Scout R')
+        ax.bar(bx, cmdr_reward_hist, color='tomato', alpha=0.4, width=1.0, bottom=0, label='Cmdr R')
+        mx_s2, ma_s2 = _ma(scout_reward_hist)
+        mx_c2, ma_c2 = _ma(cmdr_reward_hist)
+        if ma_s2 is not None:
+            ax.plot(mx_s2, ma_s2, color='darkgreen', linewidth=2)
+        if ma_c2 is not None:
+            ax.plot(mx_c2, ma_c2, color='darkred', linewidth=2)
+        ax.legend(fontsize=8)
+    ax.axhline(0, color='gray', linewidth=0.8)
+    ax.set_title("Scout vs Commander Reward"); ax.set_xlabel("Batch"); ax.grid(True, alpha=0.3)
+
+    # (2,1) Fire: peak vs final burning + suppressed
+    ax = axes[2, 1]
+    if fire_stats and len(fire_stats) > 0:
+        bx = np.arange(1, len(fire_stats) + 1)
+        peaks = [s[0] for s in fire_stats]
+        finals = [s[1] for s in fire_stats]
+        supps = [s[3] for s in fire_stats]
+        ax.fill_between(bx, 0, peaks, color='#e74c3c', alpha=0.3, label='Peak burn')
+        ax.fill_between(bx, 0, finals, color='#e67e22', alpha=0.5, label='Final burn')
+        ax.plot(bx, supps, color='#2ecc71', linewidth=1.5, label='Suppressed')
+        mx_p, ma_p = _ma(supps)
+        if ma_p is not None:
+            ax.plot(mx_p, ma_p, color='darkgreen', linewidth=2.5)
+        ax.legend(fontsize=8)
+    ax.set_title("Fire: Peak / Final / Suppressed [cells]"); ax.set_xlabel("Batch")
+    ax.set_ylabel("Cells"); ax.grid(True, alpha=0.3)
+
+    # (2,2) Refills per episode + extinguish effectiveness
+    ax = axes[2, 2]
+    if refill_hist and len(refill_hist) > 0:
+        bx = np.arange(1, len(refill_hist) + 1)
+        ax.bar(bx, refill_hist, color='#3498db', alpha=0.6, width=1.0, label='Refills/ep')
+        mx_r, ma_r = _ma(refill_hist)
+        if ma_r is not None:
+            ax.plot(mx_r, ma_r, color='navy', linewidth=2)
+        ax.legend(fontsize=8, loc='upper left')
+    if fire_stats and len(fire_stats) > 0:
+        ax2 = ax.twinx()
+        exts = [s[2] for s in fire_stats]
+        ax2.plot(np.arange(1, len(exts) + 1), exts, color='#e67e22', linewidth=1.5, alpha=0.8, label='Extinguish')
+        mx_e, ma_e = _ma(exts)
+        if ma_e is not None:
+            ax2.plot(mx_e, ma_e, color='darkorange', linewidth=2.5)
+        ax2.set_ylabel("Extinguish eff.", color='#e67e22')
+        ax2.legend(fontsize=8, loc='upper right')
+    ax.set_title("Refills/ep + Extinguish Effectiveness"); ax.set_xlabel("Batch")
+    ax.set_ylabel("Refills/ep"); ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, f"training_b{batch_idx:04d}.png"), dpi=100)

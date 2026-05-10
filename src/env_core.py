@@ -1129,7 +1129,7 @@ class DroneFireEnv(ParallelEnv):
                 fw_drone = self.sim.drones.get(f_agent)
                 if fw_drone is not None and fw_drone.current_water > 0:
                     fw_pos = fw_drone.get_position()
-                    dist_to_fire = np.hypot(fw_pos[0] - self.fire_x, fw_pos[1] - self.fire_y)
+                    _, _, dist_to_fire = self._nearest_fire(fw_pos)
                     fire_radius = FIXED["water_trigger_dist"]    # 200 m — fire proximity zone
                     comm_range  = 150.0                          # 150 m — neutral zone near scout
                     if dist_to_fire < fire_radius:
