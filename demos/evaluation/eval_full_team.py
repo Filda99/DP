@@ -24,6 +24,7 @@ sys.path.insert(0, project_root)
 
 from src.env_core import DroneFireEnv
 from src.models import ScoutActor, CommanderActor
+from src.commander_control import CommanderController
 
 # ── Default paths ─────────────────────────────────────────────────────────────
 DEFAULT_SCOUT = os.path.join(project_root, "saved_models", "finetune_07", "scout_best.pt")
@@ -66,11 +67,10 @@ def run_episode(env, scout_actor, cmdr_actor, seed, ep_num, n_quads, device):
     h_scout = {q: torch.zeros(1, 1, hidden_scout).to(device) for q in quad_names}
     h_cmdr  = torch.zeros(1, 1, hidden_cmdr).to(device)
 
-    # Commander waypoint state
-    need_new_wp   = True
-    target_x, target_y = 0.0, 0.0
-    target_alt_raw, water_raw = 0.0, -0.5
-    steps_in_seg  = 0
+    # Commander controller
+    cmdr_ctrl = CommanderController(WAYPOINT_RANGE, WAYPOINT_STEPS, WP_REACHED_DIST)
+    cmdr_ctrl.reset(safe_limit=max(50.0, env.map_bounds * 0.7),
+                    boundary_emergency=max(50.0, env.map_bounds * 0.6))
     scout_msgs    = {q: {"latest": torch.zeros(1, 5).to(device), "valid": False}
                      for q in quad_names}
 
@@ -82,7 +82,6 @@ def run_episode(env, scout_actor, cmdr_actor, seed, ep_num, n_quads, device):
     water_prev        = 1.0
     fire_cells_peak   = 0
     safe_limit        = max(50.0, env.map_bounds * 0.7)
-
     for step in range(MAX_STEPS):
         if not env.agents:
             break
@@ -119,44 +118,16 @@ def run_episode(env, scout_actor, cmdr_actor, seed, ep_num, n_quads, device):
         if "fixed_0" in env.agents:
             drone = env.sim.drones.get("fixed_0")
             if drone is not None:
-                pos = drone.get_position()
-
-                # Boundary emergency
-                in_emergency = (abs(pos[0]) > env.map_bounds * 0.6 or
-                                abs(pos[1]) > env.map_bounds * 0.6)
-                if in_emergency:
-                    target_x, target_y = 0.0, 0.0
-
-                if not in_emergency:
-                    dx = target_x - pos[0]; dy = target_y - pos[1]
-                    if np.hypot(dx, dy) < WP_REACHED_DIST or steps_in_seg >= WAYPOINT_STEPS:
-                        need_new_wp = True
-
-                if need_new_wp and not in_emergency:
-                    s_st_f = torch.FloatTensor(obs["fixed_0"]["self_state"]).to(device).unsqueeze(0)
-                    msgs_t = torch.stack([scout_msgs[q]["latest"] for q in quad_names], dim=1).to(device)
-                    msgs_m = torch.tensor([[not scout_msgs[q]["valid"] for q in quad_names]],
-                                          dtype=torch.bool).to(device)
-                    with torch.no_grad():
-                        dist_c, _, h_cmdr = cmdr_actor(s_st_f, msgs_t, msgs_m, h_cmdr)
-                    act = dist_c.mean.squeeze(0).cpu().numpy()
-                    dx_raw = float(act[0]); dy_raw = float(act[1])
-                    target_alt_raw = float(act[2]); water_raw = float(act[3])
-                    target_x = float(np.clip(pos[0] + dx_raw * WAYPOINT_RANGE, -safe_limit, safe_limit))
-                    target_y = float(np.clip(pos[1] + dy_raw * WAYPOINT_RANGE, -safe_limit, safe_limit))
-                    steps_in_seg = 0; need_new_wp = False
-
-                # Heading controller
-                dx_to = target_x - pos[0]; dy_to = target_y - pos[1]
-                dist_to = np.hypot(dx_to, dy_to)
-                if dist_to > 1.0:
-                    desired = np.arctan2(dy_to, dx_to)
-                    cur_yaw = drone.get_orientation_rpy()[2]
-                    heading_cmd = float(np.clip(_wrap_angle(desired - cur_yaw) / np.pi, -1, 1))
-                else:
-                    heading_cmd = 0.0
-                actions["fixed_0"] = np.array([heading_cmd, target_alt_raw, water_raw], np.float32)
-                steps_in_seg += 1
+                msgs_t = torch.stack([scout_msgs[q]["latest"]
+                                      for q in quad_names], dim=1).to(device)
+                msgs_m = torch.tensor([[not scout_msgs[q]["valid"]
+                                        for q in quad_names]],
+                                      dtype=torch.bool).to(device)
+                action, h_cmdr, _ = cmdr_ctrl.step(
+                    drone, obs["fixed_0"]["self_state"], env,
+                    cmdr_actor, h_cmdr, msgs_t, msgs_m,
+                    deterministic=True)
+                actions["fixed_0"] = action
 
         obs, rewards, _, _, _ = env.step(actions)
         total_rf += rewards.get("fixed_0", 0.0)
