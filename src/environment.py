@@ -84,11 +84,10 @@ class Environment:
         OPTIMIZED: Uses matplotlib.path for fast C-based rasterization.
         """
         if self.fire_grid is None or self.grid_mapper is None:
-            print("📝 FireGrid not initialized yet. Storing terrain data for later rasterization.")
+            print("FireGrid not initialized yet. Storing terrain data for later rasterization.")
             self._pending_terrain_data = (gdf_water, gdf_buildings, gdf_forest)
             return
 
-        # print("🔥 Rasterizing terrain into FireGrid (Optimized Painter's Algorithm)...")
         t_start = time.time()
         
         H, W = self.fire_grid.H, self.fire_grid.W
@@ -99,27 +98,23 @@ class Environment:
         cell_size = self.grid_mapper.cell_size_m
         
         # Fuel properties: (fuel_level, burn_rate_per_sq_meter)
-        # Burn rate per square meter - stejný burn rate na m2 bez ohledu na cell size
+        # Burn rate per square metre — identical per m² regardless of cell size.
+        #
+        # Realistic burn times for a 1×1 m cell:
+        #   Grass:    30 s  -> burn_rate = 0.3 / 30  = 0.01   per second per m²
+        #   Forest:  120 s  -> burn_rate = 0.8 / 120 = 0.0067 per second per m²
+        #   Building: 600 s -> burn_rate = 0.9 / 600 = 0.0015 per second per m²
+        BURN_RATE_GRASS_PER_M2 = 0.01
+        BURN_RATE_FOREST_PER_M2 = 0.0067
+        BURN_RATE_BUILDING_PER_M2 = 0.0015
         
-        # Reálné burn times pro 1x1m buňku:
-        # Tráva: 30 sekund -> burn_rate = fuel_level / 30s = 0.3 / 30 = 0.01 per second per m2
-        # Les: 2 minuty -> burn_rate = 0.8 / 120 = 0.0067 per second per m2  
-        # Budova: 10 minut -> burn_rate = 0.9 / 600 = 0.0015 per second per m2
+        # Scale burn rate by cell area — larger cells burn proportionally longer
+        cell_area = cell_size * cell_size  # m²
         
-        BURN_RATE_GRASS_PER_M2 = 0.01      # 30s pro 1x1m buňku
-        BURN_RATE_FOREST_PER_M2 = 0.0067    # 2 min pro 1x1m buňku 
-        BURN_RATE_BUILDING_PER_M2 = 0.0015  # 10 min pro 1x1m buňku
-        
-        # Scale burn rate podle cell size - větší buňka horí proporcionálně déle
-        cell_area = cell_size * cell_size  # m2
-        
-        FUEL_WATER = (0.0, 0.0) 
-        FUEL_BUILDING = (0.9, BURN_RATE_BUILDING_PER_M2 / cell_area)  # Scale podle plochy
-        FUEL_FOREST = (0.8, BURN_RATE_FOREST_PER_M2 / cell_area)     # Scale podle plochy
-        FUEL_GRASS = (0.3, BURN_RATE_GRASS_PER_M2 / cell_area)       # Scale podle plochy        
-        # Debug info - ukažme burn times
-        grass_burn_time = FUEL_GRASS[0] / FUEL_GRASS[1] if FUEL_GRASS[1] > 0 else 0
-        forest_burn_time = FUEL_FOREST[0] / FUEL_FOREST[1] if FUEL_FOREST[1] > 0 else 0 
+        FUEL_WATER = (0.0, 0.0)
+        FUEL_BUILDING = (0.9, BURN_RATE_BUILDING_PER_M2 / cell_area)
+        FUEL_FOREST = (0.8, BURN_RATE_FOREST_PER_M2 / cell_area)
+        FUEL_GRASS = (0.3, BURN_RATE_GRASS_PER_M2 / cell_area)
         # 1. BASE LAYER: GRASS/OPEN (Default)
         self.fire_grid.F[:] = FUEL_GRASS[0]
         self.fire_grid.fuel_burn_rate[:] = FUEL_GRASS[1]
@@ -191,15 +186,8 @@ class Environment:
 
         # 2. APPLY LAYERS IN PRIORITY ORDER
         cells_forest = burn_polygons_to_grid(gdf_forest, *FUEL_FOREST, "Forest")
-        # print(f"   🌲 Applied Forest layer ({cells_forest} cells)")
-        
         cells_bld = burn_polygons_to_grid(gdf_buildings, *FUEL_BUILDING, "Buildings")
-        # print(f"   🏢 Applied Building layer ({cells_bld} cells)")
-        
         cells_water = burn_polygons_to_grid(gdf_water, *FUEL_WATER, "Water")
-        # print(f"   💧 Applied Water layer ({cells_water} cells)")
-        
-        # print(f"✅ Terrain rasterization complete in {time.time() - t_start:.2f}s")
 
     # ============================================================================
     # PYBULLET OBJECT CREATION (VISUALS)
@@ -251,17 +239,13 @@ class Environment:
         # We access the arrays B (Burning) and I (Intensity)
         if 0 <= r < self.fire_grid.H and 0 <= c < self.fire_grid.W:
             self.fire_grid.B[r, c] = True        # Set Burning flag to True
-            self.fire_grid.I[r, c] = intensity   # Set Intensity
-            # print(f"🔥 Ignition confirmed at world=({x:.1f}, {y:.1f}) -> grid=[{r}, {c}]")
+            self.fire_grid.I[r, c] = intensity
         else:
             print(f"⚠️ Ignition failed: Coordinates ({x:.1f}, {y:.1f}) are out of simulation bounds.")
 
     def enable_fire_simulation(self, grid_width_m=100, grid_height_m=100, cell_size_m=2.0, 
                              dt=0.1, alpha=1.0, k_wind=1.5, wind_dir=0.0, lazy_fuel=False):
-        """
-        Enable wildfire simulation.
-        """
-        # print(f"🔥 Enabling Fire Simulation...")
+        """Enable wildfire simulation."""
         self.grid_mapper = GridMapper(grid_width_m, grid_height_m, cell_size_m)
         H, W = self.grid_mapper.get_grid_dimensions()
         
@@ -269,23 +253,18 @@ class Environment:
         wind_speed = np.linalg.norm(wind_velocity)
         wind_angle = np.arctan2(wind_velocity[1], wind_velocity[0]) if wind_speed > 0.01 else 0.0
 
-        # DEFINE PHYSICAL SPEED (Meters per Second)
-        # l_base represents the base rate of spread in prob/sec. 
-        # 0.001 m/s = very slow creep (realističky pomalé)
-        # 0.01 m/s = slow creep  
-        # 0.1 m/s = moderate spread
-        PHYSICAL_SPREAD_SPEED = 0.1  # Rychlejší šíření pro viditelnost
+        # Physical spread speed [m/s]:
+        #   0.001 = very slow creep, 0.01 = slow, 0.1 = moderate
+        PHYSICAL_SPREAD_SPEED = 0.1
         
         # CALCULATE RATE PARAMETER (Lambda)
         # Speed = Cell_Size * Rate  =>  Rate = Speed / Cell_Size
         scaled_spread_rate = PHYSICAL_SPREAD_SPEED / cell_size_m
 
-        # Calculate fuel properties based on cell size
-        BURN_RATE_GRASS_PER_M2 = 0.01      # 30s pro 1x1m buňku
-        cell_area = cell_size_m * cell_size_m  # m2
-        FUEL_GRASS = (0.3, BURN_RATE_GRASS_PER_M2 / cell_area)       # Scale podle plochy
-
-        # print(scaled_spread_rate)
+        # Default fuel properties (grass) — scaled by cell area
+        BURN_RATE_GRASS_PER_M2 = 0.01
+        cell_area = cell_size_m * cell_size_m
+        FUEL_GRASS = (0.3, BURN_RATE_GRASS_PER_M2 / cell_area)
 
         self.fire_grid = FireGrid(
             H=H, W=W, dt=dt, alpha=alpha, 
@@ -296,58 +275,46 @@ class Environment:
         self.fire_enabled = True
         
         if self._pending_terrain_data:
-            # print("    Found pending terrain data. Rasterizing now...")
             self.rasterize_terrain_layers(*self._pending_terrain_data)
             self._pending_terrain_data = None
         else:
-            # print("⚠️  No terrain data found. Initializing as grass with correct burn rates.")
-            # Použij naše nové fuel properties místo starých konstant!
             self.fire_grid.F[:] = FUEL_GRASS[0]
             self.fire_grid.fuel_burn_rate[:] = FUEL_GRASS[1]
 
         self.fire_grid.B[:] = False
         self.fire_grid.I[:] = 0.0
-        
-        # print(f"✅ Fire simulation ready: {H}x{W} cells, {cell_size_m}m resolution.")
 
     def start_fire_at_position(self, world_pos, intensity=0.2, radius_m=5.0):
-        """
-        Založí oheň na dané pozici a v jejím okolí (vytvoří velkou počáteční skvrnu).
-        radius_m=5.0 vytvoří čtverec o straně cca 10x10 metrů.
+        """Ignite fire at *world_pos* and its neighbourhood.
+
+        Creates a square patch of burning cells with side length
+        ``2 * radius_m``.  Only cells that contain fuel are ignited.
         """
         if not self.fire_enabled: return False
         try:
-            # Střed ohně
             center_i, center_j = self.grid_mapper.world_to_cell(world_pos)
-            
-            # Kolik buněk odpovídá zadanému poloměru
             radius_cells = int(radius_m / self.grid_mapper.cell_size_m)
-            
+
             ignited_any = False
-            
-            # Projdeme čtverec kolem středu
             for i in range(center_i - radius_cells, center_i + radius_cells + 1):
                 for j in range(center_j - radius_cells, center_j + radius_cells + 1):
-                    # Kontrola, abychom nezapisovali mimo matici
                     if 0 <= i < self.fire_grid.H and 0 <= j < self.fire_grid.W:
-                        # Pokud je na políčku palivo, zapal ho
                         if self.fire_grid.F[i, j] > 0:
                             self.fire_grid.B[i, j] = True
-                            # Intenzitu omezíme podle množství paliva
                             self.fire_grid.I[i, j] = np.minimum(1.0, self.fire_grid.F[i, j] * intensity)
                             ignited_any = True
-                            
+
             if ignited_any:
-                # print(f"🔥 Oheň založen na {world_pos} (blok {radius_m*2}x{radius_m*2}m)")
                 return True
-                
-        except Exception as e:
+
+        except Exception:
             pass
-            
-        print(f"❌ Nepodařilo se založit oheň na {world_pos} (Žádné palivo / Mimo mapu)")
+
+        print(f"Failed to ignite fire at {world_pos} (no fuel / out of bounds)")
         return False
 
     def update_fire_simulation(self, suppression_assignments=None, water_drops=None, real_dt=None):
+        """Advance the fire simulation by *real_dt* seconds."""
         if not self.fire_enabled: return
         
         if real_dt is None: real_dt = self.fire_grid.dt
@@ -370,6 +337,7 @@ class Environment:
             self.fire_time_accumulator -= steps_to_run * self.fire_grid.dt
 
     def get_fire_state(self):
+        """Return a snapshot of the current fire state."""
         if not self.fire_enabled: return None
         return {
             'fire_grid_state': self.fire_grid.get_state(),
@@ -463,30 +431,25 @@ class Environment:
             
             plt.savefig(filename, dpi=150, bbox_inches='tight')
             plt.close()
-            # print(f"✅ Saved map: {filename}")
         else:
             print("❌ Cannot save map: FireGrid not initialized")
 
     def create_refill_zone(self, center_pos=None, size=10.0):
+        """Create a visual refill zone (cyan semi-transparent box).
+
+        If *center_pos* is None a random position is generated.
         """
-        Creates a visual refill zone.
-        If center_pos is None, generates a random position.
-        """
-        # Pokud není zadána pozice, vygenerujeme náhodnou (např. v rozsahu +/- 200m)
         if center_pos is None:
              x = random.uniform(-100, 100)
              y = random.uniform(-100, 100)
-             z = random.uniform(30, 80) # Výška vhodná pro letadla
+             z = random.uniform(30, 80)
              center_pos = [x, y, z]
 
-        # Vytvoření vizuálu (Modrá, poloprůhledná krychle)
         visual_shape = p.createVisualShape(
             shapeType=p.GEOM_BOX,
-            halfExtents=[size/2, size/2, size/2], # 5x5x5 metrů
-            rgbaColor=[0, 1, 1, 0.4] # Cyan, 40% průhlednost
+            halfExtents=[size/2, size/2, size/2],
+            rgbaColor=[0, 1, 1, 0.4]
         )
-        
-        # Vytvoření tělesa bez kolizí (baseCollisionShapeIndex=-1)
         zone_id = p.createMultiBody(
             baseVisualShapeIndex=visual_shape,
             basePosition=center_pos
@@ -496,10 +459,8 @@ class Environment:
             'id': zone_id,
             'position': np.array(center_pos),
             'size': size,
-            'radius_sq': 40.0**2  # 40m detekční rádius
+            'radius_sq': 40.0**2  # 40 m detection radius
         }
-        
-        # print(f"💧 Refill Zone created at {center_pos}")
         return center_pos
     
     # ============================================================================
@@ -507,11 +468,13 @@ class Environment:
     # ============================================================================
 
     def _initialize_random_wind(self):
+        """Set initial random wind direction and speed."""
         speed = random.uniform(3.0, 25.0)
         angle = random.uniform(0, 2 * np.pi)
         self.wind_velocity = np.array([speed * np.cos(angle), speed * np.sin(angle), 0.0])
 
     def _update_wind_dynamics(self, dt):
+        """Slowly perturb wind direction and speed over time."""
         self.wind_change_timer += dt
         if self.wind_change_timer >= self.wind_change_interval:
             # Perturb wind slightly
@@ -540,14 +503,14 @@ class Environment:
         self.target_wind = self.wind_velocity.copy()
         self.weather['wind_velocity'] = self.wind_velocity
         
-        # Disable random wind changes
         self.manual_wind_control = True
-        # print(f"🌬️ Environment Wind set to: {self.wind_velocity} m/s")
 
     def get_wind_at_position(self, position):
+        """Return wind velocity at *position*, scaled by altitude."""
         return self.wind_velocity * (1.0 + position[2] * 0.01)
 
     def is_position_in_obstacle(self, position):
+        """Check whether *position* is inside any registered obstacle."""
         for obstacle in self.obstacles:
             b = obstacle['bounds']
             if (b['min'][0] <= position[0] <= b['max'][0] and
@@ -563,6 +526,7 @@ class Environment:
         }
     
     def get_environment_info(self):
+        """Return a summary dict (obstacle count, terrain zones, weather)."""
         return {
             'obstacles': len(self.obstacles),
             'terrain_zones': len(self.terrain_zones),

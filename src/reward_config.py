@@ -1,84 +1,83 @@
 # =============================================================================
-# reward_config.py — Centrální konfigurace všech reward parametrů
+# reward_config.py — Central reward parameter configuration
 # =============================================================================
-# Všechny prahové hodnoty, váhy a limity na jednom místě.
-# Importuj: from reward_config import QUAD, FIXED, SHARED
+# All thresholds, weights and limits in one place.
+# Import: from reward_config import QUAD, FIXED, SHARED
 
-# ─── Sdílené parametry ───────────────────────────────────────────────────────
-# Všechny hodnoty jsou FIXNÍ — nezávislé na velikosti mapy.
-# NORM_DIST = 1000 v env_core.py normalizuje pozice a vzdálenosti v observacích.
+# ─── Shared parameters ──────────────────────────────────────────────────────
+# All values are FIXED — independent of map size.
+# NORM_DIST = 1000 in env_core.py normalises positions and distances in obs.
 SHARED = {
-    "survival_bonus":       0.02,  # zvýšeno — přežívání musí být cítit i bez ohně
+    "survival_bonus":       0.02,  # per-step survival reward (felt even without fire)
     "boundary_penalty":     0.3,
     "boundary_extra":       0.3,
-    "crash_penalty":        -10,   # sníženo z -50 — crash nesmí dominovat learning signál
+    "crash_penalty":        -10,   # reduced from -50 — must not dominate the learning signal
     "reward_clip_min":      -5.0,
     "reward_clip_max":       5.0,
 }
 
-# ─── Quadkoptéra (Scout) ─────────────────────────────────────────────────────
+# ─── Quadcopter (Scout) ─────────────────────────────────────────────────────
 QUAD = {
-    # Hranice mapy — fixní, nezávislé na map_bounds
+    # Map boundary — fixed, independent of map_bounds
     "boundary_threshold_m":  150.0,
 
-    # Výška — fixní rozsah, nezávislý na mapě
-    "alt_ideal_min":    60.0,   # zarovnáno s ground_danger_alt — pod tímto penalty začíná
-    "alt_ideal_max":   120.0,   # zvýšeno z 80m — netrestáme létání výš (větší FOV)
-    "alt_ceiling":     300.0,   # tvrdá smrt
-    "alt_sweet_min":    70.0,   # ideální operační pásmo — spodní hranice
-    "alt_sweet_max":   150.0,   # zvýšeno z 100m
-    "alt_sweet_bonus":   0.02,  # per-krok bonus za let ve sweet-spotu
+    # Altitude — fixed range, map-independent
+    "alt_ideal_min":    60.0,   # aligned with ground_danger_alt — penalty starts below this
+    "alt_ideal_max":   120.0,   # raised from 80 m — don't penalise higher flight (larger FOV)
+    "alt_ceiling":     300.0,   # hard kill
+    "alt_sweet_min":    70.0,   # ideal operating band — lower bound
+    "alt_sweet_max":   150.0,   # raised from 100 m
+    "alt_sweet_bonus":   0.02,  # per-step bonus for flying in the sweet spot
 
-    # Mise — originální hodnoty které fungovaly (zvýšení na 1.0/3.0 způsobilo dive-crash)
-    "fire_flat_bonus":   0.5,    # per-step bonus za viditelnost ohně
-    "fire_intensity_k":  2.0,    # proporcionální k intenzitě
-    "fire_speed_pen":    0.01,   # penalizace za rychlost nad ohněm
+    # Mission — original values that worked (1.0/3.0 caused dive-crashes)
+    "fire_flat_bonus":   0.5,    # per-step bonus for fire visibility
+    "fire_intensity_k":  2.0,    # proportional to intensity
+    "fire_speed_pen":    0.01,   # penalty for speed over fire
 
-    # Approach — potential-based shaping (hustý gradient k ohni)
-    # Musí být dostatečně silný aby agent CÍTIL odlet od ohně.
-    # Při 10 m/s odletu: 10 * 0.03 = -0.3/step penalizace → za 50 kroků -15.0
+    # Approach — potential-based shaping (dense gradient towards fire)
+    # Must be strong enough for the agent to FEEL departure from fire.
+    # At 10 m/s departure: 10 * 0.03 = -0.3/step penalty → -15.0 over 50 steps
     "approach_k":        0.03,
 
-    # Compass follow — odměna za směr letu k ohni (velocity · fire_dir)
-    # Nezávislé na vzdálenosti, čistý direction signal.
-    # Zvýšeno z 0.15 — dominantní signál k ohni
+    # Compass follow — reward for heading towards fire (velocity · fire_dir)
+    # Distance-independent, pure directional signal.
     "compass_follow_k":  0.25,
 
     # First discovery bonus
     "first_discovery_bonus": 1.0,
 
-    # Ground proximity — exponenciální penalizace zabraňuje dive-crashům
-    # ground_danger_alt musí být >= alt_ideal_min aby reward landscape byl konzistentní
-    # Max fire reward: flat(0.5) + intensity_k(2.0)*0.5 = 1.5/krok
-    # ground_danger_pen=5.0 na z=0: -5.0 >> +1.5 → dive se nevyplatí
-    # na z=35m (polovina danger zone): -5.0*(0.5)^2 = -1.25 → stále > fire reward
-    "ground_danger_alt":  70.0,   # shodné s alt_ideal_min
-    "ground_danger_pen":  5.0,    # sníženo z 8.0 — méně volatilní, stále překryje fire reward
+    # Ground proximity — exponential penalty prevents dive-crashes
+    # ground_danger_alt must be >= alt_ideal_min for a consistent reward landscape
+    # Max fire reward: flat(0.5) + intensity_k(2.0)*0.5 = 1.5/step
+    # ground_danger_pen=5.0 at z=0: -5.0 >> +1.5 → diving never pays off
+    # at z=35 m (half of danger zone): -5.0*(0.5)^2 = -1.25 → still > fire reward
+    "ground_danger_alt":  70.0,   # same as alt_ideal_min
+    "ground_danger_pen":  5.0,    # reduced from 8.0 — less volatile, still outweighs fire reward
 
-    # Separation — bonus za rozestup mezi scouty
-    "separation_min_m":   30.0,   # pod touto vzdáleností: penalizace (příliš blízko)
-    "separation_bonus":   0.05,   # per-step bonus když jsou dál než separation_min_m
+    # Separation — bonus for spacing between scouts
+    "separation_min_m":   30.0,   # below this distance: penalty (too close)
+    "separation_bonus":   0.05,   # per-step bonus when farther than separation_min_m
 
     # Alt penalty
-    "alt_penalty":       0.05,  # flat penalizace za létání mimo rozsah
+    "alt_penalty":       0.05,  # flat penalty for flying outside the ideal range
 
-    # Exploration — bonus za návštěvu nové 50m buňky (motivace pro scouta bez ohně)
+    # Exploration — bonus for visiting a new 50 m cell (scout motivation without fire)
     "exploration_bonus":  0.1,
 
-    # Fire abandonment — penalizace za odlet od ohně který už byl vidět.
-    # Aplikuje se pouze při přechodu fire_seen > threshold → fire_seen < threshold.
-    # Pomáhá scoutům zůstat u ohně co najdou (klíčové při multi-fire scénářích).
-    "fire_abandon_penalty": 1.0,  # škálováno podle předchozí intenzity (max ~1.0/step)
-    "fire_abandon_threshold": 0.05,  # min intenzita aby se počítalo jako "viděl oheň"
+    # Fire abandonment — penalty for flying away from previously seen fire.
+    # Applied only on transition fire_seen > threshold → fire_seen < threshold.
+    # Helps scouts stay near discovered fire (critical in multi-fire scenarios).
+    "fire_abandon_penalty": 1.0,  # scaled by previous intensity (max ~1.0/step)
+    "fire_abandon_threshold": 0.05,  # min intensity to count as "saw fire"
 }
 
 # ─── Fixed-wing (Commander) ──────────────────────────────────────────────────
 FIXED = {
-    # Hranice mapy — fixní
+    # Map boundary — fixed
     "boundary_threshold_m":  300.0,
     "boundary_extra_frac":      0.35,
 
-    # Výška — fixní
+    # Altitude — fixed
     "alt_ideal_min":    40.0,
     "alt_ideal_max":   150.0,
     "alt_ceiling":     450.0,
@@ -90,14 +89,14 @@ FIXED = {
     "survival_base":     0.02,
     "rubber_band_k":     0.02,
 
-    # Water trigger bonus — FW dostane reward za drop blízko ohně (ground-truth vzdálenost)
-    "water_trigger_dist":   200.0,     # radius [m] pro fire-proximity bonus (bylo 150)
+    # Water trigger bonus — FW receives reward for dropping near fire (ground-truth dist)
+    "water_trigger_dist":   200.0,     # radius [m] for fire-proximity bonus
     "water_trigger_alt":    150.0,
     "water_trigger_bonus":    1.5,
     "water_trigger_thresh":   0.0,
-    "communication_range_m": 400.0,   # dosah cross-attention zpráv (použito v team reward)
-    "water_guidance_bonus": 1.0,       # max bonus za drop přímo nad ohněm (bylo 0.2 u scoutu)
-    "water_waste_penalty": 8.0,        # ZPĚT na pracující hodnotu — 1.0 nedával trest za plýtvání vodou
+    "communication_range_m": 400.0,   # cross-attention message range (used in team reward)
+    "water_guidance_bonus": 1.0,       # max bonus for dropping directly over fire
+    "water_waste_penalty": 8.0,        # penalty for wasting water far from fire
 
     # Fire approach — potential-based shaping towards nearest scout (fire proxy)
     # Scouts hover near fire, so approach-to-scout ≈ approach-to-fire.
@@ -110,8 +109,8 @@ FIXED = {
     "refill_proximity_bonus":   0.05,
 
     # Blending survival vs mission
-    "survival_weight":  0.2,    # bylo 0.3 — dáme commanderovi víc survival signálu
-    "mission_weight":   0.8,    # bylo 0.7
+    "survival_weight":  0.2,
+    "mission_weight":   0.8,
 
     # Scale
     "reward_scale":     0.5,

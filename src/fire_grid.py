@@ -15,6 +15,23 @@ class FireGrid:
     def __init__(self, H: int, W: int, dt: float = 0.1, alpha: float = 1.0,
                  k_wind: float = 1.0, k_slope: float = 1.0, wind_dir: float = 0.0,
                  l_base: Optional[np.ndarray] = None):
+        """Initialise a fire grid.
+
+        Parameters
+        ----------
+        H, W : int
+            Grid dimensions (rows, columns).
+        dt : float
+            Simulation time step [s].
+        alpha : float
+            Distance decay for ignition probability.
+        k_wind, k_slope : float
+            Coefficients for wind and slope influence on spread.
+        wind_dir : float
+            Global wind direction [rad].
+        l_base : array, optional
+            Per-row base spread rate (lambda).  Defaults to 1.0 everywhere.
+        """
         
         self.H = H
         self.W = W
@@ -49,8 +66,21 @@ class FireGrid:
         self.lazy_fuel_enabled = True
 
     def step(self, suppression_assignments=None, water_drops=None):
-        """
-        Perform one simulation step using ROI (Region of Interest) optimization.
+        """Advance the fire simulation by one time step.
+
+        Algorithm (ROI-optimised):
+          1. **Water application** — sparse update of moisture, intensity and
+             extinguishment at cells where water was dropped.
+          2. **Active window detection** — compute the bounding box of all
+             burning cells plus a ``PAD`` margin.  All subsequent physics
+             operates only on this Region of Interest (ROI) for performance.
+          3. **Ignition** — for each of the 8 neighbours, compute ignition
+             probability using distance decay, wind alignment and moisture.
+             Stochastic roll determines new ignitions.
+          4. **Fuel consumption** — burning cells consume fuel at their
+             local ``fuel_burn_rate``.  Cells with no fuel left burn out.
+          5. **Intensity update** — ``I = clip(F * (1-M)^1.5, 0, 1)``.
+          6. **Evaporation** — moisture slowly decreases.
         """
         # 1. APPLY WATER (Global or Sparse update)
         if water_drops:
@@ -71,15 +101,15 @@ class FireGrid:
                 self.B[ext_rows, ext_cols] = False
                 self.I[ext_rows, ext_cols] = 0.0
 
-        # --- OPTIMIZATION: FIND ACTIVE WINDOW ---
-        # Find bounds of current fire
+        # ── ROI: bounding box of burning cells + PAD margin ──────────
+        # Physics is computed only inside this window, which is typically
+        # a small fraction of the full H×W grid.  PAD ensures that
+        # fire can spread into unburnt neighbours at the window edge.
         burning_rows, burning_cols = np.where(self.B)
         
         if len(burning_rows) == 0:
-            return # No fire, nothing to calculate
+            return
 
-        # Define Region of Interest (ROI) with padding
-        # Padding allows fire to spread into neighbors
         PAD = 10
         r_min = max(0, np.min(burning_rows) - PAD)
         r_max = min(self.H, np.max(burning_rows) + 1 + PAD)
@@ -96,7 +126,9 @@ class FireGrid:
         # Base spread rates for this slice (needed for rows)
         l_base_roi = self.l_base[r_min:r_max]
 
-        # 2. IGNITION (Vectorized on ROI)
+        # ── Ignition: 8-neighbour stochastic spread ──────────────────
+        # For each direction (di, dj) we shift the ROI by that offset
+        # and accumulate ignition potential from burning neighbours.
         h_roi, w_roi = B_roi.shape
         ignition_potential = np.zeros((h_roi, w_roi))
         
@@ -110,39 +142,10 @@ class FireGrid:
         cell_dist = 1.0 
         
         for di, dj in directions:
-            # We need to shift the ROI to see neighbors.
-            # Instead of np.roll (which wraps), we use slicing on the GLOBAL grid 
-            # to get the exact neighbors for the current ROI.
-            
-            # Target (Center) coords in global grid: r_min:r_max, c_min:c_max
-            # Neighbor coords in global grid: r_min-di : r_max-di, c_min-dj : c_max-dj
-            
-            # Check bounds for neighbor slice
-            n_r_min, n_r_max = r_min - di, r_max - di
-            n_c_min, n_c_max = c_min - dj, c_max - dj
-
-            # If neighbor slice is completely out of bounds, skip
-            if n_r_min >= self.H or n_r_max <= 0 or n_c_min >= self.W or n_c_max <= 0:
-                continue
-                
-            # Handle partial overlaps (clipping)
-            # This effectively pads with False/Zero where active window touches map edge
-            # For simplicity in this optimization, we can just use zero-padding logic
-            # or simply perform the calculation only on valid overlaps.
-            
-            # SIMPLIFIED SHIFT LOGIC FOR ROI:
-            # Since we added PAD=2, and we look at distance 1 neighbors, 
-            # the ROI is guaranteed to contain the immediate neighbors of any burning cell
-            # EXCEPT at the very edges of the ROI.
-            # But the edges of ROI are non-burning by definition (because we padded burning_cells).
-            # So simple slicing within ROI is safe!
-            
-            # Shift within ROI using slicing
-            # Target: Where we compute ignition
-            # Source: The neighbor cell
-            
-            # We want B_shifted[r, c] to equal B_roi[r-di, c-dj]
-            # Valid range for r is where r-di is inside [0, h_roi)
+            # Shift logic: target[r,c] reads source[r-di, c-dj].
+            # Computed via slicing rather than np.roll (avoids wrap-around).
+            # The PAD guarantees that burning cells always have valid
+            # neighbours inside the ROI.
             
             t_r_start = max(0, di)
             t_r_end = min(h_roi, h_roi + di)
@@ -157,18 +160,17 @@ class FireGrid:
             # Check if valid slice
             if t_r_end <= t_r_start or t_c_end <= t_c_start:
                 continue
-                
+
             B_neighbor_slice = B_roi[s_r_start:s_r_end, s_c_start:s_c_end]
-            
-            # Wind Gain
+                
+            # Wind-aligned spread probability
             spread_angle = np.arctan2(di, dj)
             angle_diff = np.abs(spread_angle - self.wind_dir)
             angle_diff = np.minimum(angle_diff, 2*np.pi - angle_diff)
             wind_gain = 1.0 + self.k_wind * np.cos(angle_diff)
             wind_gain = max(0.1, wind_gain)
             
-            # Spread Probability
-            # Use l_base corresponding to the target rows
+            # Spread probability: P = (1 - exp(-λ·dt)) for burning neighbours
             l_slice = l_base_roi[t_r_start:t_r_end]
             lambda_matrix = l_slice[:, np.newaxis] * np.exp(-self.alpha * cell_dist) * wind_gain
             
@@ -177,42 +179,28 @@ class FireGrid:
             # Accumulate to target area in ignition_potential
             ignition_potential[t_r_start:t_r_end, t_c_start:t_c_end] += prob_ignite
 
-        # Final Ignition Check (on ROI)
+        # ── Stochastic ignition roll ─────────────────────────────────
+        # Moisture reduces ignition probability quadratically.
         ignition_prob = ignition_potential * ((1.0 - M_roi) ** 2)
         
         random_matrix = np.random.random((h_roi, w_roi))
         should_ignite = (ignition_prob > random_matrix) & (~B_roi) & (F_roi > 0)
-        
-        # Update ROI state
         B_roi[should_ignite] = True
-        # Intensity = Fuel (clipped)
-        I_roi_new = np.zeros_like(self.I[r_min:r_max, c_min:c_max])
-        
-        # Only update intensity for newly ignited or currently burning
-        # We need to copy the *current* intensity first to preserve physics?
-        # Actually, intensity is derived from fuel/burn rate each step.
-        
-        # 3. FUEL CONSUMPTION & UPDATE (Vectorized on ROI)
+        # ── Fuel consumption ─────────────────────────────────────────
         burn_mask = B_roi
         consumed = rate_roi[burn_mask] * self.dt
         F_roi[burn_mask] = np.maximum(0.0, F_roi[burn_mask] - consumed)
         
-        # Burnout
+        # ── Burnout ──────────────────────────────────────────────────
         burnout = burn_mask & (F_roi <= 1e-3)
         B_roi[burnout] = False
         
-        # Update Intensity
+        # ── Intensity = F · (1-M)^1.5, clipped to [0, 1] ────────────
         active_fire = B_roi
         m_factor = (1.0 - M_roi[active_fire]) ** 1.5
-        
-        # Direct write to grid arrays is not needed because slicing numpy arrays 
-        # produces a view (mostly), but to be safe with advanced slicing we write back.
-        # However, for simple basic slices, assignment works in place.
-        # But 'F_roi[burn_mask] = ...' modifies F_roi in place.
-        # Does F_roi view modify self.F? Yes, basic slicing returns a view.
-        
-        # Update Intensity Grid (Full ROI calculation)
-        # Reset intensity in ROI
+
+        # Basic numpy slicing returns a *view*, so writes to F_roi, B_roi
+        # etc. modify self.F, self.B in place.
         I_roi = self.I[r_min:r_max, c_min:c_max]
         I_roi[:] = 0.0
         
@@ -221,14 +209,12 @@ class FireGrid:
         new_intensities = F_roi[active_fire] * m_factor
         I_roi[active_fire] = np.clip(new_intensities, 0.0, 1.0)
 
-        # 4. EVAPORATION (Only on ROI? No, technically everywhere, but water drops are local)
-        # To be purely lazy, we only evaporate in ROI. Distant wet cells won't dry, 
-        # but that's acceptable approx or we track wet cells separately.
-        # For Demo, ROI evaporation is fine.
+        # ── Moisture evaporation ─────────────────────────────────────
         evap_rate = np.where(B_roi, 0.005, 0.01)
         M_roi[:] = np.maximum(0.0, M_roi - evap_rate * self.dt)
 
     def get_state(self) -> Dict[str, np.ndarray]:
+        """Return a copy of all grid arrays."""
         return {
             'B': self.B.copy(),
             'F': self.F.copy(),
@@ -237,6 +223,7 @@ class FireGrid:
         }
 
     def get_stats(self) -> Dict[str, Any]:
+        """Return summary statistics (burning cells, fuel, intensity)."""
         burning = np.sum(self.B)
         total_cells = self.H * self.W
         return {

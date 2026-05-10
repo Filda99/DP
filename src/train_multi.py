@@ -743,14 +743,14 @@ def train_multi(resume_scout="", resume_cmdr="",
     # -----------------------------------------------------------------
     #  Hyperparameters
     # -----------------------------------------------------------------
-    N_QUADS            = 3
+    N_QUADS            = 4
     N_FIXED            = 2
     grid_size_m        = 1000.0
     map_size_range     = (800, 1500)  # domain randomisation like train_scout
     n_fires_range      = (1, 3)      # 1-3 fires per episode
     num_episodes       = 30_000
     max_steps          = 1000        # longer episodes — FW needs time for refill cycles
-    steps_range        = None        # fixed length
+    steps_range        = (1000,1500)        # fixed length
     bptt_chunk         = 128
     waypoint_steps     = 30
     waypoint_range     = 200.0       # metres
@@ -974,6 +974,7 @@ def train_multi(resume_scout="", resume_cmdr="",
             "actions", "logprobs", "returns", "values", "critic_states", "alive"]}
         agg_cmdr = {k: [] for k in [
             "states", "messages", "msg_masks",
+            "fw_neigh", "fw_neigh_masks",
             "actions", "logprobs", "returns", "alive", "values",
             "critic_states", "aux_targets", "expert_acts"]}
         agg_h = {"scout": [], "cmdr": []}

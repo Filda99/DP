@@ -71,9 +71,8 @@ class Simulation:
         self.trajectory_sample_rate = 3
         self._step_counter = 0
 
-        # --- REWARD TRACKING (NOVÉ) ---
-        # Zde budeme ukládat, kolik "efektivní vody" (na oheň) dron shodil v tomto kroku
-        self.drone_extinguish_stats = {} 
+        # Per-step effective water drop stats (for reward computation)
+        self.drone_extinguish_stats = {}
         
         # Setup file logging
         # self._setup_logging(log_file)
@@ -94,19 +93,15 @@ class Simulation:
         self.physics_client = p.connect(p.DIRECT)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -9.81)
-        p.setTimeStep(self.timestep)  # 1/60s
+        p.setTimeStep(self.timestep)
         self.environment.create_ground()
         self.environment.create_refill_zone()
-        # print(f"✅ Simulation started")
-        # self._log_event('simulation_start ', {'timestep': self.timestep})
         
     def stop_simulation(self):
         """Stop PyBullet simulation."""
         if self.physics_client is not None:
             p.disconnect()
             self.physics_client = None
-        # self._save_log()
-        # print("✅ Simulation stopped")
     
     def _log_event(self, event_type, data):
         """Log an event to the log file."""
@@ -139,6 +134,7 @@ class Simulation:
     # ============================================================================
     
     def add_quadcopter(self, name, position=[0, 0, 5], mass=0.5):
+        """Add a quadcopter drone to the simulation."""
         quad = Quadcopter(position, mass)
         self.drones[name] = quad
         self.simulation_log['drones'][name] = {
@@ -146,11 +142,11 @@ class Simulation:
             'positions': [], 'forces': [], 'velocities': [], 'control_inputs': []
         }
         self.drone_trajectories[name] = [[position[0], position[1], position[2], 0.0]]
-        self.drone_extinguish_stats[name] = 0.0 # Init stats
-        # print(f"✅ Added quadcopter '{name}' at {position}")
+        self.drone_extinguish_stats[name] = 0.0
         return quad
     
     def add_fixedwing(self, name, position=[0, 0, 5], mass=1.0, water_capacity=0.0, yaw=0.0):
+        """Add a fixed-wing drone to the simulation."""
         fw = FixedWing(position=position, mass=mass, water_capacity=water_capacity, environment=self.environment, initial_chi=yaw)
         self.drones[name] = fw
         self.simulation_log['drones'][name] = {
@@ -158,16 +154,11 @@ class Simulation:
             'positions': [], 'forces': [], 'velocities': [], 'control_inputs': [], 'water_levels': []
         }
         self.drone_trajectories[name] = [[position[0], position[1], position[2], 0.0]]
-        start_orientation = p.getQuaternionFromEuler([0, 0.2, 0.0])
-        self.drone_extinguish_stats[name] = 0.0 # Init stats
-        # p.resetBasePositionAndOrientation(fw.drone_id, position, start_orientation)
-
-        # p.changeDynamics(fw.drone_id, -1, linearDamping=0.0, angularDamping=0.0)
-
-        # print(f"✅ Added fixed-wing '{name}' at {position} (water: {water_capacity}L)")
+        self.drone_extinguish_stats[name] = 0.0
         return fw
     
     def get_drone_status(self, drone_name):
+        """Return position, velocity and characteristics for a single drone."""
         if drone_name not in self.drones: return None
         drone = self.drones[drone_name]
         return {
@@ -177,6 +168,7 @@ class Simulation:
         }
     
     def get_all_drone_status(self):
+        """Return status of every active drone."""
         return {name: self.get_drone_status(name) for name in self.drones.keys()}
     
     # ============================================================================
@@ -185,22 +177,23 @@ class Simulation:
     
     def setup_osm_environment(self, location_query: str, default_building_height: float = 10.0,
                             distance_m: float = 2000):
-        # print(f"🌍 Loading environment from OSM: {location_query}")
+        """Load environment geometry from OpenStreetMap."""
         load_environment_from_osm(self.environment, location_query, default_building_height, distance_m)
     
     def set_wind(self, wind_velocity):
+        """Manually override wind velocity [vx, vy, vz] in m/s."""
         self.environment.set_wind(wind_velocity)
-        # print(f"✅ Wind set to {wind_velocity} m/s")
     
     def set_weather(self, visibility=1000.0, precipitation=0.0):
+        """Set weather conditions (visibility in metres, precipitation 0–1)."""
         self.environment.set_weather(visibility, precipitation)
-        # print(f"✅ Weather set - visibility: {visibility}m, precipitation: {precipitation}")
     
     # ============================================================================
     # FIRE SIMULATION
     # ============================================================================
     
     def enable_fire_simulation(self, grid_width_m=100, grid_height_m=100, cell_size_m=2.0, dt=None):
+        """Enable wildfire simulation and initialise the temperature grid."""
         if dt is None: dt = self.timestep
         self.environment.enable_fire_simulation(grid_width_m, grid_height_m, cell_size_m, dt=dt)
         
@@ -208,10 +201,9 @@ class Simulation:
             H, W = self.environment.fire_grid.H, self.environment.fire_grid.W
             height_levels = 20
             self.temperature_grid = np.full((height_levels, H, W), self.base_temperature, dtype=np.float32)
-            # print(f"✅ Temperature grid initialized: {height_levels}×{H}×{W}")
-        # print(f"✅ Fire simulation enabled in environment")
     
     def start_fire(self, world_pos, intensity=0.2, radius_m=5.0):
+        """Ignite fire at *world_pos* with the given intensity and radius."""
         return self.environment.start_fire_at_position(world_pos, intensity, radius_m=radius_m)
     
     def _update_temperature_grid(self):
@@ -248,8 +240,8 @@ class Simulation:
         # Grid dimensions for boundary checks
         H, W = self.environment.fire_grid.H, self.environment.fire_grid.W
 
-        # Pro přímý přístup k stavu ohně (pro odměny)
-        fire_active = self.environment.fire_grid.B 
+        # Direct access to burning state (for reward computation)
+        fire_active = self.environment.fire_grid.B
 
         for drone_name, drone in self.drones.items():
             # If drone is not dropping water, skip (saves CPU)
@@ -288,7 +280,7 @@ class Simulation:
 
             two_sigma_sq = 2 * sigma_cells**2
 
-            # Kolik vody tento dron shodil "užitečně" (na hořící buňky)
+            # Effective water on burning cells (for reward tracking)
             drone_effective_drop = 0.0
 
             for r in range(r_min, r_max):
@@ -311,11 +303,11 @@ class Simulation:
                     else:
                         water_drops[coord] = dropped_value
 
-                    # 2. Započítat odměnu, POKUD buňka hoří
+                    # Count reward if cell is burning
                     if fire_active[r, c]:
                         drone_effective_drop += dropped_value
 
-            # Uložíme statistiku pro odměnu
+            # Store stats for reward
             self.drone_extinguish_stats[drone_name] = drone_effective_drop
 
         # 6. Clip to max 1.0 (Saturation)
@@ -499,27 +491,11 @@ class Simulation:
                 # 2. Control
                 forces = drone.apply_control(control_input, self.timestep)
                 
-                # 3. Log data (Every step - FIXED to match time array length)
-                # self.simulation_log['drones'][drone_name]['positions'].append(drone.get_position().copy())
-                # self.simulation_log['drones'][drone_name]['forces'].append(forces.copy())
-                # self.simulation_log['drones'][drone_name]['velocities'].append(drone.get_velocity().copy())
-                
-                # # Handle control_input logging for torch tensors
-                # if hasattr(control_input, 'detach'):  # PyTorch tensor
-                #     self.simulation_log['drones'][drone_name]['control_inputs'].append(control_input.detach().cpu().numpy().copy())
-                # else:
-                #     self.simulation_log['drones'][drone_name]['control_inputs'].append(control_input.copy())
-                
-                # # Check if drone has water attribute (FixedWing does, Quadcopter does not)
-                # if drone.can_drop_water():
-                #     self.simulation_log['drones'][drone_name]['water_levels'].append(drone.current_water)
-                # else:
-                #     self.simulation_log['drones'][drone_name]['water_levels'].append(0.0)
+                # 3. Log data
 
         # Step physics
         p.stepSimulation()
         self.simulation_time += self.timestep
-        # self.simulation_log['times'].append(self.simulation_time)
         
         # Update trajectories (downsampled)
         self._step_counter += 1
@@ -531,31 +507,21 @@ class Simulation:
         # Environment updates
         water_drops = self._calculate_water_drops()
         self.environment.update_fire_simulation(water_drops=water_drops, real_dt=self.timestep)
-        # self._update_temperature_grid()
-        
-        # if len(self.simulation_log['times']) % 10 == 0:
-        #     self.environment.visualize_fire_in_simulation()
-        
-        # fire_state = self.environment.get_fire_state()
-        # self.simulation_log['fire_states'].append(fire_state)
         
         self._check_collisions()
     
     def _check_collisions(self):
+        """Detect and handle obstacle/ground collisions for all drones."""
         drones_to_destroy = []
         for drone_name, drone in self.drones.items():
             position = drone.get_position()
             
             collision, obstacle = self.environment.is_position_in_obstacle(position)
             if collision:
-                # print(f"💥 COLLISION: {drone_name} hit {obstacle['type']}")
-                # self._log_event('collision', {'drone': drone_name, 'obstacle': obstacle['type']})
                 drones_to_destroy.append(drone_name)
                 continue
             
             if position[2] < 0.5:
-                # print(f"💥 GROUND CRASH: {drone_name}")
-                # self._log_event('ground_crash', {'drone': drone_name})
                 drones_to_destroy.append(drone_name)
                 continue
                 
@@ -563,25 +529,23 @@ class Simulation:
             self._destroy_drone(drone_name)
     
     def _destroy_drone(self, drone_name):
+        """Remove a drone from the simulation."""
         if drone_name not in self.drones: return
         drone = self.drones[drone_name]
         try: p.removeBody(drone.drone_id)
         except: pass
         self.destroyed_drones.append(drone_name)
-        # self._log_event('drone_destroyed', {'drone': drone_name})
         del self.drones[drone_name]
-        # print(f"🔥 DESTROYED: {drone_name}")
         
         if drone_name in self.drone_extinguish_stats:
              del self.drone_extinguish_stats[drone_name]
     
     def run_scenario(self, scenario_function, steps=1000):
-        # print(f"🚁 Running scenario for {steps} steps...")
+        """Run a scripted scenario for *steps* simulation steps."""
         for step in range(steps):
             controls = scenario_function(step, self.simulation_time, self.drones)
             self.step_simulation(controls)
             if step % 100 == 0: print(f"  Step {step}/{steps} - Time: {self.simulation_time:.2f}s")
-        # print(f"✅ Scenario completed")
     
     # ============================================================================
     # VISUALIZATION & ANALYSIS
@@ -589,7 +553,6 @@ class Simulation:
     
     def create_multi_drone_visualization(self, title="Multi-Drone Analysis"):
         """Create visualization showing all drones together."""
-        print("📊 Generating multi-drone visualization...")
         if self.visualizer:
             self.visualizer.create_multi_drone_visualization(
                 self.simulation_log, 
@@ -597,13 +560,11 @@ class Simulation:
                 self.environment, 
                 title
             )
-            # print("✅ Visualization complete")
         else:
-            print("❌ Visualizer not initialized")
+            print("Visualizer not initialized")
 
     def create_visualization(self, drone_name=None, title="Simulation Analysis"):
         """Create comprehensive visualization for a single drone."""
-        print("📊 Generating visualization...")
         if self.visualizer:
             self.visualizer.create_single_drone_visualization(
                 self.simulation_log,
@@ -612,29 +573,32 @@ class Simulation:
                 drone_name,
                 title
             )
-            # print("✅ Visualization complete")
         else:
-            print("❌ Visualizer not initialized")
+            print("Visualizer not initialized")
     
     # ============================================================================
     # TRAJECTORY ACCESS METHODS
     # ============================================================================
     
     def get_drone_trajectory(self, drone_name, flatten_2d=False):
+        """Return recorded trajectory as a NumPy array."""
         if drone_name not in self.drone_trajectories: return np.array([])
         traj = np.array(self.drone_trajectories[drone_name])
         return traj[:, :2] if flatten_2d and len(traj) > 0 else traj
     
     def get_all_trajectories(self, flatten_2d=False):
+        """Return trajectories of all drones."""
         return {name: self.get_drone_trajectory(name, flatten_2d) for name in self.drone_trajectories.keys()}
     
     def clear_trajectories(self):
+        """Reset trajectory buffers for all active drones."""
         for name in self.drone_trajectories:
             if name in self.drones:
                 pos = self.drones[name].get_position().copy()
                 self.drone_trajectories[name] = [[pos[0], pos[1], pos[2], self.simulation_time]]
     
     def get_simulation_summary(self):
+        """Return a summary dict with timing, drone status and fire stats."""
         summary = {
             'total_time': self.simulation_time,
             'total_steps': len(self.simulation_log['times']),
