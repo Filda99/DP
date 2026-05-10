@@ -219,11 +219,11 @@ def _render_frame(step, fire_map, b,
 
     # Refill zone
     if refill_pos is not None:
-        circle = plt.Circle((refill_pos[0], refill_pos[1]), 150,
+        circle = plt.Circle((refill_pos[0], refill_pos[1]), 20,
                             color='deepskyblue', fill=False, linestyle='--',
                             linewidth=1.5, alpha=0.6, zorder=5)
         ax_map.add_patch(circle)
-        ax_map.text(refill_pos[0], refill_pos[1] + 60, "REFILL",
+        ax_map.text(refill_pos[0], refill_pos[1] + 25, "REFILL",
                     color='deepskyblue', fontsize=8, ha='center',
                     fontweight='bold', alpha=0.8)
 
@@ -449,6 +449,16 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
                   f"map_bounds={env.map_bounds}, "
                   f"safe_limit={safe_limit:.1f}, boundary_emergency={boundary_emergency:.1f}")
 
+        # Scout death diagnostic
+        for qi in range(N_QUADS):
+            q_name = f"quad_{qi}"
+            if q_name in infos and infos[q_name].get("death_cause", ""):
+                dc = infos[q_name]["death_cause"]
+                lx = q_paths[q_name]["x"][-1] if q_paths[q_name]["x"] else "?"
+                ly = q_paths[q_name]["y"][-1] if q_paths[q_name]["y"] else "?"
+                print(f"  💀 {q_name} died at step {step}: cause={dc}, "
+                      f"last_pos=({lx:.1f}, {ly:.1f})")
+
         for qi in range(N_QUADS):
             q_name = f"quad_{qi}"
             total_rq[q_name] += rewards.get(q_name, 0.0)
@@ -580,8 +590,8 @@ if __name__ == "__main__":
                         help="Curriculum episode number (30000 = full difficulty)")
     parser.add_argument("--gif-all",    action="store_true",
                         help="Uložit GIF pro všechny epizody (default: jen první)")
-    parser.add_argument("--scout-dist", type=float, default=None,
-                        help="Spawn scouts this many metres from fire (default: env random)")
+    parser.add_argument("--scout-dist", type=float, default=10.0,
+                        help="Spawn scouts this many metres from fire (default: 10, matching training)")
     parser.add_argument("--fw-dist",    type=float, default=None,
                         help="Spawn FW this many metres from fire (default: env random)")
     parser.add_argument("--init-water",  type=float, default=None,

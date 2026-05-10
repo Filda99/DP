@@ -695,12 +695,12 @@ def train_multi(resume_scout="", resume_cmdr="",
     map_size_range     = (800, 1500)  # domain randomisation like train_scout
     n_fires_range      = (1, 3)      # 1-3 fires per episode
     num_episodes       = 30_000
-    max_steps          = 500         # short episodes for clean credit assignment
+    max_steps          = 1000        # longer episodes — FW needs time for refill cycles
     steps_range        = None        # fixed length
     bptt_chunk         = 128
     waypoint_steps     = 30
     waypoint_range     = 200.0       # metres
-    num_decisions_cmdr = max_steps // waypoint_steps   # 16
+    num_decisions_cmdr = max_steps // waypoint_steps   # 26
 
     scout_freeze_batches = 0          # scouts trainable (finetuning)
 

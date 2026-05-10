@@ -211,8 +211,8 @@ class Simulation:
             # print(f"✅ Temperature grid initialized: {height_levels}×{H}×{W}")
         # print(f"✅ Fire simulation enabled in environment")
     
-    def start_fire(self, world_pos, intensity=0.2):
-        return self.environment.start_fire_at_position(world_pos, intensity)
+    def start_fire(self, world_pos, intensity=0.2, radius_m=5.0):
+        return self.environment.start_fire_at_position(world_pos, intensity, radius_m=radius_m)
     
     def _update_temperature_grid(self):
         if self.temperature_grid is None: return

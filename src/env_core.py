@@ -740,7 +740,12 @@ class DroneFireEnv(ParallelEnv):
         self.fire_positions = fire_positions
         self.fire_x, self.fire_y = fire_positions[0]  # primary fire (compass fallback)
         for fx, fy in fire_positions:
-            self.sim.start_fire([fx, fy], intensity=0.5)
+            self.sim.start_fire([fx, fy], intensity=0.8, radius_m=15.0)
+
+        # Pre-grow fire before episode starts so FW faces a real blaze
+        for _ in range(30):
+            self.sim.environment.fire_grid.step()
+
         self.current_episode = epizode_number
 
         # -- Refill zone placement ------------------------------------
@@ -1010,7 +1015,7 @@ class DroneFireEnv(ParallelEnv):
                     pitch_cmd = np.clip(0.008 * alt_error - 0.02 * vz, -0.5, 0.5)
 
                     # --- 3. THROTTLE (fixed cruise) ---
-                    throttle = 0.7  # → 0.7 × 30 = 21 m/s cruise
+                    throttle = 1.0  # → 1.0 × 30 = 30 m/s full speed
 
                     # --- 4. WATER ---
                     water_trigger = 1.0 if water_raw > 0.0 else 0.0

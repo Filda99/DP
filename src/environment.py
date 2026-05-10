@@ -467,7 +467,7 @@ class Environment:
         else:
             print("❌ Cannot save map: FireGrid not initialized")
 
-    def create_refill_zone(self, center_pos=None, size=30.0):
+    def create_refill_zone(self, center_pos=None, size=10.0):
         """
         Creates a visual refill zone.
         If center_pos is None, generates a random position.
@@ -496,7 +496,7 @@ class Environment:
             'id': zone_id,
             'position': np.array(center_pos),
             'size': size,
-            'radius_sq': 150.0**2  # 150m detekční rádius — FW letí rychle, musí mít větší zónu
+            'radius_sq': 40.0**2  # 40m detekční rádius
         }
         
         # print(f"💧 Refill Zone created at {center_pos}")
