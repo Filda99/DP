@@ -352,6 +352,24 @@ class CommanderActor(nn.Module):
         self.cross_attention = MultiHeadAttention(embed_dim=hidden_dim,
                                                   num_heads=num_attn_heads)
 
+        # --- FW neighbor awareness (other fixed-wing positions) ---
+        self.fw_neighbor_embed = nn.Sequential(
+            nn.Linear(3, hidden_dim),
+            nn.ReLU()
+        )
+        self.fw_neighbor_attention = MultiHeadAttention(
+            embed_dim=hidden_dim, num_heads=num_attn_heads)
+
+        # Projection: cat(enc_out, scout_ctx, fw_ctx) = 3*hidden → 2*hidden
+        # keeps GRU input_size unchanged → old weights load perfectly.
+        self.pre_gru = nn.Linear(hidden_dim * 3, hidden_dim * 2)
+        # Identity-init: first 2*H dims pass through, fw_ctx (last H) ignored
+        with torch.no_grad():
+            self.pre_gru.weight.zero_()
+            self.pre_gru.weight[:hidden_dim * 2, :hidden_dim * 2].copy_(
+                torch.eye(hidden_dim * 2))
+            self.pre_gru.bias.zero_()
+
         # --- Action head: 64→4 ---
         self.action_mean = nn.Linear(hidden_dim, action_dim)
         self.action_logstd = nn.Parameter(torch.full((1, action_dim), -0.5))
@@ -360,7 +378,7 @@ class CommanderActor(nn.Module):
         self.aux_head = nn.Linear(hidden_dim, 2)
 
     def forward(self, self_state, incoming_messages=None, message_mask=None,
-                hidden_state=None):
+                hidden_state=None, fw_neighbor_states=None, fw_neighbor_mask=None):
         is_sequential = (self_state.dim() == 3)
         batch_size = self_state.size(0)
         seq_len = self_state.size(1) if is_sequential else 1
@@ -392,8 +410,27 @@ class CommanderActor(nn.Module):
         else:
             ctx = torch.zeros_like(enc_out)
 
+        # --- FW neighbor attention ---
+        if fw_neighbor_states is not None:
+            if is_sequential:
+                bs = batch_size * seq_len
+                fw_n = fw_neighbor_states.reshape(
+                    bs, fw_neighbor_states.size(-2), fw_neighbor_states.size(-1))
+                fw_m = fw_neighbor_mask.reshape(bs, fw_neighbor_mask.size(-1))
+            else:
+                fw_n = fw_neighbor_states
+                fw_m = fw_neighbor_mask
+            fw_feat = self.fw_neighbor_embed(fw_n)         # (B*S, N_fw, H)
+            fw_query = enc_out.unsqueeze(1)                # (B*S, 1, H)
+            fw_ctx = self.fw_neighbor_attention(
+                fw_query, fw_feat, fw_feat, key_padding_mask=fw_m
+            ).squeeze(1)                                   # (B*S, H)
+        else:
+            fw_ctx = torch.zeros_like(enc_out)
+
         # --- Fuse and feed into GRU ---
-        fused = torch.cat([enc_out, ctx], dim=1)           # (B*S, hidden_dim*2)
+        fused = self.pre_gru(
+            torch.cat([enc_out, ctx, fw_ctx], dim=1))      # (B*S, hidden_dim*2)
 
         if is_sequential:
             fused = fused.view(batch_size, seq_len, -1)

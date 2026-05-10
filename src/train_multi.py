@@ -150,6 +150,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     ]}
     cmdr_buf = {k: [] for k in [
         "states", "messages", "msg_masks",
+        "fw_neigh", "fw_neigh_masks",
         "actions", "logprobs", "returns", "alive", "values",
         "critic_states", "aux_targets", "expert_acts"
     ]}
@@ -169,6 +170,9 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     d_scout_self = torch.zeros(1, config['scout_self_dim'])
     d_neigh_s   = torch.zeros(1, max(1, N_QUADS - 1), 3)
     d_neigh_m   = torch.ones(1, max(1, N_QUADS - 1), dtype=torch.bool)
+    n_fw_neigh  = max(1, N_FIXED - 1)
+    d_fw_neigh  = torch.zeros(1, n_fw_neigh, 3)
+    d_fw_neigh_m = torch.ones(1, n_fw_neigh, dtype=torch.bool)
 
     worker_state = {}
 
@@ -206,7 +210,6 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
         quad_agents  = local_env.quad_agents
         fixed_agents = local_env.fixed_agents
-        f_agent      = fixed_agents[0] if fixed_agents else None
 
         # -- Per-scout state ------------------------------------------
         scout_h              = {q: torch.zeros(1, 1, hidden_dim_scout) for q in quad_agents}
@@ -222,36 +225,39 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         for q in quad_agents:
             scout_h0_list.append(scout_h[q].clone())
 
-        # -- Commander state ------------------------------------------
-        cmdr_h         = torch.zeros(1, 1, hidden_dim_cmdr)
-        critic_cmdr_h  = torch.zeros(1, 1, hidden_dim_cmdr)
-        cmdr_h0_list.append(cmdr_h.clone())
+        # -- Commander state (per FW) ---------------------------------
+        cmdr_h         = {f: torch.zeros(1, 1, hidden_dim_cmdr) for f in fixed_agents}
+        critic_cmdr_h  = {f: torch.zeros(1, 1, hidden_dim_cmdr) for f in fixed_agents}
+        for f in fixed_agents:
+            cmdr_h0_list.append(cmdr_h[f].clone())
 
-        cmdr_ep_data     = []
-        ep_reward_cmdr   = 0.0
-        cmdr_alive       = True
-        cmdr_death_cause = "survived"
-        total_cmdr_steps = 0
-        cmdr_lifespan    = ep_max_steps
+        cmdr_ep_data       = {f: [] for f in fixed_agents}
+        ep_reward_cmdr     = {f: 0.0 for f in fixed_agents}
+        cmdr_alive         = {f: True for f in fixed_agents}
+        cmdr_death_cause   = {f: "survived" for f in fixed_agents}
+        total_cmdr_steps   = {f: 0 for f in fixed_agents}
+        cmdr_lifespan      = {f: ep_max_steps for f in fixed_agents}
 
-        # Waypoint tracking
-        cmdr_ctrl = CommanderController(waypoint_range, waypoint_steps, wp_reached_dist)
-        cmdr_ctrl.reset(safe_limit, boundary_emergency)
-        segment_reward     = 0.0
-        scripted_segment   = False   # True during scripted refill (not in PPO buffer)
-        scripted_refill_count = 0    # how many scripted refill segments this episode
+        # Waypoint tracking (per FW)
+        cmdr_ctrl          = {f: CommanderController(waypoint_range, waypoint_steps, wp_reached_dist)
+                              for f in fixed_agents}
+        for f in fixed_agents:
+            cmdr_ctrl[f].reset(safe_limit, boundary_emergency)
+        segment_reward       = {f: 0.0 for f in fixed_agents}
+        scripted_segment     = {f: False for f in fixed_agents}
+        scripted_refill_count = 0
         ep_peak_burning   = 0
         ep_total_extinguish = 0.0
 
-        msg_buffer = []
+        msg_buffer = {f: [] for f in fixed_agents}
 
         # Trajectory logging (first episode per worker only)
         log_this_ep        = config.get('log_episodes', False) and ep_off == 0
         traj_scout_pos     = {q: [] for q in quad_agents} if log_this_ep else None
-        traj_cmdr_pos      = [] if log_this_ep else None
-        traj_cmdr_waypoints = [] if log_this_ep else None
+        traj_cmdr_pos      = {f: [] for f in fixed_agents} if log_this_ep else None
+        traj_cmdr_waypoints = {f: [] for f in fixed_agents} if log_this_ep else None
         traj_rewards_scout = {q: [] for q in quad_agents} if log_this_ep else None
-        traj_rewards_cmdr  = [] if log_this_ep else None
+        traj_rewards_cmdr  = {f: [] for f in fixed_agents} if log_this_ep else None
 
         # =============================================================
         #  Step loop
@@ -298,46 +304,74 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         "critic_state": torch.zeros(1, scout_priv_dim),
                     })
 
-            # Snapshot scout messages for commander
-            msg_buffer.append({
+            # Snapshot scout messages for commander (shared across all FW)
+            scout_msg_snapshot = {
                 q: (scout_msg_tensors[q].clone(), scout_msg_valid[q])
                 for q in quad_agents
-            })
+            }
+            for f in fixed_agents:
+                msg_buffer[f].append(scout_msg_snapshot)
 
             # ---------------------------------------------------------
-            #  2) COMMANDER waypoint decision
+            #  2) COMMANDER waypoint decision (per FW)
             # ---------------------------------------------------------
-            if cmdr_alive and f_agent in local_env.agents:
+            for f_agent in fixed_agents:
+              if cmdr_alive[f_agent] and f_agent in local_env.agents:
 
                 fw_drone = local_env.sim.drones.get(f_agent)
                 in_boundary_emergency = (
                     fw_drone is not None and
-                    cmdr_ctrl.check_boundary_emergency(fw_drone.get_position()))
+                    cmdr_ctrl[f_agent].check_boundary_emergency(fw_drone.get_position()))
 
-                if cmdr_ctrl.need_new_waypoint and not in_boundary_emergency:
+                if cmdr_ctrl[f_agent].need_new_waypoint and not in_boundary_emergency:
                     # Build scout messages
                     msgs_for_cmdr = []
                     masks_for_cmdr = []
                     for q in quad_agents:
                         latest_msg, latest_valid = (
-                            msg_buffer[-1][q] if msg_buffer
+                            msg_buffer[f_agent][-1][q] if msg_buffer[f_agent]
                             else (torch.zeros(1, scout_msg_dim), False))
                         msgs_for_cmdr.append(latest_msg)
                         masks_for_cmdr.append(not latest_valid)
                     msgs_t = torch.stack(msgs_for_cmdr, dim=1)
                     msgs_m = torch.tensor([masks_for_cmdr])
 
-                    h_before = cmdr_h.clone()
-                    cmdr_h, wp_info = cmdr_ctrl.decide_waypoint(
+                    # Build FW neighbor states (relative pos of other FW)
+                    fw_neigh_list = []
+                    fw_mask_list  = []
+                    my_pos = fw_drone.get_position()
+                    for other_f in fixed_agents:
+                        if other_f == f_agent:
+                            continue
+                        if cmdr_alive[other_f] and other_f in local_env.sim.drones:
+                            op = local_env.sim.drones[other_f].get_position()
+                            fw_neigh_list.append([
+                                (op[0] - my_pos[0]) / map_half,
+                                (op[1] - my_pos[1]) / map_half,
+                                (op[2] - my_pos[2]) / 100.0])
+                            fw_mask_list.append(False)
+                        else:
+                            fw_neigh_list.append([0.0, 0.0, 0.0])
+                            fw_mask_list.append(True)
+                    if not fw_neigh_list:          # N_FIXED == 1
+                        fw_neigh_list = [[0.0, 0.0, 0.0]]
+                        fw_mask_list  = [True]
+                    fw_neigh_t = torch.FloatTensor([fw_neigh_list])   # (1, N, 3)
+                    fw_mask_t  = torch.BoolTensor([fw_mask_list])     # (1, N)
+
+                    h_before = cmdr_h[f_agent].clone()
+                    cmdr_h[f_agent], wp_info = cmdr_ctrl[f_agent].decide_waypoint(
                         fw_drone, obs[f_agent]["self_state"], local_env,
-                        local_cmdr, cmdr_h, msgs_t, msgs_m,
-                        deterministic=False)
+                        local_cmdr, cmdr_h[f_agent], msgs_t, msgs_m,
+                        deterministic=False,
+                        fw_neighbor_states=fw_neigh_t,
+                        fw_neighbor_mask=fw_mask_t)
 
                     if wp_info['scripted']:
-                        segment_reward   = 0.0
-                        scripted_segment = True
+                        segment_reward[f_agent]   = 0.0
+                        scripted_segment[f_agent] = True
                         scripted_refill_count += 1
-                        msg_buffer       = []
+                        msg_buffer[f_agent]       = []
                     else:
                         # ── PPO buffer for NN decision ──
                         dist_c = wp_info['nn_dist']
@@ -347,7 +381,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         with torch.no_grad():
                             priv_c = torch.FloatTensor(
                                 local_env.get_privileged_state(f_agent)).unsqueeze(0)
-                            v_c, critic_cmdr_h = local_critic_cmdr(priv_c, critic_cmdr_h)
+                            v_c, critic_cmdr_h[f_agent] = local_critic_cmdr(
+                                priv_c, critic_cmdr_h[f_agent])
 
                         # Aux target: true direction to fire
                         c_pos = fw_drone.get_position()
@@ -376,11 +411,13 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         else:
                             expert_act[3] = -1.0
 
-                        cmdr_ep_data.append({
+                        cmdr_ep_data[f_agent].append({
                             "alive": True,
                             "state": s_st_f,
                             "msgs": msgs_t,
                             "msg_mask": msgs_m,
+                            "fw_neigh": fw_neigh_t,
+                            "fw_neigh_mask": fw_mask_t,
                             "h": h_before,
                             "act": act_c,
                             "lp": dist_c.log_prob(act_c).sum(1),
@@ -391,27 +428,27 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                             "expert_act": torch.from_numpy(expert_act).unsqueeze(0),
                         })
 
-                        segment_reward   = 0.0
-                        scripted_segment = False
-                        msg_buffer       = []
+                        segment_reward[f_agent]   = 0.0
+                        scripted_segment[f_agent] = False
+                        msg_buffer[f_agent]       = []
 
                     if log_this_ep:
-                        traj_cmdr_waypoints.append(
-                            [step, cmdr_ctrl.target_x, cmdr_ctrl.target_y,
-                             cmdr_ctrl.target_alt_raw, cmdr_ctrl.water_raw])
+                        traj_cmdr_waypoints[f_agent].append(
+                            [step, cmdr_ctrl[f_agent].target_x, cmdr_ctrl[f_agent].target_y,
+                             cmdr_ctrl[f_agent].target_alt_raw, cmdr_ctrl[f_agent].water_raw])
 
                 # -- PD heading controller (every step) ---------------
                 if fw_drone is not None:
-                    actions[f_agent] = cmdr_ctrl.heading_action(fw_drone)
+                    actions[f_agent] = cmdr_ctrl[f_agent].heading_action(fw_drone)
 
-                total_cmdr_steps += 1
-            else:
-                cmdr_alive = False
+                total_cmdr_steps[f_agent] += 1
+              else:
+                cmdr_alive[f_agent] = False
 
             # ---------------------------------------------------------
             #  3) Environment step
             # ---------------------------------------------------------
-            r_cmdr = 0.0
+            r_cmdr_per_fw = {}
             if local_env.agents:
                 obs, rewards, terms, truncs, infos = local_env.step(actions)
 
@@ -429,34 +466,37 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         else:
                             scout_death_cause[q] = "survived"
 
-                # Commander segment reward accumulation
-                r_cmdr = rewards.get(f_agent, 0.0) if f_agent else 0.0
-                segment_reward += r_cmdr
+                # Commander segment reward accumulation (per FW)
+                for f_agent in fixed_agents:
+                    r_f = rewards.get(f_agent, 0.0)
+                    r_cmdr_per_fw[f_agent] = r_f
+                    segment_reward[f_agent] += r_f
 
-                # Commander death handling
-                if f_agent and (terms.get(f_agent, False) or truncs.get(f_agent, False)):
-                    cmdr_alive = False
-                    cmdr_lifespan = step + 1
-                    if terms.get(f_agent, False):
-                        cmdr_death_cause = infos.get(f_agent, {}).get("death_cause", "unknown")
-                    else:
-                        cmdr_death_cause = "survived"
-                    if not scripted_segment and cmdr_ep_data:
-                        cmdr_ep_data[-1]["reward"] = segment_reward
-                    ep_reward_cmdr += segment_reward
+                    # Commander death handling
+                    if terms.get(f_agent, False) or truncs.get(f_agent, False):
+                        cmdr_alive[f_agent] = False
+                        cmdr_lifespan[f_agent] = step + 1
+                        if terms.get(f_agent, False):
+                            cmdr_death_cause[f_agent] = infos.get(f_agent, {}).get("death_cause", "unknown")
+                        else:
+                            cmdr_death_cause[f_agent] = "survived"
+                        if not scripted_segment[f_agent] and cmdr_ep_data[f_agent]:
+                            cmdr_ep_data[f_agent][-1]["reward"] = segment_reward[f_agent]
+                        ep_reward_cmdr[f_agent] += segment_reward[f_agent]
             else:
                 for q in quad_agents:
                     if scout_alive[q]:
                         scout_alive[q] = False
                         scout_lifespan[q] = step + 1
                         scout_death_cause[q] = "env_empty"
-                if cmdr_alive:
-                    cmdr_alive = False
-                    cmdr_lifespan = step + 1
-                    cmdr_death_cause = "env_empty"
+                for f_agent in fixed_agents:
+                    if cmdr_alive[f_agent]:
+                        cmdr_alive[f_agent] = False
+                        cmdr_lifespan[f_agent] = step + 1
+                        cmdr_death_cause[f_agent] = "env_empty"
 
             # Early exit
-            if not any(scout_alive.values()) and not cmdr_alive:
+            if not any(scout_alive.values()) and not any(cmdr_alive.values()):
                 break
 
             # Trajectory recording
@@ -467,10 +507,12 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         s_drone.get_position().copy() if s_drone else np.full(3, np.nan))
                     traj_rewards_scout[q].append(
                         rewards.get(q, 0.0) if scout_alive[q] else 0.0)
-                c_drone = local_env.sim.drones.get(f_agent) if f_agent else None
-                traj_cmdr_pos.append(
-                    c_drone.get_position().copy() if c_drone else np.full(3, np.nan))
-                traj_rewards_cmdr.append(r_cmdr if cmdr_alive else 0.0)
+                for f_agent in fixed_agents:
+                    c_drone = local_env.sim.drones.get(f_agent)
+                    traj_cmdr_pos[f_agent].append(
+                        c_drone.get_position().copy() if c_drone else np.full(3, np.nan))
+                    traj_rewards_cmdr[f_agent].append(
+                        r_cmdr_per_fw.get(f_agent, 0.0) if cmdr_alive[f_agent] else 0.0)
 
             # Fire stats tracking
             fg = local_env.sim.environment.fire_grid
@@ -481,32 +523,34 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                 ep_total_extinguish += eff
 
             # ---------------------------------------------------------
-            #  4) Check waypoint segment end
+            #  4) Check waypoint segment end (per FW)
             # ---------------------------------------------------------
-            if cmdr_alive and f_agent and f_agent in local_env.agents:
+            for f_agent in fixed_agents:
+              if cmdr_alive[f_agent] and f_agent in local_env.agents:
                 segment_done = (
-                    cmdr_ctrl.check_segment_end()
+                    cmdr_ctrl[f_agent].check_segment_end()
                     or step == max_steps - 1
                 )
                 if segment_done:
-                    if (not cmdr_ctrl.wp_reached
-                            and cmdr_ctrl.steps_in_segment >= waypoint_steps):
-                        segment_reward += wp_timeout_penalty
-                    if not scripted_segment and cmdr_ep_data:
-                        cmdr_ep_data[-1]["reward"] = segment_reward
-                    ep_reward_cmdr += segment_reward - r_cmdr
-                    cmdr_ctrl.need_new_waypoint = True
+                    if (not cmdr_ctrl[f_agent].wp_reached
+                            and cmdr_ctrl[f_agent].steps_in_segment >= waypoint_steps):
+                        segment_reward[f_agent] += wp_timeout_penalty
+                    if not scripted_segment[f_agent] and cmdr_ep_data[f_agent]:
+                        cmdr_ep_data[f_agent][-1]["reward"] = segment_reward[f_agent]
+                    ep_reward_cmdr[f_agent] += segment_reward[f_agent] - r_cmdr_per_fw.get(f_agent, 0.0)
+                    cmdr_ctrl[f_agent].need_new_waypoint = True
 
         # =============================================================
         #  Post-episode: fix final segment & compute GAE
         # =============================================================
 
-        # Handle incomplete final segment
-        if cmdr_ep_data and segment_reward != 0.0 and not scripted_segment:
-            last = cmdr_ep_data[-1]
-            if last.get("reward", 0.0) == 0.0:
-                last["reward"] = segment_reward
-        ep_reward_cmdr = sum(d["reward"] for d in cmdr_ep_data)
+        # Handle incomplete final segment (per FW)
+        for f_agent in fixed_agents:
+            if cmdr_ep_data[f_agent] and segment_reward[f_agent] != 0.0 and not scripted_segment[f_agent]:
+                last = cmdr_ep_data[f_agent][-1]
+                if last.get("reward", 0.0) == 0.0:
+                    last["reward"] = segment_reward[f_agent]
+            ep_reward_cmdr[f_agent] = sum(d["reward"] for d in cmdr_ep_data[f_agent])
 
         # -- Scout GAE (per scout, independently) ---------------------
         gamma   = config['gamma']
@@ -548,50 +592,57 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     scout_buf["critic_states"].append(torch.zeros(1, scout_priv_dim))
                     scout_buf["alive"].append(0.0)
 
-        # -- Commander GAE --------------------------------------------
+        # -- Commander GAE (per FW, then all packed together) ---------
         gamma_cmdr    = config.get('gamma_cmdr', gamma)
-        n_actual_cmdr = len(cmdr_ep_data)
-        gae = 0.0
-        for i in reversed(range(n_actual_cmdr)):
-            d = cmdr_ep_data[i]
-            v_next = cmdr_ep_data[i + 1]["value"] if i + 1 < n_actual_cmdr else 0.0
-            delta = d["reward"] + gamma_cmdr * v_next - d["value"]
-            gae = delta + gamma_cmdr * gae_lam * gae
-            d["ret"] = gae + d["value"]
-
-        # Pack commander buffer (padded to num_decisions_cmdr)
         n_msg_slots = N_QUADS
-        for i in range(num_decisions_cmdr):
-            if i < n_actual_cmdr:
-                d = cmdr_ep_data[i]
-                cmdr_buf["states"].append(d["state"])
-                cmdr_buf["messages"].append(d["msgs"])
-                cmdr_buf["msg_masks"].append(d["msg_mask"])
-                cmdr_buf["actions"].append(d["act"])
-                cmdr_buf["logprobs"].append(d["lp"])
-                cmdr_buf["returns"].append(d["ret"])
-                cmdr_buf["alive"].append(1.0)
-                cmdr_buf["values"].append(d["value"])
-                cmdr_buf["critic_states"].append(d["critic_state"])
-                cmdr_buf["aux_targets"].append(d["aux_target"])
-                cmdr_buf["expert_acts"].append(d.get("expert_act", torch.zeros(1, 4)))
-            else:
-                cmdr_buf["states"].append(torch.zeros(1, config['fixed_self_dim']))
-                cmdr_buf["messages"].append(torch.zeros(1, n_msg_slots, scout_msg_dim))
-                cmdr_buf["msg_masks"].append(torch.ones(1, n_msg_slots, dtype=torch.bool))
-                cmdr_buf["actions"].append(torch.zeros(1, 4))
-                cmdr_buf["logprobs"].append(torch.tensor([0.0]))
-                cmdr_buf["returns"].append(0.0)
-                cmdr_buf["alive"].append(0.0)
-                cmdr_buf["values"].append(0.0)
-                cmdr_buf["critic_states"].append(torch.zeros(1, cmdr_priv_dim))
-                cmdr_buf["aux_targets"].append(torch.zeros(1, 2))
-                cmdr_buf["expert_acts"].append(torch.zeros(1, 4))
+        for f_agent in fixed_agents:
+            f_ep_data = cmdr_ep_data[f_agent]
+            n_actual_cmdr = len(f_ep_data)
+            gae = 0.0
+            for i in reversed(range(n_actual_cmdr)):
+                d = f_ep_data[i]
+                v_next = f_ep_data[i + 1]["value"] if i + 1 < n_actual_cmdr else 0.0
+                delta = d["reward"] + gamma_cmdr * v_next - d["value"]
+                gae = delta + gamma_cmdr * gae_lam * gae
+                d["ret"] = gae + d["value"]
+
+            # Pack commander buffer (padded to num_decisions_cmdr)
+            for i in range(num_decisions_cmdr):
+                if i < n_actual_cmdr:
+                    d = f_ep_data[i]
+                    cmdr_buf["states"].append(d["state"])
+                    cmdr_buf["messages"].append(d["msgs"])
+                    cmdr_buf["msg_masks"].append(d["msg_mask"])
+                    cmdr_buf["fw_neigh"].append(d["fw_neigh"])
+                    cmdr_buf["fw_neigh_masks"].append(d["fw_neigh_mask"])
+                    cmdr_buf["actions"].append(d["act"])
+                    cmdr_buf["logprobs"].append(d["lp"])
+                    cmdr_buf["returns"].append(d["ret"])
+                    cmdr_buf["alive"].append(1.0)
+                    cmdr_buf["values"].append(d["value"])
+                    cmdr_buf["critic_states"].append(d["critic_state"])
+                    cmdr_buf["aux_targets"].append(d["aux_target"])
+                    cmdr_buf["expert_acts"].append(d.get("expert_act", torch.zeros(1, 4)))
+                else:
+                    cmdr_buf["states"].append(torch.zeros(1, config['fixed_self_dim']))
+                    cmdr_buf["messages"].append(torch.zeros(1, n_msg_slots, scout_msg_dim))
+                    cmdr_buf["msg_masks"].append(torch.ones(1, n_msg_slots, dtype=torch.bool))
+                    cmdr_buf["fw_neigh"].append(d_fw_neigh)
+                    cmdr_buf["fw_neigh_masks"].append(d_fw_neigh_m)
+                    cmdr_buf["actions"].append(torch.zeros(1, 4))
+                    cmdr_buf["logprobs"].append(torch.tensor([0.0]))
+                    cmdr_buf["returns"].append(0.0)
+                    cmdr_buf["alive"].append(0.0)
+                    cmdr_buf["values"].append(0.0)
+                    cmdr_buf["critic_states"].append(torch.zeros(1, cmdr_priv_dim))
+                    cmdr_buf["aux_targets"].append(torch.zeros(1, 2))
+                    cmdr_buf["expert_acts"].append(torch.zeros(1, 4))
 
         # -- Episode statistics ---------------------------------------
+        total_ep_cmdr_reward = sum(ep_reward_cmdr.values())
         avg_scout_reward = sum(ep_reward_scout.values()) / max(1, N_QUADS)
-        all_rewards.append(avg_scout_reward + ep_reward_cmdr)
-        all_cmdr_rewards.append(ep_reward_cmdr)
+        all_rewards.append(avg_scout_reward + total_ep_cmdr_reward / max(1, N_FIXED))
+        all_cmdr_rewards.append(total_ep_cmdr_reward / max(1, N_FIXED))
 
         all_refill_hits.append(scripted_refill_count)
 
@@ -601,10 +652,12 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
         for q in quad_agents:
             all_scout_lifespans.append(scout_lifespan[q])
-        all_cmdr_lifespans.append(cmdr_lifespan)
+        for f in fixed_agents:
+            all_cmdr_lifespans.append(cmdr_lifespan[f])
 
         death_parts = [f"s:{scout_death_cause[q]}" for q in quad_agents]
-        death_parts.append(f"c:{cmdr_death_cause}")
+        for f in fixed_agents:
+            death_parts.append(f"c:{cmdr_death_cause[f]}")
         all_deaths.append(",".join(death_parts))
 
         # -- Episode trajectory log -----------------------------------
@@ -612,17 +665,18 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
             log_dir = config.get('log_dir', '/tmp/ep_logs')
             os.makedirs(log_dir, exist_ok=True)
             ep_id = batch_start_idx + ep_off
+            f0 = fixed_agents[0] if fixed_agents else None
             save_dict = dict(
                 ep_id=np.array(ep_id),
                 scout_reward=np.array([ep_reward_scout[q] for q in quad_agents]),
-                cmdr_reward=np.array(ep_reward_cmdr),
+                cmdr_reward=np.array(total_ep_cmdr_reward),
                 scout_lifespan=np.array([scout_lifespan[q] for q in quad_agents]),
-                cmdr_lifespan=np.array(cmdr_lifespan),
-                n_cmdr_decisions=np.array(n_actual_cmdr),
-                cmdr_pos=np.array(traj_cmdr_pos),
-                cmdr_waypoints=(np.array(traj_cmdr_waypoints)
-                                if traj_cmdr_waypoints else np.zeros((0, 5))),
-                rewards_cmdr=np.array(traj_rewards_cmdr),
+                cmdr_lifespan=np.array([cmdr_lifespan[f] for f in fixed_agents]),
+                n_cmdr_decisions=np.array([len(cmdr_ep_data[f]) for f in fixed_agents]),
+                cmdr_pos=np.array(traj_cmdr_pos[f0] if f0 else []),
+                cmdr_waypoints=(np.array(traj_cmdr_waypoints[f0])
+                                if f0 and traj_cmdr_waypoints[f0] else np.zeros((0, 5))),
+                rewards_cmdr=np.array(traj_rewards_cmdr[f0] if f0 else []),
                 map_bounds=np.array(local_env.grid_size_m / 2.0),
             )
             for qi, q in enumerate(quad_agents):
@@ -690,7 +744,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     #  Hyperparameters
     # -----------------------------------------------------------------
     N_QUADS            = 3
-    N_FIXED            = 1
+    N_FIXED            = 2
     grid_size_m        = 1000.0
     map_size_range     = (800, 1500)  # domain randomisation like train_scout
     n_fires_range      = (1, 3)      # 1-3 fires per episode
@@ -1221,6 +1275,8 @@ def train_multi(resume_scout="", resume_cmdr="",
         c_states      = torch.cat(agg_cmdr["states"]).to(device)
         c_msgs        = torch.cat(agg_cmdr["messages"]).to(device)
         c_msg_m       = torch.cat(agg_cmdr["msg_masks"]).to(device)
+        c_fw_neigh    = torch.cat(agg_cmdr["fw_neigh"]).to(device)
+        c_fw_neigh_m  = torch.cat(agg_cmdr["fw_neigh_masks"]).to(device)
         c_actions     = torch.cat(agg_cmdr["actions"]).to(device)
         c_logprobs    = torch.cat(agg_cmdr["logprobs"]).to(device)
         c_returns     = torch.cat(agg_cmdr["returns"]).to(device)
@@ -1250,6 +1306,8 @@ def train_multi(resume_scout="", resume_cmdr="",
         c_states_seq       = c_states.view(eps_cmdr, nd, -1)
         c_msgs_seq         = c_msgs.view(eps_cmdr, nd, c_msgs.size(-2), c_msgs.size(-1))
         c_msg_m_seq        = c_msg_m.view(eps_cmdr, nd, c_msg_m.size(-1))
+        c_fw_neigh_seq     = c_fw_neigh.view(eps_cmdr, nd, c_fw_neigh.size(-2), c_fw_neigh.size(-1))
+        c_fw_neigh_m_seq   = c_fw_neigh_m.view(eps_cmdr, nd, c_fw_neigh_m.size(-1))
         c_actions_seq      = c_actions.view(eps_cmdr, nd, -1)
         c_logprobs_seq     = c_logprobs.view(eps_cmdr, nd)
         c_adv_seq          = c_adv.view(eps_cmdr, nd)
@@ -1276,6 +1334,8 @@ def train_multi(resume_scout="", resume_cmdr="",
                 mb_states      = c_states_seq[mb]
                 mb_msgs        = c_msgs_seq[mb]
                 mb_mm          = c_msg_m_seq[mb]
+                mb_fw_n        = c_fw_neigh_seq[mb]
+                mb_fw_nm       = c_fw_neigh_m_seq[mb]
                 mb_acts        = c_actions_seq[mb]
                 mb_old_lp      = c_logprobs_seq[mb].view(-1)
                 mb_adv         = c_adv_seq[mb].reshape(-1)
@@ -1289,7 +1349,9 @@ def train_multi(resume_scout="", resume_cmdr="",
                 # Actor update only for first update_epochs epochs
                 # (critic runs all critic_epochs_cmdr)
                 if epoch < update_epochs:
-                    dist, mb_aux_pred, _ = cmdr_actor(mb_states, mb_msgs, mb_mm, mb_h)
+                    dist, mb_aux_pred, _ = cmdr_actor(
+                        mb_states, mb_msgs, mb_mm, mb_h,
+                        mb_fw_n, mb_fw_nm)
                     flat_acts = mb_acts.view(-1, 4)
                     new_lp  = dist.log_prob(flat_acts).sum(1)
                     entropy = dist.entropy().sum(1)

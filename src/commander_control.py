@@ -82,7 +82,8 @@ class CommanderController:
         return self.wp_reached or self.steps_in_segment >= self.WP_STEPS
 
     def decide_waypoint(self, drone, obs_self_state, env, cmdr_actor, h_cmdr,
-                        scout_msgs_t, scout_mask_t, *, deterministic=False):
+                        scout_msgs_t, scout_mask_t, *, deterministic=False,
+                        fw_neighbor_states=None, fw_neighbor_mask=None):
         """Compute a new waypoint (scripted refill or NN).
 
         Only call when ``self.need_new_waypoint`` is True.
@@ -128,13 +129,15 @@ class CommanderController:
             # Dummy forward pass keeps GRU hidden state fresh
             with torch.no_grad():
                 _, _, h_cmdr = cmdr_actor(
-                    s_st, scout_msgs_t, scout_mask_t, h_cmdr)
+                    s_st, scout_msgs_t, scout_mask_t, h_cmdr,
+                    fw_neighbor_states, fw_neighbor_mask)
             info['scripted'] = True
         else:
             # ── NN firefighting decision ──────────────────────────────
             with torch.no_grad():
                 dist, aux_pred, h_cmdr = cmdr_actor(
-                    s_st, scout_msgs_t, scout_mask_t, h_cmdr)
+                    s_st, scout_msgs_t, scout_mask_t, h_cmdr,
+                    fw_neighbor_states, fw_neighbor_mask)
             act = dist.mean if deterministic else dist.sample()
             act_np = act.squeeze(0).detach().cpu().numpy()
             self.target_alt_raw = float(act_np[2])
@@ -190,7 +193,8 @@ class CommanderController:
     # ------------------------------------------------------------------
 
     def step(self, drone, obs_self_state, env, cmdr_actor, h_cmdr,
-             scout_msgs_t, scout_mask_t, *, deterministic=False):
+             scout_msgs_t, scout_mask_t, *, deterministic=False,
+             fw_neighbor_states=None, fw_neighbor_mask=None):
         """Full commander physics step.
 
         Combines: boundary check → segment-end check → waypoint
@@ -218,7 +222,9 @@ class CommanderController:
                 h_cmdr, wp_info = self.decide_waypoint(
                     drone, obs_self_state, env, cmdr_actor, h_cmdr,
                     scout_msgs_t, scout_mask_t,
-                    deterministic=deterministic)
+                    deterministic=deterministic,
+                    fw_neighbor_states=fw_neighbor_states,
+                    fw_neighbor_mask=fw_neighbor_mask)
                 info.update(wp_info)
                 info['new_waypoint'] = True
 

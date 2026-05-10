@@ -1,29 +1,40 @@
 graph TD
     %% =====================================================================
-    %% CommanderActor — Fixed-Wing Network Architecture (Phase 6)
+    %% CommanderActor — Fixed-Wing Network Architecture (Phase 7 — Multi-FW)
     %% Source: src/models.py — class CommanderActor
     %% =====================================================================
 
     %% ── Vstupy ──
     SelfState["19d self_state vector<br><i>pos(3) vel(3) edges(4) water(1)<br>refill_compass(2) rpy(3) danger(1) fire_compass(2)</i>"]
-    ScoutMsgs["2 × 5d Scout Messages<br><i>latest + best_fire per scout</i><br><i>[pos_x, pos_y, intensity, rel_fire_x, rel_fire_y]</i>"]
-    MsgMask["2d Message Mask<br><i>True = ignore (scout dead / no msg)</i>"]
+    ScoutMsgs["N_quads × 5d Scout Messages<br><i>[pos_x, pos_y, intensity, rel_fire_x, rel_fire_y]</i>"]
+    MsgMask["N_quads Message Mask<br><i>True = ignore (scout dead / no msg)</i>"]
+    FWNeigh["(N_fixed−1) × 3d FW Neighbor States<br><i>[Δx/map, Δy/map, Δz/100]<br>relative position of other FW</i>"]
+    FWMask["(N_fixed−1) FW Neighbor Mask<br><i>True = ignore (FW dead)</i>"]
     PrevHidden["Previous GRU Hidden State<br><i>(1, B, 64)</i>"]
 
     %% ── Encoder větev ──
     MLPEnc["MLP Encoder<br><i>Linear(19→64) → Tanh<br>Linear(64→64) → Tanh</i>"]
     EncState["64d Encoded Ego-State"]
 
-    %% ── Message větev ──
+    %% ── Scout message větev ──
     MsgEmb["Message Embedding<br><i>Linear(5→64) → ReLU</i>"]
-    EmbMsgs["2 × 64d Embedded Messages"]
+    EmbMsgs["N × 64d Embedded Messages"]
 
-    %% ── Cross-Attention ──
-    CrossAttn["Cross-Attention<br><i>nn.MultiheadAttention<br>embed_dim=64, num_heads=2</i>"]
-    Context["64d Attention Context"]
+    %% ── Scout Cross-Attention ──
+    CrossAttn["Scout Cross-Attention<br><i>nn.MultiheadAttention<br>embed_dim=64, num_heads=2</i>"]
+    ScoutCtx["64d Scout Context"]
 
-    %% ── Fúze ──
-    Concat{"Concatenation<br><i>[enc_out ‖ ctx] → 128d</i>"}
+    %% ── FW Neighbor větev ──
+    FWEmb["FW Neighbor Embedding<br><i>Linear(3→64) → ReLU</i>"]
+    EmbFW["(N−1) × 64d Embedded FW Neighbors"]
+
+    %% ── FW Cross-Attention ──
+    FWAttn["FW Neighbor Attention<br><i>nn.MultiheadAttention<br>embed_dim=64, num_heads=2</i>"]
+    FWCtx["64d FW Context"]
+
+    %% ── Pre-GRU Projection ──
+    Concat{"Concatenation<br><i>[enc_out ‖ scout_ctx ‖ fw_ctx] → 192d</i>"}
+    PreGRU["Pre-GRU Projection<br><i>Linear(192→128)<br>Identity-init: old weights compatible</i>"]
 
     %% ── Paměť ──
     GRU["GRU Cell<br><i>input=128d → hidden=64d</i>"]
@@ -32,27 +43,37 @@ graph TD
     %% ── Výstupní hlavy ──
     ActHead["Action Head<br><i>Linear(64→4) → Tanh</i>"]
     ActDist["Action Distribution<br><i>N(μ, σ)  σ = exp(log_std)<br>log_std ∈ [−3, 0] (learnable)</i>"]
-    ActionOut["4d Action<br><i>[heading_Δ, target_alt, water_trigger, (dim4)]</i>"]
+    ActionOut["4d Waypoint Action<br><i>[dx, dy, target_alt, water_trigger]</i>"]
 
     AuxHead["Auxiliary Head<br><i>Linear(64→2)</i>"]
-    AuxOut["2d Fire Position Prediction<br><i>[fire_x, fire_y] normalised</i>"]
+    AuxOut["2d Fire Direction Prediction<br><i>[dir_x, dir_y] normalised</i>"]
 
     %% ── Propojení: Encoder ──
     SelfState --> MLPEnc --> EncState
 
-    %% ── Propojení: Zprávy ──
+    %% ── Propojení: Scout zprávy ──
     ScoutMsgs --> MsgEmb --> EmbMsgs
     MsgMask -.->|key_padding_mask| CrossAttn
 
-    %% ── Cross-Attention ──
+    %% ── Scout Cross-Attention ──
     EncState -->|"Query (1×64)"| CrossAttn
-    EmbMsgs -->|"Key & Value (2×64)"| CrossAttn
-    CrossAttn --> Context
+    EmbMsgs -->|"Key & Value (N×64)"| CrossAttn
+    CrossAttn --> ScoutCtx
 
-    %% ── Fúze a GRU ──
+    %% ── Propojení: FW Neighbors ──
+    FWNeigh --> FWEmb --> EmbFW
+    FWMask -.->|key_padding_mask| FWAttn
+
+    %% ── FW Neighbor Attention ──
+    EncState -->|"Query (1×64)"| FWAttn
+    EmbFW -->|"Key & Value ((N−1)×64)"| FWAttn
+    FWAttn --> FWCtx
+
+    %% ── Fúze, projekce a GRU ──
     EncState --> Concat
-    Context --> Concat
-    Concat --> GRU
+    ScoutCtx --> Concat
+    FWCtx --> Concat
+    Concat --> PreGRU --> GRU
     PrevHidden -.-> GRU
     GRU --> Features
 

@@ -1,0 +1,45 @@
+Read [](file:///homes/eva/xj/xjahnf00/tmp/DP/drawings/commander_network_architecture.mmd)
+
+Replacing 61 lines with 82 lines in [](file:///homes/eva/xj/xjahnf00/tmp/DP/drawings/commander_network_architecture.mmd)
+
+
+```
+
+```
+Diagram aktualizován. Tady je souhrn pro Claude chat:
+
+---
+
+**Souhrn všech změn provedených v této session — pro reflexi v textu DP:**
+
+### 1. Multi-FW podpora (N_FIXED=2)
+- Systém rozšířen z 1 fixed-wing na **N fixed-wing** letounů se **sdílením vah** (parameter sharing, stejný princip jako u scoutů).
+- **train_multi.py**: Celý worker loop refaktorován — `cmdr_h`, `cmdr_ctrl`, `cmdr_ep_data`, `segment_reward`, `scripted_segment`, `cmdr_alive`, `cmdr_lifespan` jsou nyní per-FW dicty. GAE se počítá per-FW, pak se vše pakuje do jednoho sdíleného bufferu pro PPO update.
+- **demo_both.py**: N controllerů, N trailů, N death diagnostik, přidán `--n-fixed` argument.
+- **CommanderController**: Už fungoval per-instance, stačilo vytvořit N instancí.
+
+### 2. FW Neighbor Awareness — nová větev v CommanderActor
+- CommanderActor rozšířen o **třetí attention branch**: FW neighbor attention.
+- Nové vrstvy: `fw_neighbor_embed` (Linear 3→64 + ReLU), `fw_neighbor_attention` (MultiHeadAttention, embed_dim=64, 2 heads).
+- Vstup: relativní pozice ostatních FW `[Δx/map_half, Δy/map_half, Δz/100]` + mask (mrtvý FW).
+- Fúze: `cat(enc_out, scout_ctx, fw_ctx)` = 192d → `pre_gru` Linear(192→128) → GRU(128→64) — dimenze GRU vstupu zůstává 128.
+- **Zpětná kompatibilita**: `pre_gru` je inicializován jako identita (první 128 dimenzí passthrough, posledních 64 = 0). Staré natrénované váhy fungují beze změny (ověřeno: output diff = 0.0).
+- `forward()` přijímá volitelné `fw_neighbor_states` a `fw_neighbor_mask` — pokud nejsou předány, `fw_ctx = zeros`, chování identické se starým modelem.
+
+### 3. Parametrické úpravy prostředí
+- **FW rychlost**: throttle zvýšen na 1.0 (30 m/s, maximum).
+- **Refill zóna**: vizuální box 10m, detekční rádius 40m.
+- **Požár**: intensity 0.8, radius_m=15, 30 pre-growth kroků v resetu → větší oheň od začátku.
+- **max_steps**: zvýšeno z 500 na 1000 (FW má čas na refill cyklus + hašení).
+
+### 4. Tréninkové hyperparametry
+- N_QUADS=3, N_FIXED=2, waypoint_steps=30, lr_scout=3e-5, lr_cmdr=5e-4.
+- num_decisions_cmdr = max_steps // waypoint_steps = 33.
+- 15 workerů × 2 epizody = 30 epizod/batch.
+
+### 5. Architektura (finální stav)
+- **ScoutActor** (hidden=128): CNN(1→16→32) + self-attention(neighbors) + MLP(self_state) → LayerNorm → GRU → 4D action + 5D message.
+- **CommanderActor** (hidden=64): MLP encoder(19→64) + scout cross-attention(N×5→64) + **FW neighbor attention((N-1)×3→64)** → pre_gru(192→128) → GRU(128→64) → 4D waypoint + 2D aux fire direction.
+- **PrivilegedCritic** (CTDE): MLP+GRU, vidí globální stav (pozice ohně, všech dronů).
+
+Made changes.

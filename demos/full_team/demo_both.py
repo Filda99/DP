@@ -51,7 +51,7 @@ MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/scout_b0670.
 MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/cmdr_b0670.pt"
 
 N_QUADS    = 3
-N_FIXED    = 1
+N_FIXED    = 2
 MAX_STEPS  = 1000
 GRID_SIZE  = 1200.0
 GIF_EVERY  = 3
@@ -369,7 +369,8 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
           f"boundary_emergency={boundary_emergency}")
 
     h_scout = {q: torch.zeros(1, 1, 128).to(device) for q in quad_names}
-    h_cmdr  = torch.zeros(1, 1, 64).to(device)
+    fixed_names = [f"fixed_{i}" for i in range(N_FIXED)]
+    h_cmdr  = {f: torch.zeros(1, 1, 64).to(device) for f in fixed_names}
 
     hist = { "q_r": {q: [] for q in quad_names},
              "f_r": [], "q_alt": {q: [] for q in quad_names},
@@ -377,12 +378,14 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
     frames, total_rf = [], 0.0
     total_rq = {q: 0.0 for q in quad_names}
     q_paths = {q: {"x": [], "y": []} for q in quad_names}
-    f_path_x, f_path_y = [], []
+    f_paths = {f: {"x": [], "y": []} for f in fixed_names}
     last_local_maps = {q: None for q in quad_names}
 
-    # Commander controller (waypoint + scripted refill + heading)
-    cmdr_ctrl = CommanderController(WAYPOINT_RANGE, WAYPOINT_STEPS, WP_REACHED_DIST)
-    cmdr_ctrl.reset(safe_limit, boundary_emergency)
+    # Commander controller per FW (waypoint + scripted refill + heading)
+    cmdr_ctrl = {f: CommanderController(WAYPOINT_RANGE, WAYPOINT_STEPS, WP_REACHED_DIST)
+                 for f in fixed_names}
+    for f in fixed_names:
+        cmdr_ctrl[f].reset(safe_limit, boundary_emergency)
     # Per-scout message tracking: latest + best-fire
     scout_msgs = {q: {"latest": torch.zeros(1, 5).to(device),
                       "best": torch.zeros(1, 5).to(device),
@@ -421,9 +424,10 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
                     sm["best_intensity"] = intensity
                     sm["best"] = scout_msg
 
-        # ── Commander (via shared CommanderController) ──────────────────
-        if "fixed_0" in env.agents:
-            drone = env.sim.drones.get("fixed_0")
+        # ── Commander (via shared CommanderController, per FW) ────────
+        for f_name in fixed_names:
+          if f_name in env.agents:
+            drone = env.sim.drones.get(f_name)
             if drone is not None:
                 msgs_t = torch.stack(
                     [scout_msgs[f"quad_{qi}"]["latest"] for qi in range(N_QUADS)],
@@ -431,21 +435,42 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
                 msgs_m = torch.tensor(
                     [[not scout_msgs[f"quad_{qi}"]["valid"] for qi in range(N_QUADS)]],
                     dtype=torch.bool).to(device)
-                action, h_cmdr, _ = cmdr_ctrl.step(
-                    drone, obs["fixed_0"]["self_state"], env,
-                    commander_actor, h_cmdr, msgs_t, msgs_m,
-                    deterministic=True)
-                actions["fixed_0"] = action
+                # Build FW neighbor states
+                my_pos = drone.get_position()
+                fw_nl, fw_ml = [], []
+                for of in fixed_names:
+                    if of == f_name:
+                        continue
+                    if of in env.sim.drones:
+                        op = env.sim.drones[of].get_position()
+                        fw_nl.append([(op[0]-my_pos[0])/env.map_bounds,
+                                      (op[1]-my_pos[1])/env.map_bounds,
+                                      (op[2]-my_pos[2])/100.0])
+                        fw_ml.append(False)
+                    else:
+                        fw_nl.append([0.,0.,0.]); fw_ml.append(True)
+                if not fw_nl:
+                    fw_nl = [[0.,0.,0.]]; fw_ml = [True]
+                fw_n_t = torch.FloatTensor([fw_nl]).to(device)
+                fw_nm_t = torch.BoolTensor([fw_ml]).to(device)
+                action, h_cmdr[f_name], _ = cmdr_ctrl[f_name].step(
+                    drone, obs[f_name]["self_state"], env,
+                    commander_actor, h_cmdr[f_name], msgs_t, msgs_m,
+                    deterministic=True,
+                    fw_neighbor_states=fw_n_t,
+                    fw_neighbor_mask=fw_nm_t)
+                actions[f_name] = action
 
         obs, rewards, _, _, infos = env.step(actions)
 
         # Commander death diagnostic
-        if "fixed_0" in infos and infos["fixed_0"].get("death_cause", ""):
-            dc = infos["fixed_0"]["death_cause"]
-            last_pos = f_path_x[-1] if f_path_x else "?"
-            last_pos_y = f_path_y[-1] if f_path_y else "?"
-            print(f"\n💀 Commander died at step {step}: cause={dc}, "
-                  f"last_pos=({last_pos:.1f}, {last_pos_y:.1f}), "
+        for f_name in fixed_names:
+          if f_name in infos and infos[f_name].get("death_cause", ""):
+            dc = infos[f_name]["death_cause"]
+            lx = f_paths[f_name]["x"][-1] if f_paths[f_name]["x"] else "?"
+            ly = f_paths[f_name]["y"][-1] if f_paths[f_name]["y"] else "?"
+            print(f"\n💀 {f_name} died at step {step}: cause={dc}, "
+                  f"last_pos=({lx:.1f}, {ly:.1f}), "
                   f"map_bounds={env.map_bounds}, "
                   f"safe_limit={safe_limit:.1f}, boundary_emergency={boundary_emergency:.1f}")
 
@@ -462,9 +487,10 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
         for qi in range(N_QUADS):
             q_name = f"quad_{qi}"
             total_rq[q_name] += rewards.get(q_name, 0.0)
-        total_rf += rewards.get("fixed_0", 0.0)
+        for f_name in fixed_names:
+            total_rf += rewards.get(f_name, 0.0)
         f_water_pct = 0.0
-        f_alive = "fixed_0" in env.sim.drones
+        f_alive = any(f in env.sim.drones for f in fixed_names)
         f_pos = None
 
         for qi in range(N_QUADS):
@@ -476,10 +502,15 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
                 hist["q_alt"][q_name].append(q_pos[2])
             hist["q_r"][q_name].append(rewards.get(q_name, 0.0))
 
-        if f_alive:
-            f_pos = env.sim.drones["fixed_0"].get_position()
-            f_path_x.append(f_pos[0]); f_path_y.append(f_pos[1])
-            f_water_pct = env.sim.drones["fixed_0"].current_water / env.sim.drones["fixed_0"].water_capacity
+        # Track all FW positions and pick first alive for display
+        for f_name in fixed_names:
+            if f_name in env.sim.drones:
+                fp = env.sim.drones[f_name].get_position()
+                f_paths[f_name]["x"].append(fp[0])
+                f_paths[f_name]["y"].append(fp[1])
+                if f_pos is None:
+                    f_pos = fp
+                    f_water_pct = env.sim.drones[f_name].current_water / env.sim.drones[f_name].water_capacity
 
         # Use best local map from any scout for display
         best_local_map = None
@@ -493,10 +524,10 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
                     best_local_map = lm
 
         fire_seen = best_fire_sum if best_fire_sum >= 0 else 0.0
-        hist["f_r"].append(rewards.get("fixed_0", 0.0))
+        hist["f_r"].append(sum(rewards.get(f, 0.0) for f in fixed_names))
         hist["fire"].append(fire_seen)
         hist["water"].append(f_water_pct)
-        if f_alive: hist["f_alt"].append(f_pos[2])
+        if f_pos is not None: hist["f_alt"].append(f_pos[2])
 
         if step % GIF_EVERY == 0:
             if save_gif:
@@ -508,10 +539,17 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
                     q_alive_map[q_name] = q_name in env.sim.drones
                     q_positions[q_name] = env.sim.drones[q_name].get_position() if q_alive_map[q_name] else None
 
+                # Merge all FW trails for display
+                all_fx = []
+                all_fy = []
+                for f_name in fixed_names:
+                    all_fx.extend(f_paths[f_name]["x"])
+                    all_fy.extend(f_paths[f_name]["y"])
+
                 frame = _render_frame(
                     step, env.sim.environment.fire_grid.I.copy(), env.map_bounds,
                     q_paths, q_positions, q_alive_map,
-                    list(f_path_x), list(f_path_y), f_pos, f_water_pct,
+                    list(all_fx), list(all_fy), f_pos, f_water_pct,
                     refill_pos, refill_size,
                     best_local_map.copy() if best_local_map is not None else None,
                     sum(total_rq.values()), total_rf, fire_seen, f_alive,
@@ -529,7 +567,7 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
     end_cells = int(np.sum(env.sim.environment.fire_grid.B)) \
                 if env.sim.environment.fire_grid is not None else 0
     supp_pct = (1.0 - end_cells / fire_cells_peak) * 100.0 if fire_cells_peak > 0 else 100.0
-    fw_survived = "fixed_0" in env.sim.drones
+    fw_survived = any(f in env.sim.drones for f in fixed_names)
     scouts_survived = {q: q in env.sim.drones for q in quad_names}
 
     return {
@@ -600,12 +638,15 @@ if __name__ == "__main__":
                         help="Override map size in metres (e.g. 300 for 300x300m)")
     parser.add_argument("--n-quads",     type=int, default=N_QUADS,
                         help="Number of scout quadcopters (default: 3)")
+    parser.add_argument("--n-fixed",     type=int, default=N_FIXED,
+                        help="Number of fixed-wing commanders (default: 2)")
     args = parser.parse_args()
 
     # Přepis cestám z argumentu
     MODEL_SCOUT     = args.scout
     MODEL_COMMANDER = args.commander
     N_QUADS         = args.n_quads
+    N_FIXED         = args.n_fixed
     grid_size_demo  = args.grid_size if args.grid_size is not None else GRID_SIZE
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
