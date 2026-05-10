@@ -68,12 +68,6 @@ WAYPOINT_STEPS  = 30      # physics steps per waypoint segment
 WP_REACHED_DIST = 30.0    # metres
 # ============================================================
 
-
-def _wrap_angle(a):
-    """Wrap angle to [-pi, pi]."""
-    return (a + np.pi) % (2 * np.pi) - np.pi
-
-
 # ── OSM terrain helpers ─────────────────────────────────────────
 
 def _load_terrain_gdfs():
