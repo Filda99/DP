@@ -188,16 +188,15 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         obs, _ = local_env.reset(epizode_number=batch_start_idx + ep_off)
 
         # -- Water-level initialisation --------------------------------
-        #    Scripted refill autopilot handles empty-tank flight, so the
-        #    NN only ever controls with water >= 30%.  We randomise the
-        #    starting water level from the very first episode to give
-        #    the policy diverse initial conditions.
+        #    FW spawns randomly on the map with a FULL tank.
+        #    The NN must learn to navigate to fire and drop water.
+        #    Scripted refill autopilot handles the refill cycle.
         for a in local_env.fixed_agents:
             if a in local_env.sim.drones:
                 d = local_env.sim.drones[a]
                 if d.water_capacity > 0:
-                    d.current_water = random.uniform(0.0, d.water_capacity)
-                    local_env._prev_fw_water[a] = d.current_water / d.water_capacity
+                    d.current_water = d.water_capacity
+                    local_env._prev_fw_water[a] = 1.0
 
         # Recalculate limits (map size may have changed via curriculum)
         map_half           = local_env.map_bounds

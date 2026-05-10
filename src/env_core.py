@@ -777,8 +777,8 @@ class DroneFireEnv(ParallelEnv):
                 #  Phase 2:        100-300 m from fire (medium approach)
                 #  ep < 20000:     ramp from near-fire to moderate distance
                 #  ep >= 20000:    full random spawn
-                FW_FIRE_CURRICULUM_END = 20000
-                FW_FIRE_CLOSE_END     = 500
+                FW_FIRE_CURRICULUM_END = 3000
+                FW_FIRE_CLOSE_END     = 300
 
                 if curr_phase == 1:
                     # Close to fire so the NN immediately gets approach signal
@@ -805,10 +805,9 @@ class DroneFireEnv(ParallelEnv):
                     fw_start_y = float(np.clip(self.fire_y + random.uniform(-max_offset, max_offset),
                                                -self.map_bounds * 0.85, self.map_bounds * 0.85))
                 else:
-                    fw_spawn_radius = random.uniform(0.0, self.map_bounds * 0.30)
-                    spawn_angle  = random.uniform(0, 2 * np.pi)
-                    fw_start_x   = float(fw_spawn_radius * np.cos(spawn_angle))
-                    fw_start_y   = float(fw_spawn_radius * np.sin(spawn_angle))
+                    # Fully random spawn anywhere on the map
+                    fw_start_x = random.uniform(-self.map_bounds * 0.85, self.map_bounds * 0.85)
+                    fw_start_y = random.uniform(-self.map_bounds * 0.85, self.map_bounds * 0.85)
                 fw_yaw = random.uniform(-np.pi, np.pi)
 
                 self.sim.add_fixedwing(agent, position=[fw_start_x, fw_start_y, 100.0], water_capacity=200.0, yaw=fw_yaw)
@@ -1420,7 +1419,7 @@ class DroneFireEnv(ParallelEnv):
             prev_key = f"_fire_approach_{agent}"
             prev_dist = self._fw_fire_approach.get(prev_key, dist_to_scout)
             delta = prev_dist - dist_to_scout   # positive = approaching
-            reward += delta * 0.10
+            reward += delta * FIXED["fire_approach_k"]
             self._fw_fire_approach[prev_key] = dist_to_scout
 
         return reward

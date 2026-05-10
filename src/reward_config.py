@@ -99,6 +99,11 @@ FIXED = {
     "water_guidance_bonus": 1.0,       # max bonus za drop přímo nad ohněm (bylo 0.2 u scoutu)
     "water_waste_penalty": 8.0,        # ZPĚT na pracující hodnotu — 1.0 nedával trest za plýtvání vodou
 
+    # Fire approach — potential-based shaping towards nearest scout (fire proxy)
+    # Scouts hover near fire, so approach-to-scout ≈ approach-to-fire.
+    # At 15 m/s approach speed: 15 * 0.25 = +3.75/waypoint-step → strong gradient.
+    "fire_approach_k":  0.25,
+
     # Refill bonus
     "refill_state_bonus":  0.0,
     "refill_proximity_dist":  100.0,

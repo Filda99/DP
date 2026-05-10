@@ -50,7 +50,7 @@ CLR_CMDR     = '#ff3333'
 MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/scout_b0670.pt"
 MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/cmdr_b0670.pt"
 
-N_QUADS    = 2
+N_QUADS    = 3
 N_FIXED    = 1
 MAX_STEPS  = 1000
 GRID_SIZE  = 1200.0
@@ -347,15 +347,17 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
         # Re-read obs after teleport so first frame is correct
         obs = {a: env._get_obs(a) for a in env.agents}
 
-    # ── Optional: override FW initial water level ─────────────────────
-    if init_water is not None:
-        for a in env.fixed_agents:
-            if a in env.sim.drones:
-                d = env.sim.drones[a]
-                if d.water_capacity > 0:
-                    d.current_water = float(np.clip(init_water, 0.0, d.water_capacity))
-                    env._prev_fw_water[a] = d.current_water / d.water_capacity
-        obs = {a: env._get_obs(a) for a in env.agents}
+    # ── FW initial water level ────────────────────────────────────────
+    # Training uses empty tank (0 L) so the FW must refill first.
+    # Mirror that default here; override with --init-water if needed.
+    water_val = init_water if init_water is not None else 0.0
+    for a in env.fixed_agents:
+        if a in env.sim.drones:
+            d = env.sim.drones[a]
+            if d.water_capacity > 0:
+                d.current_water = float(np.clip(water_val, 0.0, d.water_capacity))
+                env._prev_fw_water[a] = d.current_water / d.water_capacity
+    obs = {a: env._get_obs(a) for a in env.agents}
     # ──────────────────────────────────────────────────
     refill_info = env.sim.environment.refill_zone
     refill_pos = refill_info['position'] if refill_info else None
@@ -387,7 +389,8 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
                       "valid": False, "best_intensity": -1.0}
                   for q in quad_names}
 
-    print(f"  Seed {seed} | 🚀 Mise začíná...")
+    print(f"  Seed {seed} | 🚀 Mise začíná...  fire=({env.fire_x:.0f}, {env.fire_y:.0f})  "
+          f"water={water_val:.0f}L")
     fire_cells_peak = 0
     for step in tqdm.tqdm(range(MAX_STEPS), desc=f"seed={seed}", leave=False):
         if not env.agents: break
@@ -581,15 +584,18 @@ if __name__ == "__main__":
                         help="Spawn scouts this many metres from fire (default: env random)")
     parser.add_argument("--fw-dist",    type=float, default=None,
                         help="Spawn FW this many metres from fire (default: env random)")
-    parser.add_argument("--init-water",  type=float, default=0.0,
-                        help="Override FW initial water [L] (e.g. 0 = empty tank, default: full)")
+    parser.add_argument("--init-water",  type=float, default=None,
+                        help="Override FW initial water [L] (default: 0 = empty, matching training)")
     parser.add_argument("--grid-size",   type=float, default=None,
                         help="Override map size in metres (e.g. 300 for 300x300m)")
+    parser.add_argument("--n-quads",     type=int, default=N_QUADS,
+                        help="Number of scout quadcopters (default: 3)")
     args = parser.parse_args()
 
     # Přepis cestám z argumentu
     MODEL_SCOUT     = args.scout
     MODEL_COMMANDER = args.commander
+    N_QUADS         = args.n_quads
     grid_size_demo  = args.grid_size if args.grid_size is not None else GRID_SIZE
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
