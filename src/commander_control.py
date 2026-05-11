@@ -42,13 +42,16 @@ class CommanderController:
     Every physics step: PD heading controller tracks the active waypoint.
     """
 
+    SAFE_LIMIT_FRAC = 0.7
+    BOUNDARY_EMERGENCY_FRAC = 0.85
+
     def __init__(self, waypoint_range=200.0, waypoint_steps=30,
                  wp_reached_dist=30.0):
         self.WP_RANGE = waypoint_range
         self.WP_STEPS = waypoint_steps
         self.WP_REACHED = wp_reached_dist
 
-    def reset(self, safe_limit=420.0, boundary_emergency=360.0):
+    def reset(self, map_half):
         """Reset state for a new episode."""
         self.target_x = 0.0
         self.target_y = 0.0
@@ -57,25 +60,22 @@ class CommanderController:
         self.steps_in_segment = 0
         self.need_new_waypoint = True
         self.wp_reached = False
-        self.safe_limit = safe_limit
-        self.boundary_emergency = boundary_emergency
+        self.safe_limit = max(50.0, map_half * self.SAFE_LIMIT_FRAC)
+        self.boundary_emergency = max(50.0, map_half * self.BOUNDARY_EMERGENCY_FRAC)
 
     def update_limits(self, map_half):
         """Recalculate limits after map size change."""
-        self.safe_limit = max(50.0, map_half * 0.7)
-        self.boundary_emergency = max(50.0, map_half * 0.6)
+        self.safe_limit = max(50.0, map_half * self.SAFE_LIMIT_FRAC)
+        self.boundary_emergency = max(50.0, map_half * self.BOUNDARY_EMERGENCY_FRAC)
 
     # ------------------------------------------------------------------
     #  Low-level methods (used individually by the training worker)
     # ------------------------------------------------------------------
 
     def check_boundary_emergency(self, pos):
-        """Check and handle boundary emergency.  Returns True if active."""
-        if (abs(pos[0]) > self.boundary_emergency or
-                abs(pos[1]) > self.boundary_emergency):
-            self.target_x, self.target_y = 0.0, 0.0
-            return True
-        return False
+        """Return True if the drone is in the emergency zone (>85% map)."""
+        return (abs(pos[0]) > self.boundary_emergency or
+                abs(pos[1]) > self.boundary_emergency)
 
     def check_segment_end(self):
         """True if the current waypoint segment is done."""
@@ -83,8 +83,9 @@ class CommanderController:
 
     def decide_waypoint(self, drone, obs_self_state, env, cmdr_actor, h_cmdr,
                         scout_msgs_t, scout_mask_t, *, deterministic=False,
-                        fw_neighbor_states=None, fw_neighbor_mask=None):
-        """Compute a new waypoint (scripted refill or NN).
+                        fw_neighbor_states=None, fw_neighbor_mask=None,
+                        in_emergency=False):
+        """Compute a new waypoint (emergency / scripted refill / NN).
 
         Only call when ``self.need_new_waypoint`` is True.
 
@@ -92,7 +93,7 @@ class CommanderController:
         -------
         h_cmdr_new : tensor
         info : dict
-            'scripted'  – bool
+            'scripted'  – bool (True for refill AND emergency)
             'nn_dist'   – Distribution or None
             'nn_act'    – tensor or None
             'nn_state'  – tensor or None
@@ -102,7 +103,7 @@ class CommanderController:
         water_frac = (drone.current_water / drone.water_capacity
                       if drone.water_capacity > 0 else 1.0)
         rz = env.sim.environment.refill_zone
-        use_scripted = (water_frac < 0.30 and rz is not None)
+        use_scripted = (water_frac <= 0.0 and rz is not None)
 
         s_st = (torch.FloatTensor(obs_self_state).unsqueeze(0)
                 if not isinstance(obs_self_state, torch.Tensor)
@@ -113,7 +114,18 @@ class CommanderController:
         info = {'scripted': False, 'nn_dist': None, 'nn_act': None,
                 'nn_state': None, 'nn_aux': None}
 
-        if use_scripted:
+        if in_emergency:
+            # ── Boundary emergency: fly to center at safe altitude ────
+            self.target_x, self.target_y = 0.0, 0.0
+            self.target_alt_raw = 0.0   # ~145 m
+            self.water_raw = -1.0       # close valve
+            # Dummy forward pass keeps GRU hidden state fresh
+            with torch.no_grad():
+                _, _, h_cmdr = cmdr_actor(
+                    s_st, scout_msgs_t, scout_mask_t, h_cmdr,
+                    fw_neighbor_states, fw_neighbor_mask)
+            info['scripted'] = True
+        elif use_scripted:
             # ── Scripted refill: waypoint → refill zone ───────────────
             rz_pos = rz['position']
             dx_r = float(np.clip((rz_pos[0] - pos[0]) / self.WP_RANGE, -1, 1))
@@ -215,18 +227,23 @@ class CommanderController:
         in_emergency = self.check_boundary_emergency(pos)
         info['in_emergency'] = in_emergency
 
-        if not in_emergency:
-            if self.check_segment_end():
-                self.need_new_waypoint = True
-            if self.need_new_waypoint:
-                h_cmdr, wp_info = self.decide_waypoint(
-                    drone, obs_self_state, env, cmdr_actor, h_cmdr,
-                    scout_msgs_t, scout_mask_t,
-                    deterministic=deterministic,
-                    fw_neighbor_states=fw_neighbor_states,
-                    fw_neighbor_mask=fw_neighbor_mask)
-                info.update(wp_info)
-                info['new_waypoint'] = True
+        if in_emergency:
+            # Force new waypoint → decide_waypoint handles emergency
+            self.need_new_waypoint = True
+
+        if self.check_segment_end():
+            self.need_new_waypoint = True
+
+        if self.need_new_waypoint:
+            h_cmdr, wp_info = self.decide_waypoint(
+                drone, obs_self_state, env, cmdr_actor, h_cmdr,
+                scout_msgs_t, scout_mask_t,
+                deterministic=deterministic,
+                fw_neighbor_states=fw_neighbor_states,
+                fw_neighbor_mask=fw_neighbor_mask,
+                in_emergency=in_emergency)
+            info.update(wp_info)
+            info['new_waypoint'] = True
 
         action = self.heading_action(drone)
         return action, h_cmdr, info

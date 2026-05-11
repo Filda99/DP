@@ -363,10 +363,7 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
     refill_pos = refill_info['position'] if refill_info else None
     refill_size = refill_info['size'] if refill_info else 20.0
 
-    safe_limit = max(50.0, env.map_bounds * 0.7)           # must match training
-    boundary_emergency = max(50.0, env.map_bounds * 0.6)   # must match training
-    print(f"📐 map_bounds={env.map_bounds}, safe_limit={safe_limit}, "
-          f"boundary_emergency={boundary_emergency}")
+    print(f"📐 map_bounds={env.map_bounds}")
 
     h_scout = {q: torch.zeros(1, 1, 128).to(device) for q in quad_names}
     fixed_names = [f"fixed_{i}" for i in range(N_FIXED)]
@@ -385,7 +382,7 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
     cmdr_ctrl = {f: CommanderController(WAYPOINT_RANGE, WAYPOINT_STEPS, WP_REACHED_DIST)
                  for f in fixed_names}
     for f in fixed_names:
-        cmdr_ctrl[f].reset(safe_limit, boundary_emergency)
+        cmdr_ctrl[f].reset(env.map_bounds)
     # Per-scout message tracking: latest + best-fire
     scout_msgs = {q: {"latest": torch.zeros(1, 5).to(device),
                       "best": torch.zeros(1, 5).to(device),
@@ -469,10 +466,11 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
             dc = infos[f_name]["death_cause"]
             lx = f_paths[f_name]["x"][-1] if f_paths[f_name]["x"] else "?"
             ly = f_paths[f_name]["y"][-1] if f_paths[f_name]["y"] else "?"
+            ctrl = cmdr_ctrl[f_name]
             print(f"\n💀 {f_name} died at step {step}: cause={dc}, "
                   f"last_pos=({lx:.1f}, {ly:.1f}), "
                   f"map_bounds={env.map_bounds}, "
-                  f"safe_limit={safe_limit:.1f}, boundary_emergency={boundary_emergency:.1f}")
+                  f"safe_limit={ctrl.safe_limit:.1f}, boundary_emergency={ctrl.boundary_emergency:.1f}")
 
         # Scout death diagnostic
         for qi in range(N_QUADS):

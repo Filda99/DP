@@ -359,15 +359,12 @@ def run_episode(env, scout_actor, cmdr_actor, seed, device,
     refill_info = env.sim.environment.refill_zone
     refill_pos = refill_info['position'] if refill_info else None
 
-    safe_limit = max(50.0, env.map_bounds * 0.7)
-    boundary_emergency = max(50.0, env.map_bounds * 0.6)
-
     h_scout = {q: torch.zeros(1, 1, 128).to(device) for q in quad_names}
     h_cmdr  = torch.zeros(1, 1, 64).to(device)
 
     cmdr_ctrl = CommanderController(WAYPOINT_RANGE, WAYPOINT_STEPS,
                                     WP_REACHED_DIST)
-    cmdr_ctrl.reset(safe_limit, boundary_emergency)
+    cmdr_ctrl.reset(env.map_bounds)
 
     scout_msgs = {q: {"latest": torch.zeros(1, 5).to(device),
                       "valid": False}

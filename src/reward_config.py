@@ -96,7 +96,7 @@ FIXED = {
     "water_trigger_thresh":   0.0,
     "communication_range_m": 400.0,   # cross-attention message range (used in team reward)
     "water_guidance_bonus": 1.0,       # max bonus for dropping directly over fire
-    "water_waste_penalty": 8.0,        # penalty for wasting water far from fire
+    "water_waste_penalty": 2.0,        # penalty for wasting water far from fire (reduced from 8.0)
 
     # Fire approach — potential-based shaping towards nearest scout (fire proxy)
     # Scouts hover near fire, so approach-to-scout ≈ approach-to-fire.

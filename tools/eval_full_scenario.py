@@ -34,6 +34,7 @@ os.chdir(os.path.join(PROJECT, "src"))
 
 from env_core import DroneFireEnv
 from models import ScoutActor, CommanderActor
+from commander_control import CommanderController
 
 # ── Lokality ─────────────────────────────────────────────────────────────────
 # Každá lokalita = jméno + (lat, lon). Pokud use_osm=False, jméno se použije
@@ -50,6 +51,8 @@ MAP_SIZES = [800.0, 1200.0, 2000.0]   # metry
 HIDDEN_DIM_SCOUT = 128
 HIDDEN_DIM_CMDR  = 64   # musí souhlasit s train_multi.py hidden_dim_cmdr
 WAYPOINT_STEPS   = 30     # FW dostane nový waypoint každých N kroků
+WAYPOINT_RANGE   = 200.0
+WP_REACHED_DIST  = 30.0
 NORM_DIST        = 1000.0
 WATER_CAPACITY   = 200.0  # litrů (musí souhlasit s FixedWing)
 
@@ -130,7 +133,15 @@ def run_episode(scout_actor, cmdr_actor, device,
     last_scout_msgs  = {q: np.zeros(5) for q in quad_agents}  # zprávy pro FW compass
     fire_discovered  = False
     steps_done       = 0
-    wp_countdown     = {f: 0 for f in fixed_agents}  # odpočet do nového waypointu
+    fw_mode          = {f: 'nn' for f in fixed_agents}  # current mode: nn/scripted/emergency
+    fw_death_info    = {}  # f -> {step, mode, pos}
+
+    # Per-FW CommanderController (waypoint + PD heading + scripted refill)
+    cmdr_ctrl = {}
+    for f in fixed_agents:
+        ctrl = CommanderController(WAYPOINT_RANGE, WAYPOINT_STEPS, WP_REACHED_DIST)
+        ctrl.reset(env.map_bounds)
+        cmdr_ctrl[f] = ctrl
 
     # Počáteční stav ohně
     fs_init = _fire_stats(env)
@@ -181,29 +192,62 @@ def run_episode(scout_actor, cmdr_actor, device,
                 continue
             fw_total_steps[f] += 1
 
-            # Waypoint mode: nová akce jen každých WAYPOINT_STEPS kroků
-            if wp_countdown[f] <= 0:
-                ss_f = obs[f]["self_state"].copy()
-                with torch.no_grad():
-                    ss_t = torch.FloatTensor(ss_f).unsqueeze(0).to(device)
-                    # Sestavíme tensor zpráv scoutů
-                    msg_list = [torch.FloatTensor(last_scout_msgs.get(q, np.zeros(5)))
-                                for q in quad_agents]
-                    msgs_t   = torch.stack(msg_list).unsqueeze(0).to(device)  # [1, N, 5]
-                    # Maska: False = agent žije
-                    mask_t   = torch.BoolTensor(
-                        [[not scout_alive[q] for q in quad_agents]]
-                    ).to(device)
-                    dist_f, _, h_out_f = cmdr_actor(ss_t, msgs_t, mask_t, h_cmdr[f])
-                    act_f = dist_f.mean
-                h_cmdr[f] = h_out_f
-                current_fw_action = act_f.squeeze(0).cpu().numpy()
-                wp_countdown[f] = WAYPOINT_STEPS
-            wp_countdown[f] -= 1
-            actions[f] = current_fw_action
+            drone = env.sim.drones.get(f)
+            if drone is None:
+                fw_alive[f] = False
+                continue
 
-            # Počítáme, jestli ventil byl otevřen (water_trigger > 0.5)
-            if len(current_fw_action) > 3 and current_fw_action[3] > 0.5:
+            # Build scout message tensor
+            msg_list = [torch.FloatTensor(last_scout_msgs.get(q, np.zeros(5)))
+                        for q in quad_agents]
+            msgs_t = torch.stack(msg_list).unsqueeze(0).to(device)
+            mask_t = torch.BoolTensor(
+                [[not scout_alive[q] for q in quad_agents]]
+            ).to(device)
+
+            # Build FW neighbor tensor
+            pos_f = drone.get_position()
+            map_half = env.map_bounds
+            fw_neigh_list = []
+            fw_mask_list = []
+            for f2 in fixed_agents:
+                if f2 == f:
+                    continue
+                d2 = env.sim.drones.get(f2)
+                if d2 is not None and fw_alive.get(f2, False):
+                    p2 = d2.get_position()
+                    fw_neigh_list.append([
+                        (p2[0] - pos_f[0]) / max(map_half, 1.0),
+                        (p2[1] - pos_f[1]) / max(map_half, 1.0),
+                        p2[2] / 100.0
+                    ])
+                    fw_mask_list.append(False)
+                else:
+                    fw_neigh_list.append([0.0, 0.0, 0.0])
+                    fw_mask_list.append(True)
+            fw_neigh_t = torch.FloatTensor([fw_neigh_list]).to(device) if fw_neigh_list else None
+            fw_mask_t = torch.BoolTensor([fw_mask_list]).to(device) if fw_mask_list else None
+
+            # CommanderController handles: boundary emergency, scripted
+            # refill, NN waypoint, PD heading — exactly as in training
+            action, h_cmdr[f], ctrl_info = cmdr_ctrl[f].step(
+                drone, obs[f]["self_state"], env,
+                cmdr_actor, h_cmdr[f], msgs_t, mask_t,
+                deterministic=True,
+                fw_neighbor_states=fw_neigh_t, fw_neighbor_mask=fw_mask_t)
+            actions[f] = action
+
+            # Track current FW mode for crash diagnostics
+            if ctrl_info['in_emergency']:
+                fw_mode[f] = 'emergency'
+            elif ctrl_info['scripted']:
+                fw_mode[f] = 'scripted'
+            elif ctrl_info.get('new_waypoint'):
+                fw_mode[f] = 'nn'
+            # else: keep previous mode (PD heading between waypoints)
+
+            # Valve open: action[2] is water_raw from heading_action
+            if len(action) > 2 and action[2] > 0.5:
                 fw_valve_steps[f] += 1
 
         # Krok prostředí
@@ -226,13 +270,21 @@ def run_episode(scout_actor, cmdr_actor, device,
                 fw_prev_water[f] = cur_w
                 fw_water_end[f] = cur_w
 
-        # Konec agentů
+        # Konec agentů — only crash (terminated) counts as death,
+        # truncation (time limit) means the agent survived
         for q in quad_agents:
-            if terms.get(q, False) or truncs.get(q, False):
+            if terms.get(q, False):
                 scout_alive[q] = False
         for f in fixed_agents:
-            if terms.get(f, False) or truncs.get(f, False):
+            if terms.get(f, False):
                 fw_alive[f] = False
+                if f not in fw_death_info:
+                    d = env.sim.drones.get(f)
+                    pos = d.get_position() if d else [0, 0, 0]
+                    fw_death_info[f] = {
+                        'step': step, 'mode': fw_mode[f],
+                        'pos': [round(p, 1) for p in pos]
+                    }
 
     # Finální stav ohně
     fs_final = _fire_stats(env)
@@ -308,6 +360,8 @@ def run_episode(scout_actor, cmdr_actor, device,
         "fire_intensity_reduction": fire_reduction,
         "burned_frac_pct":   fs_final["burned_fraction"],
         "fire_extinguished": int(fire_extinguished),
+        # FW crash diagnostics
+        "fw_deaths":         fw_death_info,
     }
 
 
@@ -439,7 +493,7 @@ def main():
 
     rows = []
     with open(args.out, "w", newline="") as csvf:
-        writer = csv.DictWriter(csvf, fieldnames=CSV_FIELDS)
+        writer = csv.DictWriter(csvf, fieldnames=CSV_FIELDS, extrasaction='ignore')
         writer.writeheader()
 
         for run_id, seed, loc, map_size, n_scouts, n_fw in configs:
@@ -460,6 +514,11 @@ def main():
                 print(f"    surv={row['scouts_surv_pct']}%  disc={row['fire_discovered']}"
                       f"  dwell={row['scout_dwell_pct']}%  H2O={row['fw_water_dropped_L']}L"
                       f"  brn={row['burned_frac_pct']}%  t={elapsed:.1f}s", flush=True)
+                # Print FW crash details
+                fw_deaths = row.get("fw_deaths", {})
+                for fname, dinfo in fw_deaths.items():
+                    print(f"    ⚠ {fname} CRASHED step={dinfo['step']} "
+                          f"mode={dinfo['mode']} pos={dinfo['pos']}", flush=True)
             except Exception as exc:
                 print(f"    [CHYBA] {exc}")
                 row = {f: "" for f in CSV_FIELDS}
@@ -510,6 +569,28 @@ def main():
             vals = [float(r[key]) for r in valid if r.get(key) not in ("", None)]
             if vals:
                 print(f"  {label:<30}: {np.mean(vals):.2f}  ±{np.std(vals):.2f}")
+
+        # FW crash analysis by mode
+        all_deaths = []
+        for r in valid:
+            for fname, dinfo in r.get("fw_deaths", {}).items():
+                all_deaths.append(dinfo)
+        if all_deaths:
+            total_fw = sum(int(r.get("n_fw", 0)) for r in valid)
+            print(f"\n  FW crashes: {len(all_deaths)}/{total_fw}"
+                  f" ({len(all_deaths)/total_fw*100:.0f}%)")
+            mode_counts = {}
+            mode_steps = {}
+            for d in all_deaths:
+                m = d['mode']
+                mode_counts[m] = mode_counts.get(m, 0) + 1
+                mode_steps.setdefault(m, []).append(d['step'])
+            for m in sorted(mode_counts.keys()):
+                avg_step = np.mean(mode_steps[m])
+                print(f"    {m:>12}: {mode_counts[m]} crashes"
+                      f"  (avg step={avg_step:.0f})")
+        else:
+            print(f"\n  FW crashes: 0 — all survived!")
 
 
 if __name__ == "__main__":

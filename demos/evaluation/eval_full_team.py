@@ -69,8 +69,7 @@ def run_episode(env, scout_actor, cmdr_actor, seed, ep_num, n_quads, device):
 
     # Commander controller
     cmdr_ctrl = CommanderController(WAYPOINT_RANGE, WAYPOINT_STEPS, WP_REACHED_DIST)
-    cmdr_ctrl.reset(safe_limit=max(50.0, env.map_bounds * 0.7),
-                    boundary_emergency=max(50.0, env.map_bounds * 0.6))
+    cmdr_ctrl.reset(env.map_bounds)
     scout_msgs    = {q: {"latest": torch.zeros(1, 5).to(device), "valid": False}
                      for q in quad_names}
 

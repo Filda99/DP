@@ -87,8 +87,6 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     map_size_range     = config.get('map_size_range', None)
 
     map_half           = config['grid_size_m'] / 2.0
-    safe_limit         = max(50.0, map_half * 0.7)
-    boundary_emergency = max(50.0, map_half * 0.6)
     wp_reached_dist    = 30.0
     wp_timeout_penalty = -1.0
 
@@ -164,6 +162,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     all_cmdr_lifespans  = []
     all_deaths          = []
     all_fire_stats      = []   # (peak_burning, final_burning, total_extinguish)
+    all_cmdr_rd         = []   # per-episode commander reward diagnostics
 
     # Dummy tensors for dead-scout padding
     d_map       = torch.zeros(1, 1, 32, 32)
@@ -204,9 +203,6 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
         # Recalculate limits (map size may have changed via curriculum)
         map_half           = local_env.map_bounds
-        safe_limit         = max(50.0, map_half * 0.7)
-        boundary_emergency = max(50.0, map_half * 0.6)
-        # (cmdr_ctrl is created below; updated per-episode there)
 
         quad_agents  = local_env.quad_agents
         fixed_agents = local_env.fixed_agents
@@ -242,12 +238,14 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         cmdr_ctrl          = {f: CommanderController(waypoint_range, waypoint_steps, wp_reached_dist)
                               for f in fixed_agents}
         for f in fixed_agents:
-            cmdr_ctrl[f].reset(safe_limit, boundary_emergency)
+            cmdr_ctrl[f].reset(map_half)
         segment_reward       = {f: 0.0 for f in fixed_agents}
         scripted_segment     = {f: False for f in fixed_agents}
         scripted_refill_count = 0
         ep_peak_burning   = 0
         ep_total_extinguish = 0.0
+        ep_cmdr_rd = {"r_extinguish": 0.0, "r_water_waste": 0.0,
+                      "r_water_near": 0.0, "r_fire_out": 0.0, "r_spread": 0.0}
 
         msg_buffer = {f: [] for f in fixed_agents}
 
@@ -323,7 +321,10 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     fw_drone is not None and
                     cmdr_ctrl[f_agent].check_boundary_emergency(fw_drone.get_position()))
 
-                if cmdr_ctrl[f_agent].need_new_waypoint and not in_boundary_emergency:
+                if in_boundary_emergency:
+                    cmdr_ctrl[f_agent].need_new_waypoint = True
+
+                if cmdr_ctrl[f_agent].need_new_waypoint:
                     # Build scout messages
                     msgs_for_cmdr = []
                     masks_for_cmdr = []
@@ -365,7 +366,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         local_cmdr, cmdr_h[f_agent], msgs_t, msgs_m,
                         deterministic=False,
                         fw_neighbor_states=fw_neigh_t,
-                        fw_neighbor_mask=fw_mask_t)
+                        fw_neighbor_mask=fw_mask_t,
+                        in_emergency=in_boundary_emergency)
 
                     if wp_info['scripted']:
                         segment_reward[f_agent]   = 0.0
@@ -471,6 +473,10 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     r_f = rewards.get(f_agent, 0.0)
                     r_cmdr_per_fw[f_agent] = r_f
                     segment_reward[f_agent] += r_f
+                    # Accumulate reward diagnostics
+                    fi = infos.get(f_agent, {})
+                    for rk in ep_cmdr_rd:
+                        ep_cmdr_rd[rk] += fi.get(rk, 0.0)
 
                     # Commander death handling
                     if terms.get(f_agent, False) or truncs.get(f_agent, False):
@@ -649,6 +655,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         fg_end = local_env.sim.environment.fire_grid
         ep_final_burning = int(np.sum(fg_end.B)) if fg_end is not None else 0
         all_fire_stats.append((ep_peak_burning, ep_final_burning, round(ep_total_extinguish, 1)))
+        all_cmdr_rd.append(ep_cmdr_rd)
 
         for q in quad_agents:
             all_scout_lifespans.append(scout_lifespan[q])
@@ -710,7 +717,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
     return (out_scout, out_cmdr, out_init_h,
             all_rewards, all_cmdr_rewards, all_refill_hits,
             (all_scout_lifespans, all_cmdr_lifespans), all_deaths,
-            all_fire_stats)
+            all_fire_stats, all_cmdr_rd)
 
 
 # =====================================================================
@@ -985,6 +992,7 @@ def train_multi(resume_scout="", resume_cmdr="",
         batch_scout_lifespans = []
         batch_cmdr_lifespans  = []
         batch_fire_stats      = []
+        batch_cmdr_rd         = []
 
         batch_ep_max = max_steps
         worker_config['ep_max_steps'] = batch_ep_max
@@ -1030,7 +1038,7 @@ def train_multi(resume_scout="", resume_cmdr="",
                 try:
                     (w_scout, w_cmdr, w_h, w_rew, w_cmdr_rew,
                      w_refill, (w_scout_life, w_cmdr_life), w_deaths,
-                     w_fire_stats) = fut.result()
+                     w_fire_stats, w_cmdr_rd) = fut.result()
                 except Exception as e:
                     failed += 1
                     print(f"   Worker failed: {e}")
@@ -1043,6 +1051,7 @@ def train_multi(resume_scout="", resume_cmdr="",
                 batch_cmdr_lifespans.extend(w_cmdr_life)
                 batch_refill_hits.extend(w_refill)
                 batch_fire_stats.extend(w_fire_stats)
+                batch_cmdr_rd.extend(w_cmdr_rd)
                 reward_history.extend(w_rew)
                 episodes_played += len(w_rew)
 
@@ -1113,6 +1122,13 @@ def train_multi(resume_scout="", resume_cmdr="",
               f"NN_dec={nn_decisions}/{total_slots}  "
               f"fire: peak={avg_peak:.0f} final={avg_final:.0f} supp={suppressed:.0f} ext={avg_ext:.1f}  "
               f"{rollout_time:.1f}s")
+
+        # Commander reward diagnostics
+        if batch_cmdr_rd:
+            n_rd = len(batch_cmdr_rd)
+            rd_avg = {k: sum(d[k] for d in batch_cmdr_rd) / n_rd for k in batch_cmdr_rd[0]}
+            rd_str = "  ".join(f"{k}={v:+.3f}" for k, v in rd_avg.items())
+            print(f"   Cmdr reward breakdown: {rd_str}")
 
         # -- Checkpoint: best & periodic ------------------------------
         if episodes_played >= 60 and avg_roll > best_avg:

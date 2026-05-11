@@ -1108,11 +1108,19 @@ class DroneFireEnv(ParallelEnv):
             if f_agent not in drone_controls or f_agent not in rewards:
                 continue
 
+            rd = infos.setdefault(f_agent, {})
+            rd["r_extinguish"] = 0.0
+            rd["r_water_waste"] = 0.0
+            rd["r_water_near"] = 0.0
+            rd["r_fire_out"] = 0.0
+            rd["r_spread"] = 0.0
+
             eff = self.sim.drone_extinguish_stats.get(f_agent, 0.0)
             
             if eff > 0.0:
-                fire_bonus = min(eff * 50.0, 3.0)
+                fire_bonus = min(eff * 50.0, 5.0)
                 rewards[f_agent] += fire_bonus
+                rd["r_extinguish"] = fire_bonus
 
                 # Shared reward for scouts — intentionally small (0.15) to
                 # avoid incentivising dive-loops (maximise local_map intensity
@@ -1140,6 +1148,7 @@ class DroneFireEnv(ParallelEnv):
                         # Zone 1: near fire → graded bonus (max directly above)
                         partial = FIXED["water_guidance_bonus"] * (1.0 - dist_to_fire / fire_radius)
                         rewards[f_agent] += partial
+                        rd["r_water_near"] = partial
                     else:
                         min_dist_to_scout = min(
                             (np.hypot(fw_pos[0] - self.sim.drones[q].get_position()[0],
@@ -1151,12 +1160,14 @@ class DroneFireEnv(ParallelEnv):
                             # Zone 2: near scout but off fire → small bonus
                             # Scouts hover near fire → dropping near scout = right direction.
                             rewards[f_agent] += 0.3
+                            rd["r_water_near"] = 0.3
                         else:
                             # Zone 3: far from scouts and fire → water waste
                             waste_pen = getattr(self, 'waste_penalty_override', None)
                             if waste_pen is None:
                                 waste_pen = FIXED["water_waste_penalty"]
                             rewards[f_agent] -= waste_pen
+                            rd["r_water_waste"] = -waste_pen
              
         if self.sim.environment.fire_grid is not None:
             total_burning = int(np.sum(self.sim.environment.fire_grid.B))
@@ -1165,6 +1176,8 @@ class DroneFireEnv(ParallelEnv):
                 for agent in rewards:
                     if "fixed" in agent:
                         rewards[agent] += 10.0
+                        if agent in infos:
+                            infos[agent]["r_fire_out"] = 10.0
                     else:
                         rewards[agent] += 5.0  # scout assisted
 
@@ -1187,6 +1200,8 @@ class DroneFireEnv(ParallelEnv):
                 for agent in rewards:
                     if "fixed" in agent:
                         rewards[agent] -= spread_penalty
+                        if agent in infos:
+                            infos[agent]["r_spread"] = -spread_penalty
             self._prev_burning_count = current_burning
 
         for agent in rewards:

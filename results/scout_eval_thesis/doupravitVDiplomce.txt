@@ -1,0 +1,25 @@
+Searched for text `_get_quad_reward` (`**/src/env_core.py`), 3 results
+
+Read [](file:///homes/eva/xj/xjahnf00/tmp/DP/src/reward_config.py#1-1), lines 1 to 80
+
+Read [](file:///homes/eva/xj/xjahnf00/tmp/DP/src/env_core.py#1230-1230), lines 1230 to 1420
+
+Mám kompletní přehled. Tady jsou nesrovnalosti mezi textem a kódem:
+
+| # | Text říká | Kód má | Oprava |
+|---|-----------|--------|--------|
+| 1 | `survival_bonus` = +0.01 | `SHARED["survival_bonus"]` = **0.02** | Opravit na **+0.02** |
+| 2 | `crash_penalty` = −50.0 | `SHARED["crash_penalty"]` = **−10** | Opravit na **−10.0** (komentář v kódu: "reduced from −50") |
+| 3 | `alt_penalty` = −0.05/step, rozsah 40–120 m | `QUAD["alt_penalty"]` = **0.05** (OK), ale `alt_ideal_min` = **60**, `alt_ideal_max` = **120** | Opravit dolní mez na **60 m** |
+| 4 | `approach_k` = "up to +0.02" | `QUAD["approach_k"]` = **0.03** | Opravit na **0.03** |
+| 5 | `fire_intensity_k` = +10.0 × intensity | `QUAD["fire_intensity_k"]` = **2.0** | Opravit na **2.0** |
+| 6 | `fire_speed_pen` = −0.005 × speed | `QUAD["fire_speed_pen"]` = **0.01** | Opravit na **−0.01** |
+| 7 | Altitude sweet spot "40–120 m" | Sweet spot bonus: **70–150 m** (`alt_sweet_min`/`max`), penalty range: **60–120 m** | Opravit na **60–120 m** (penalty) resp. zmínit sweet-spot 70–150 m |
+| 8 | Chybí v tabulce | Kód má navíc: `compass_follow_k` (0.25), `first_discovery_bonus` (1.0), `ground_danger_pen` (5.0), `separation_bonus` (0.05), `exploration_bonus` (0.1), `fire_abandon_penalty` (1.0), `alt_sweet_bonus` (0.02) | Doplnit do tabulky nebo textu |
+
+Také popis říká "hover directly over the flames" — to sedí, ale text zmiňuje jen 4 komponenty v tabulce, zatímco kód jich má **11+**. Chybí hlavně:
+- **`compass_follow_k`** (+0.25) — klíčový signál, NN se učí letět směrem k ohni podle velocity alignment
+- **`ground_danger_pen`** (−5.0) — exponenciální penalizace pod 70 m, důležitější než prostý `alt_penalty`
+- **`separation_bonus`** (+0.05) — scouti se učí nekumulovat na jednom místě
+- **`exploration_bonus`** (+0.1) — motivace prozkoumávat nové buňky
+- **`fire_abandon_penalty`** (−1.0) — penalizace za opuštění ohně
