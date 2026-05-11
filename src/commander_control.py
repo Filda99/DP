@@ -62,6 +62,8 @@ class CommanderController:
         self.wp_reached = False
         self.safe_limit = max(50.0, map_half * self.SAFE_LIMIT_FRAC)
         self.boundary_emergency = max(50.0, map_half * self.BOUNDARY_EMERGENCY_FRAC)
+        self.last_scout_msgs = None   # (num_scouts, msg_dim) tensor
+        self.last_scout_mask = None   # (num_scouts,) bool tensor
 
     def update_limits(self, map_half):
         """Recalculate limits after map size change."""
@@ -196,17 +198,27 @@ class CommanderController:
         else:
             heading_cmd = 0.0
 
-        # Rule-based valve: open only when near a scout that SEES fire AND below 120m
+        # Rule-based valve: open only when near a scout that REPORTS fire
+        # via its message[2] (fire intensity) AND below 120m.
+        # This uses only information the commander legitimately receives.
         valve = -1.0  # default: closed
         if env is not None and pos[2] < 120.0 and drone.current_water > 0:
-            for q in env.quad_agents:
-                if q in env.sim.drones:
-                    # Scout must see fire (intensity > 0.01)
-                    if env._prev_fire_seen.get(q, 0.0) < 0.01:
+            msgs = self.last_scout_msgs  # (num_scouts, msg_dim) or None
+            mask = self.last_scout_mask  # (num_scouts,) bool — True=absent
+            if msgs is not None:
+                for i, q in enumerate(env.quad_agents):
+                    if q not in env.sim.drones:
+                        continue
+                    # Skip masked-out (dead) scouts
+                    if mask is not None and mask.dim() >= 1 and i < mask.size(-1) and mask.view(-1)[i]:
+                        continue
+                    # msg[2] = fire intensity reported by scout
+                    fire_intensity = msgs.view(-1, msgs.size(-1))[i, 2].item()
+                    if fire_intensity < 0.01:
                         continue
                     sq_pos = env.sim.drones[q].get_position()
                     d_sq = np.hypot(pos[0] - sq_pos[0], pos[1] - sq_pos[1])
-                    if d_sq < 80.0:
+                    if d_sq < 50.0:  # scout hovers over fire
                         valve = 1.0
                         break
 
@@ -259,6 +271,10 @@ class CommanderController:
                 in_emergency=in_emergency)
             info.update(wp_info)
             info['new_waypoint'] = True
+
+        # Cache scout messages for valve logic in heading_action
+        self.last_scout_msgs = scout_msgs_t
+        self.last_scout_mask = scout_mask_t
 
         action = self.heading_action(drone, env=env)
         return action, h_cmdr, info

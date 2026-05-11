@@ -442,6 +442,18 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
                 # -- PD heading controller (every step) ---------------
                 if fw_drone is not None:
+                    # Update cached scout messages for valve logic
+                    latest_msgs = []
+                    latest_masks = []
+                    for q in quad_agents:
+                        latest_msg, latest_valid = (
+                            msg_buffer[f_agent][-1][q] if msg_buffer[f_agent]
+                            else (torch.zeros(1, scout_msg_dim), False))
+                        latest_msgs.append(latest_msg)
+                        latest_masks.append(not latest_valid)
+                    cmdr_ctrl[f_agent].last_scout_msgs = torch.stack(latest_msgs, dim=1)
+                    cmdr_ctrl[f_agent].last_scout_mask = torch.tensor([latest_masks])
+
                     actions[f_agent] = cmdr_ctrl[f_agent].heading_action(fw_drone, env=local_env)
 
                 total_cmdr_steps[f_agent] += 1

@@ -251,8 +251,9 @@ class Simulation:
             pos = drone.get_position()
             altitude = pos[2]
             
-            # Water effectiveness decreases with height
-            effectiveness = max(0.0, 1.0 - (altitude / 200.0))
+            # Water effectiveness decreases quadratically with height
+            # Realistic: at 40m ~96%, at 60m ~84%, at 100m ~50%, at 140m ~2%
+            effectiveness = max(0.0, 1.0 - (altitude / 150.0) ** 2)
             # 240 RL steps until the water is completely off
             water_amount = drone.consume_water(100.0 * dt) * effectiveness
             
