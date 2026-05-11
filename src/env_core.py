@@ -1005,8 +1005,9 @@ class DroneFireEnv(ParallelEnv):
                     roll_cmd = np.clip(2.0 * heading_delta_raw, -1.0, 1.0)
 
                     # --- 2. ALTITUDE → PITCH ---
-                    # target_alt [-1, 1] → [40, 250] meters
-                    target_alt = 40.0 + (target_alt_raw + 1.0) / 2.0 * 210.0
+                    # target_alt [-1, 1] → [40, 180] meters
+                    # alt_raw=0 → 110m (good for firefighting), range narrowed from [40,250]
+                    target_alt = 40.0 + (target_alt_raw + 1.0) / 2.0 * 140.0
                     current_alt = drone.state_pos[2]
                     alt_error = target_alt - current_alt
                     # PD controller: proportional on error, derivative on climb rate
@@ -1116,6 +1117,17 @@ class DroneFireEnv(ParallelEnv):
             rd["r_spread"] = 0.0
 
             eff = self.sim.drone_extinguish_stats.get(f_agent, 0.0)
+
+            # Water-drop diagnostics: track alt, dist_to_fire, effectiveness
+            if self._fw_water_triggered.get(f_agent, False):
+                fw_drone = self.sim.drones.get(f_agent)
+                if fw_drone is not None:
+                    fw_pos = fw_drone.get_position()
+                    _, _, d2f = self._nearest_fire(fw_pos)
+                    rd["wd_alt"] = fw_pos[2]
+                    rd["wd_dist"] = d2f
+                    rd["wd_eff"] = eff
+                    rd["wd_water"] = fw_drone.current_water
             
             if eff > 0.0:
                 fire_bonus = min(eff * 50.0, 5.0)
@@ -1129,45 +1141,16 @@ class DroneFireEnv(ParallelEnv):
                     if q_agent in rewards:
                         rewards[q_agent] += fire_bonus * 0.15
             elif self._fw_water_triggered.get(f_agent, False):
-                # FW triggered water but did not hit fire.  Three zones:
-                #   1. Near fire (< fire_radius) → graded bonus (max = water_guidance_bonus)
-                #   2. Near scout (< comm_range)  → small bonus (good direction)
-                #   3. Far from everyone           → waste penalty
-                # This tells the agent: "near a scout it is safe to try",
-                # but a full bonus requires an accurate hit.
-                # IMPORTANT: bonus only when the drone actually has water —
-                # otherwise it learns to open the valve with an empty tank
-                # just for the free reward signal.
+                # FW triggered water but did not hit fire → waste penalty.
+                # No partial bonus for near-misses — only r_extinguish
+                # rewards actual fire suppression.
                 fw_drone = self.sim.drones.get(f_agent)
                 if fw_drone is not None and fw_drone.current_water > 0:
-                    fw_pos = fw_drone.get_position()
-                    _, _, dist_to_fire = self._nearest_fire(fw_pos)
-                    fire_radius = FIXED["water_trigger_dist"]    # 200 m — fire proximity zone
-                    comm_range  = 150.0                          # 150 m — neutral zone near scout
-                    if dist_to_fire < fire_radius:
-                        # Zone 1: near fire → graded bonus (max directly above)
-                        partial = FIXED["water_guidance_bonus"] * (1.0 - dist_to_fire / fire_radius)
-                        rewards[f_agent] += partial
-                        rd["r_water_near"] = partial
-                    else:
-                        min_dist_to_scout = min(
-                            (np.hypot(fw_pos[0] - self.sim.drones[q].get_position()[0],
-                                      fw_pos[1] - self.sim.drones[q].get_position()[1])
-                             for q in self.quad_agents if q in self.sim.drones),
-                            default=float('inf')
-                        )
-                        if min_dist_to_scout < comm_range:
-                            # Zone 2: near scout but off fire → small bonus
-                            # Scouts hover near fire → dropping near scout = right direction.
-                            rewards[f_agent] += 0.3
-                            rd["r_water_near"] = 0.3
-                        else:
-                            # Zone 3: far from scouts and fire → water waste
-                            waste_pen = getattr(self, 'waste_penalty_override', None)
-                            if waste_pen is None:
-                                waste_pen = FIXED["water_waste_penalty"]
-                            rewards[f_agent] -= waste_pen
-                            rd["r_water_waste"] = -waste_pen
+                    waste_pen = getattr(self, 'waste_penalty_override', None)
+                    if waste_pen is None:
+                        waste_pen = FIXED["water_waste_penalty"]
+                    rewards[f_agent] -= waste_pen
+                    rd["r_water_waste"] = -waste_pen
              
         if self.sim.environment.fire_grid is not None:
             total_burning = int(np.sum(self.sim.environment.fire_grid.B))
@@ -1417,9 +1400,8 @@ class DroneFireEnv(ParallelEnv):
 
         Refill is handled by a scripted autopilot (in train_multi and
         demo_both), so the NN only controls when water >= 30%.
-        The ONLY reward signal here is approach shaping towards the
-        nearest scout (fire proxy).  Extinguish bonuses come from
-        step() via drone_extinguish_stats.
+        Approach shaping + altitude shaping near fire.
+        Extinguish bonuses come from step() via drone_extinguish_stats.
         """
         drone = self.sim.drones[agent]
         pos = drone.get_position()
@@ -1428,7 +1410,6 @@ class DroneFireEnv(ParallelEnv):
 
         # ── Fire approach: potential-based shaping to nearest scout ────
         # Scouts hover near fire, so flying towards a scout ≈ fire.
-        # k=0.10 → +1.0/step at 10 m/s approach speed.
         live_quads = [q for q in self.quad_agents if q in self.sim.drones]
         if live_quads:
             dist_to_scout = min(
@@ -1441,6 +1422,15 @@ class DroneFireEnv(ParallelEnv):
             delta = prev_dist - dist_to_scout   # positive = approaching
             reward += delta * FIXED["fire_approach_k"]
             self._fw_fire_approach[prev_key] = dist_to_scout
+
+            # ── Altitude shaping near fire: reward lower altitude ─────
+            # When FW is close to a scout (< 200m), reward descending.
+            # effectiveness = 1 - alt/200, so lower = better.
+            # Bonus = 0.1 * (1 - alt/200) when close, gives clear gradient:
+            #   at 80m: +0.06/step, at 140m: +0.03/step, at 200m: 0
+            if dist_to_scout < 200.0:
+                alt_effectiveness = max(0.0, 1.0 - pos[2] / 200.0)
+                reward += 0.1 * alt_effectiveness
 
         return reward
 

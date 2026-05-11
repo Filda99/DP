@@ -170,10 +170,11 @@ class CommanderController:
         self.need_new_waypoint = False
         return h_cmdr, info
 
-    def heading_action(self, drone):
+    def heading_action(self, drone, env=None):
         """PD heading controller.  Call every physics step.
 
         Updates ``wp_reached`` and ``steps_in_segment``.
+        Valve is rule-based: open only when close to a scout AND low altitude.
 
         Returns
         -------
@@ -195,9 +196,23 @@ class CommanderController:
         else:
             heading_cmd = 0.0
 
+        # Rule-based valve: open only when near a scout that SEES fire AND below 120m
+        valve = -1.0  # default: closed
+        if env is not None and pos[2] < 120.0 and drone.current_water > 0:
+            for q in env.quad_agents:
+                if q in env.sim.drones:
+                    # Scout must see fire (intensity > 0.01)
+                    if env._prev_fire_seen.get(q, 0.0) < 0.01:
+                        continue
+                    sq_pos = env.sim.drones[q].get_position()
+                    d_sq = np.hypot(pos[0] - sq_pos[0], pos[1] - sq_pos[1])
+                    if d_sq < 80.0:
+                        valve = 1.0
+                        break
+
         self.steps_in_segment += 1
         return np.array(
-            [heading_cmd, self.target_alt_raw, self.water_raw],
+            [heading_cmd, self.target_alt_raw, valve],
             dtype=np.float32)
 
     # ------------------------------------------------------------------
@@ -245,5 +260,5 @@ class CommanderController:
             info.update(wp_info)
             info['new_waypoint'] = True
 
-        action = self.heading_action(drone)
+        action = self.heading_action(drone, env=env)
         return action, h_cmdr, info

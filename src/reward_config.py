@@ -90,13 +90,13 @@ FIXED = {
     "rubber_band_k":     0.02,
 
     # Water trigger bonus — FW receives reward for dropping near fire (ground-truth dist)
-    "water_trigger_dist":   200.0,     # radius [m] for fire-proximity bonus
+    "water_trigger_dist":   50.0,      # radius [m] for fire-proximity bonus (200→50)
     "water_trigger_alt":    150.0,
     "water_trigger_bonus":    1.5,
     "water_trigger_thresh":   0.0,
     "communication_range_m": 400.0,   # cross-attention message range (used in team reward)
     "water_guidance_bonus": 1.0,       # max bonus for dropping directly over fire
-    "water_waste_penalty": 2.0,        # penalty for wasting water far from fire (reduced from 8.0)
+    "water_waste_penalty": 0.5,        # per-step penalty for open valve without hitting fire
 
     # Fire approach — potential-based shaping towards nearest scout (fire proxy)
     # Scouts hover near fire, so approach-to-scout ≈ approach-to-fire.

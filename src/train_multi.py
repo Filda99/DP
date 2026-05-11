@@ -246,6 +246,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         ep_total_extinguish = 0.0
         ep_cmdr_rd = {"r_extinguish": 0.0, "r_water_waste": 0.0,
                       "r_water_near": 0.0, "r_fire_out": 0.0, "r_spread": 0.0}
+        ep_water_drops = []  # (alt, dist_to_fire, eff, water_left)
 
         msg_buffer = {f: [] for f in fixed_agents}
 
@@ -441,7 +442,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
                 # -- PD heading controller (every step) ---------------
                 if fw_drone is not None:
-                    actions[f_agent] = cmdr_ctrl[f_agent].heading_action(fw_drone)
+                    actions[f_agent] = cmdr_ctrl[f_agent].heading_action(fw_drone, env=local_env)
 
                 total_cmdr_steps[f_agent] += 1
               else:
@@ -477,6 +478,10 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     fi = infos.get(f_agent, {})
                     for rk in ep_cmdr_rd:
                         ep_cmdr_rd[rk] += fi.get(rk, 0.0)
+                    # Water-drop diagnostics
+                    if "wd_alt" in fi:
+                        ep_water_drops.append((fi["wd_alt"], fi["wd_dist"],
+                                               fi["wd_eff"], fi["wd_water"]))
 
                     # Commander death handling
                     if terms.get(f_agent, False) or truncs.get(f_agent, False):
@@ -656,6 +661,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         ep_final_burning = int(np.sum(fg_end.B)) if fg_end is not None else 0
         all_fire_stats.append((ep_peak_burning, ep_final_burning, round(ep_total_extinguish, 1)))
         all_cmdr_rd.append(ep_cmdr_rd)
+        all_cmdr_rd[-1]["_water_drops"] = ep_water_drops
 
         for q in quad_agents:
             all_scout_lifespans.append(scout_lifespan[q])
@@ -1126,9 +1132,26 @@ def train_multi(resume_scout="", resume_cmdr="",
         # Commander reward diagnostics
         if batch_cmdr_rd:
             n_rd = len(batch_cmdr_rd)
-            rd_avg = {k: sum(d[k] for d in batch_cmdr_rd) / n_rd for k in batch_cmdr_rd[0]}
+            rd_avg = {k: sum(d[k] for d in batch_cmdr_rd) / n_rd
+                      for k in batch_cmdr_rd[0] if not k.startswith("_")}
             rd_str = "  ".join(f"{k}={v:+.3f}" for k, v in rd_avg.items())
             print(f"   Cmdr reward breakdown: {rd_str}")
+
+            # Water-drop diagnostics
+            all_wd = []
+            for d in batch_cmdr_rd:
+                all_wd.extend(d.get("_water_drops", []))
+            if all_wd:
+                alts   = [w[0] for w in all_wd]
+                dists  = [w[1] for w in all_wd]
+                effs   = [w[2] for w in all_wd]
+                n_hit  = sum(1 for e in effs if e > 0)
+                n_miss = len(effs) - n_hit
+                import statistics
+                print(f"   Water drops: {len(all_wd)} total, {n_hit} hit, {n_miss} miss "
+                      f"({100*n_hit/len(all_wd):.0f}% accuracy)  "
+                      f"alt={statistics.mean(alts):.0f}m [{min(alts):.0f}-{max(alts):.0f}]  "
+                      f"dist={statistics.mean(dists):.0f}m [{min(dists):.0f}-{max(dists):.0f}]")
 
         # -- Checkpoint: best & periodic ------------------------------
         if episodes_played >= 60 and avg_roll > best_avg:
