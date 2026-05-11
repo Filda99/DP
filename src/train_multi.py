@@ -409,7 +409,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                             sq_pos = local_env.sim.drones[closest_q].get_position()
                             expert_act[0] = np.clip((sq_pos[0] - c_pos_e[0]) / waypoint_range, -1.0, 1.0)
                             expert_act[1] = np.clip((sq_pos[1] - c_pos_e[1]) / waypoint_range, -1.0, 1.0)
-                            expert_act[2] = 0.0
+                            expert_act[2] = -0.5   # target ~75m (was 0.0 → 110m)
                             expert_act[3] = 1.0 if min_d < 200.0 else -1.0
                         else:
                             expert_act[3] = -1.0
@@ -769,7 +769,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     #  Hyperparameters
     # -----------------------------------------------------------------
     N_QUADS            = 4
-    N_FIXED            = 2
+    N_FIXED            = 3
     grid_size_m        = 1000.0
     map_size_range     = (800, 1500)  # domain randomisation like train_scout
     n_fires_range      = (1, 3)      # 1-3 fires per episode
@@ -781,7 +781,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     waypoint_range     = 200.0       # metres
     num_decisions_cmdr = max_steps // waypoint_steps   # 26
 
-    scout_freeze_batches = 0          # scouts trainable (finetuning)
+    scout_freeze_batches = 999999     # scouts FROZEN — focus on commander training
 
     gamma              = 0.99
     gamma_cmdr         = 0.96        # short horizon for 16 decisions
@@ -800,7 +800,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     scout_msg_dim      = 5
 
     entropy_scout      = 0.002
-    entropy_cmdr       = 0.01
+    entropy_cmdr       = 0.02
     critic_epochs_cmdr = 4           # same as update_epochs
 
     # -----------------------------------------------------------------
@@ -1412,7 +1412,7 @@ def train_multi(resume_scout="", resume_cmdr="",
                     ratio = torch.exp(log_ratio)
 
                     # BC coefficient (computed early so diagnostic can print it)
-                    bc_coef_now = max(0.03, bc_coef * (1.0 - batch_idx / max(1, CURR_PHASE3_END)))
+                    bc_coef_now = max(0.0, bc_coef * (1.0 - batch_idx / max(1, CURR_PHASE3_END)))
 
                     # Diagnostic on last epoch, first minibatch
                     if epoch == update_epochs - 1 and start == 0:
