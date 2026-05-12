@@ -1,0 +1,31 @@
+{
+  "scout_model": "results/TrainingQuad/050626_TrainingMultipleScoutsOnMultipleFires/scout_b0120.pt",
+  "cmdr_model": "saved_models/finetune/cmdr_best.pt",
+  "total_episodes": 288,
+  "valid_episodes": 288,
+  "runs_per_config": 2,
+  "scouts": [
+    2,
+    3,
+    4
+  ],
+  "fw": [
+    2,
+    3
+  ],
+  "fires": [
+    1,
+    2,
+    3
+  ],
+  "map_sizes": [
+    800.0,
+    1200.0,
+    2000.0,
+    3000.0
+  ],
+  "max_steps": [
+    1000,
+    1500
+  ]
+}

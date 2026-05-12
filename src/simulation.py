@@ -466,24 +466,22 @@ class Simulation:
     def step_simulation(self, drone_controls):
         """Step the simulation forward."""
 
-        zone = self.environment.refill_zone
+        zones = getattr(self.environment, 'refill_zones', [])
 
         # Apply controls to each drone
         for drone_name, control_input in drone_controls.items():
             if drone_name in self.drones:
                 drone = self.drones[drone_name]
 
-                # 0. Check for refill zone (only for FixedWing with water tank)
-                if zone and drone.water_capacity > 0: # FixedWing drones have water tanks
+                # 0. Check for refill zones (only for FixedWing with water tank)
+                if zones and drone.water_capacity > 0:
                     d_pos = drone.get_position()
-                    z_pos = zone['position']
-                    
-                    # 2D (XY) distance only — zone is at z=0 but FW flies at 40–150 m,
-                    # so including the z-component would make the radius impossible to hit.
-                    dist_sq = (d_pos[0]-z_pos[0])**2 + (d_pos[1]-z_pos[1])**2
-                    
-                    if dist_sq < zone['radius_sq']:
-                        drone.refill_tank()
+                    for zone in zones:
+                        z_pos = zone['position']
+                        dist_sq = (d_pos[0]-z_pos[0])**2 + (d_pos[1]-z_pos[1])**2
+                        if dist_sq < zone['radius_sq']:
+                            drone.refill_tank()
+                            break
                 
                 # 1. Atmospheric effects
                 atmos = self.get_local_atmospheric_conditions(drone.get_position())

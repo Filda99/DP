@@ -373,11 +373,22 @@ class DroneFireEnv(ParallelEnv):
         # Water level as a fraction in [0, 1]
         water_lvl = drone.current_water / drone.water_capacity if drone.water_capacity > 0 else 0.0
         
-        # Relative compass direction to the refill (water-replenishment) zone
-        if self.sim.environment.refill_zone is not None:
-            refill_pos = self.sim.environment.refill_zone['position']
-            rel_base_x = (refill_pos[0] - pos[0]) / NORM_DIST
-            rel_base_y = (refill_pos[1] - pos[1]) / NORM_DIST
+        # Relative compass direction to the nearest refill zone
+        zones = getattr(self.sim.environment, 'refill_zones', [])
+        if zones:
+            best_dist = float('inf')
+            best_rx, best_ry = 0.0, 0.0
+            for rz in zones:
+                rp = rz['position']
+                dx = rp[0] - pos[0]
+                dy = rp[1] - pos[1]
+                d = dx*dx + dy*dy
+                if d < best_dist:
+                    best_dist = d
+                    best_rx = dx / NORM_DIST
+                    best_ry = dy / NORM_DIST
+            rel_base_x = best_rx
+            rel_base_y = best_ry
         else:
             rel_base_x = 0.0
             rel_base_y = 0.0
@@ -749,25 +760,23 @@ class DroneFireEnv(ParallelEnv):
         self.current_episode = epizode_number
 
         # -- Refill zone placement ------------------------------------
-        # Scripted autopilot navigates to refill, so exact placement
-        # matters less.  We keep it opposite to the fire so the FW
-        # has a meaningful flight loop (fire → refill → fire).
-        if curr_phase in (1, 2):
-            # Close-ish refill during early phases so scripted refill
-            # is fast and the NN gets more firefighting time per episode
-            angle = random.uniform(0, 2 * np.pi)
-            refill_dist = 200.0 if curr_phase == 1 else 350.0
-            refill_x = float(np.clip(self.fire_x + refill_dist * np.cos(angle),
-                                     -self.map_bounds * 0.8, self.map_bounds * 0.8))
-            refill_y = float(np.clip(self.fire_y + refill_dist * np.sin(angle),
-                                     -self.map_bounds * 0.8, self.map_bounds * 0.8))
-        else:
-            # Standard: refill on the opposite side of the map
-            refill_x = float(np.clip(-self.fire_x + random.uniform(-50, 50),
-                                     -self.map_bounds * 0.8, self.map_bounds * 0.8))
-            refill_y = float(np.clip(-self.fire_y + random.uniform(-50, 50),
-                                     -self.map_bounds * 0.8, self.map_bounds * 0.8))
-        self.sim.environment.create_refill_zone(center_pos=[refill_x, refill_y, 0.0])
+        # Multiple refill zones spread around the map so FW never has
+        # to fly far to refuel.  Scripted autopilot navigates to the
+        # nearest zone.
+        N_REFILL = 3
+        self.sim.environment.refill_zones = []
+        self.sim.environment.refill_zone = None
+        for i in range(N_REFILL):
+            angle = 2 * np.pi * i / N_REFILL + random.uniform(-0.3, 0.3)
+            if curr_phase in (1, 2):
+                refill_dist = 150.0 if curr_phase == 1 else 250.0
+            else:
+                refill_dist = self.map_bounds * 0.5
+            rx = float(np.clip(self.fire_x + refill_dist * np.cos(angle),
+                               -self.map_bounds * 0.6, self.map_bounds * 0.6))
+            ry = float(np.clip(self.fire_y + refill_dist * np.sin(angle),
+                               -self.map_bounds * 0.6, self.map_bounds * 0.6))
+            self.sim.environment.create_refill_zone(center_pos=[rx, ry, 0.0])
 
         # --- 4. Spawn every agent at its starting position ---
         _quad_idx = 0  # counter for assigning fires to scouts
@@ -947,9 +956,9 @@ class DroneFireEnv(ParallelEnv):
         frame_skip = 5
 
         # --- 1. Action smoothing and mapping ---
-        # Exponential moving average: new_smooth = 0.8 * old + 0.2 * new.
-        # This is a simple low-pass filter on the action signal.  The 0.8/0.2
-        # blend (tau ~ 5 steps) prevents the control surface commands from
+        # Exponential moving average: new_smooth = 0.5 * old + 0.5 * new.
+        # This is a simple low-pass filter on the action signal.  The 0.5/0.5
+        # blend (tau ~ 2 steps) prevents the control surface commands from
         # jumping discontinuously, which would excite unphysical oscillations
         # in the rigid-body simulator.
         drone_controls = {}
@@ -961,7 +970,7 @@ class DroneFireEnv(ParallelEnv):
             # with reward R, but R was caused by smooth(A) — a different
             # action.  The guidance model's inner loop (kp_gamma, kp_phi)
             # already provides physical smoothing of control surfaces.
-            # Quad actions are still smoothed (direct motor control needs it).
+            # Quad actions are still smoothed.
             # -----------------------------------------------------------------
             if "fixed" in agent_name:
                 smooth_action = action
@@ -976,38 +985,37 @@ class DroneFireEnv(ParallelEnv):
                     # =========================================================
                     # HIERARCHICAL FLIGHT CONTROLLER
                     # =========================================================
-                    # The RL network outputs HIGH-LEVEL strategy (3 dims):
-                    #   [0] heading_delta  [-1, 1] → turn left/right
-                    #   [1] target_alt     [-1, 1] → desired altitude
-                    #   [2] water_trigger  [-1, 1] → drop water or not
+                    # The CommanderActor NN outputs 4D: [dx, dy, alt_raw, water_raw].
+                    # commander_control.decide_waypoint() converts dx,dy → target heading,
+                    # stores alt_raw, and IGNORES water_raw (valve is rule-based).
+                    # commander_control.heading_action() then returns 3D to this step():
+                    #   [0] heading_cmd  [-1, 1] → heading error / π (PD-controlled)
+                    #   [1] target_alt   [-1, 1] → desired altitude
+                    #   [2] valve        [-1, 1] → rule-based water valve (+1=open)
                     #
-                    # This deterministic controller converts strategy → physics
+                    # This deterministic controller converts those 3 values → 4 physics
                     # commands [roll, pitch, throttle, water].  The aircraft
                     # CANNOT crash from bad RL actions — the controller clamps
                     # everything to safe ranges.  The RL agent only decides
                     # WHERE to fly, not HOW to fly.
                     # =========================================================
 
-                    heading_delta_raw = float(action[0])  # [-1, 1]
-                    target_alt_raw    = float(action[1])  # [-1, 1]
-                    water_raw         = float(action[2])  # [-1, 1]
+                    heading_delta_raw = float(action[0])  # [-1, 1] heading error / π
+                    target_alt_raw    = float(action[1])  # [-1, 1] → [30, 80] m
+                    water_raw         = float(action[2])  # [-1, 1] valve state
 
                     # --- 1. HEADING → ROLL ---
-                    # heading_delta [-1, 1] → desired turn [-π, π]
-                    # Proportional controller: larger turn desire → more roll
-                    desired_turn = heading_delta_raw * np.pi
-                    # Roll command: [-1, 1] (maps to ±45° in physics)
-                    # Gain 2.0: When used with heading-hold (training loop
-                    # passes heading_error/π as action[0]), this gives:
+                    # heading_cmd is already heading_error/π from the PD controller
+                    # in commander_control.heading_action().  Gain 2.0 maps:
                     #   90° error → roll=1.0 (45° bank) — aggressive turn
                     #   45° error → roll=0.5 (22° bank) — moderate
                     #   10° error → roll=0.11 (5° bank) — gentle correction
                     roll_cmd = np.clip(2.0 * heading_delta_raw, -1.0, 1.0)
 
                     # --- 2. ALTITUDE → PITCH ---
-                    # target_alt [-1, 1] → [40, 180] meters
-                    # alt_raw=0 → 110m (good for firefighting), range narrowed from [40,250]
-                    target_alt = 40.0 + (target_alt_raw + 1.0) / 2.0 * 140.0
+                    # target_alt [-1, 1] → [30, 80] meters
+                    # alt_raw=0 → 55m (optimal for firefighting)
+                    target_alt = 30.0 + (target_alt_raw + 1.0) / 2.0 * 50.0
                     current_alt = drone.state_pos[2]
                     alt_error = target_alt - current_alt
                     # PD controller: proportional on error, derivative on climb rate
@@ -1015,11 +1023,15 @@ class DroneFireEnv(ParallelEnv):
                     # pitch_cmd [-1, 1] maps to ±15° in physics (max_pitch)
                     pitch_cmd = np.clip(0.008 * alt_error - 0.02 * vz, -0.5, 0.5)
 
-                    # --- 3. THROTTLE (fixed cruise) ---
-                    throttle = 1.0  # → 1.0 × 30 = 30 m/s full speed
-
+                    # --- 3. THROTTLE ---
+                    # Full speed (30 m/s) normally; slow to 15 m/s when:
+                    #  - dropping water (more time over fire → more effective)
+                    #  - near map boundary (tighter turn radius: 23m vs 92m)
                     # --- 4. WATER ---
                     water_trigger = 1.0 if water_raw > 0.0 else 0.0
+                    near_edge = (abs(drone.state_pos[0]) > self.map_bounds * 0.65 or
+                                 abs(drone.state_pos[1]) > self.map_bounds * 0.65)
+                    throttle = 0.5 if (water_trigger > 0.5 or near_edge) else 1.0
 
                     mapped_action = np.array([roll_cmd, pitch_cmd, throttle, water_trigger])
                     drone_controls[agent_name] = mapped_action
@@ -1130,7 +1142,7 @@ class DroneFireEnv(ParallelEnv):
                     rd["wd_water"] = fw_drone.current_water
             
             if eff > 0.0:
-                fire_bonus = min(eff * 50.0, 5.0)
+                fire_bonus = min(eff * 100.0, 10.0)
                 rewards[f_agent] += fire_bonus
                 rd["r_extinguish"] = fire_bonus
 
@@ -1158,11 +1170,11 @@ class DroneFireEnv(ParallelEnv):
                 # All fire extinguished!
                 for agent in rewards:
                     if "fixed" in agent:
-                        rewards[agent] += 10.0
+                        rewards[agent] += 50.0
                         if agent in infos:
-                            infos[agent]["r_fire_out"] = 10.0
+                            infos[agent]["r_fire_out"] = 50.0
                     else:
-                        rewards[agent] += 5.0  # scout assisted
+                        rewards[agent] += 10.0  # scout assisted
 
         # --- 7. Fire spread penalty -----------------------------------------
         # Every step where fire spreads to new cells, agents are penalised.
@@ -1179,7 +1191,7 @@ class DroneFireEnv(ParallelEnv):
             # approach, so fire spread is noise that lowers advantage SNR.
             curr_ph = getattr(self, 'curriculum_phase', None)
             if delta_burned > 0 and (curr_ph is None or curr_ph >= 3):
-                spread_penalty = min(delta_burned * 0.05, 2.0)
+                spread_penalty = min(delta_burned * 0.15, 5.0)
                 for agent in rewards:
                     if "fixed" in agent:
                         rewards[agent] -= spread_penalty
@@ -1425,12 +1437,12 @@ class DroneFireEnv(ParallelEnv):
 
             # ── Altitude shaping near fire: reward lower altitude ─────
             # When FW is close to a scout (< 200m), reward descending.
-            # effectiveness = 1 - alt/200, so lower = better.
-            # Bonus = 0.1 * (1 - alt/200) when close, gives clear gradient:
-            #   at 80m: +0.06/step, at 140m: +0.03/step, at 200m: 0
+            # effectiveness = 1 - (alt/150)^2, matching water physics.
+            # Bonus = 0.3 * eff when close → strong gradient to fly low.
+            #   at 50m: +0.27/step, at 80m: +0.21/step, at 120m: +0.11/step
             if dist_to_scout < 200.0:
-                alt_effectiveness = max(0.0, 1.0 - pos[2] / 200.0)
-                reward += 0.1 * alt_effectiveness
+                alt_effectiveness = max(0.0, 1.0 - (pos[2] / 150.0) ** 2)
+                reward += 0.3 * alt_effectiveness
 
         return reward
 
@@ -1451,7 +1463,11 @@ class DroneFireEnv(ParallelEnv):
 
         pos = self.sim.drones[agent].get_position()
 
-        if abs(pos[0]) > self.map_bounds or abs(pos[1]) > self.map_bounds:
+        # FW can overshoot during turns — kill at 2× map boundary.
+        # With no emergency override, 2× gives enough room for turns
+        # while crash_penalty teaches the NN to stay inside.
+        boundary_kill = self.map_bounds * 2.0 if "fixed" in agent else self.map_bounds
+        if abs(pos[0]) > boundary_kill or abs(pos[1]) > boundary_kill:
             self.sim._destroy_drone(agent)
             return True, SHARED["crash_penalty"], "boundary"
 

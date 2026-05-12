@@ -1,0 +1,29 @@
+{
+  "scout_model": "saved_models/finetune/scout_best.pt",
+  "cmdr_model": "saved_models/finetune/cmdr_best.pt",
+  "total_episodes": 540,
+  "valid_episodes": 540,
+  "runs_per_config": 10,
+  "scouts": [
+    2,
+    3,
+    4
+  ],
+  "fw": [
+    2,
+    3
+  ],
+  "fires": [
+    1,
+    2,
+    3
+  ],
+  "map_sizes": [
+    800.0,
+    1200.0,
+    2000.0
+  ],
+  "max_steps": [
+    1000
+  ]
+}

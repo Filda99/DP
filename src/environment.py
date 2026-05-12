@@ -72,6 +72,7 @@ class Environment:
         self._pending_terrain_data = None
 
         self.refill_zone = None # {'position': [x,y,z], 'radius': r}
+        self.refill_zones = []  # list of all refill zones
 
     # ============================================================================
     # RASTERIZATION (FUEL MAP GENERATION)
@@ -437,8 +438,12 @@ class Environment:
     def create_refill_zone(self, center_pos=None, size=10.0):
         """Create a visual refill zone (cyan semi-transparent box).
 
+        Multiple zones can coexist — each call adds one more zone.
         If *center_pos* is None a random position is generated.
         """
+        if not hasattr(self, 'refill_zones'):
+            self.refill_zones = []
+
         if center_pos is None:
              x = random.uniform(-100, 100)
              y = random.uniform(-100, 100)
@@ -455,12 +460,16 @@ class Environment:
             basePosition=center_pos
         )
         
-        self.refill_zone = {
+        zone = {
             'id': zone_id,
             'position': np.array(center_pos),
             'size': size,
             'radius_sq': 40.0**2  # 40 m detection radius
         }
+        self.refill_zones.append(zone)
+        # Keep backward compat: refill_zone points to first zone
+        if self.refill_zone is None:
+            self.refill_zone = zone
         return center_pos
     
     # ============================================================================

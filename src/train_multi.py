@@ -318,12 +318,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
               if cmdr_alive[f_agent] and f_agent in local_env.agents:
 
                 fw_drone = local_env.sim.drones.get(f_agent)
-                in_boundary_emergency = (
-                    fw_drone is not None and
-                    cmdr_ctrl[f_agent].check_boundary_emergency(fw_drone.get_position()))
-
-                if in_boundary_emergency:
-                    cmdr_ctrl[f_agent].need_new_waypoint = True
+                in_boundary_emergency = False  # Option B: no emergency override
 
                 if cmdr_ctrl[f_agent].need_new_waypoint:
                     # Build scout messages
@@ -409,7 +404,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                             sq_pos = local_env.sim.drones[closest_q].get_position()
                             expert_act[0] = np.clip((sq_pos[0] - c_pos_e[0]) / waypoint_range, -1.0, 1.0)
                             expert_act[1] = np.clip((sq_pos[1] - c_pos_e[1]) / waypoint_range, -1.0, 1.0)
-                            expert_act[2] = -0.5   # target ~75m (was 0.0 → 110m)
+                            expert_act[2] = -0.2   # target ~45m in [30,80] range
                             expert_act[3] = 1.0 if min_d < 200.0 else -1.0
                         else:
                             expert_act[3] = -1.0
@@ -505,7 +500,8 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                             cmdr_death_cause[f_agent] = "survived"
                         if not scripted_segment[f_agent] and cmdr_ep_data[f_agent]:
                             cmdr_ep_data[f_agent][-1]["reward"] = segment_reward[f_agent]
-                        ep_reward_cmdr[f_agent] += segment_reward[f_agent]
+                        if not scripted_segment[f_agent]:
+                            ep_reward_cmdr[f_agent] += segment_reward[f_agent]
             else:
                 for q in quad_agents:
                     if scout_alive[q]:
@@ -560,7 +556,9 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                         segment_reward[f_agent] += wp_timeout_penalty
                     if not scripted_segment[f_agent] and cmdr_ep_data[f_agent]:
                         cmdr_ep_data[f_agent][-1]["reward"] = segment_reward[f_agent]
-                    ep_reward_cmdr[f_agent] += segment_reward[f_agent] - r_cmdr_per_fw.get(f_agent, 0.0)
+                    # Skip scripted segments for episode reward total
+                    if not scripted_segment[f_agent]:
+                        ep_reward_cmdr[f_agent] += segment_reward[f_agent] - r_cmdr_per_fw.get(f_agent, 0.0)
                     cmdr_ctrl[f_agent].need_new_waypoint = True
 
         # =============================================================
@@ -784,7 +782,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     scout_freeze_batches = 999999     # scouts FROZEN — focus on commander training
 
     gamma              = 0.99
-    gamma_cmdr         = 0.96        # short horizon for 16 decisions
+    gamma_cmdr         = 0.99        # long horizon for fire suppression
     gae_lambda         = 0.95
     clip_coef          = 0.2
     update_epochs      = 4
@@ -817,9 +815,9 @@ def train_multi(resume_scout="", resume_cmdr="",
     #                             waste penalty, spread penalty ON
     #  Phase 4+ (batch 181+):    full difficulty, domain randomisation
     # -----------------------------------------------------------------
-    CURR_PHASE1_END = 0     # skip early phases — models are pre-trained
-    CURR_PHASE2_END = 0
-    CURR_PHASE3_END = 0
+    CURR_PHASE1_END = 30    # easy: fire close, approach shaping
+    CURR_PHASE2_END = 80    # medium: fire further
+    CURR_PHASE3_END = 150   # full mission on fixed map
 
     # Behavioural cloning coefficient (decays, floor = 0.03)
     bc_coef = 0.5
@@ -965,7 +963,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     scout_reward_history     = []
 
     save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "..", "saved_models", "finetune")
+                            "..", "saved_models", "v5_fireValve")
     os.makedirs(save_dir, exist_ok=True)
     print(f"Checkpoints -> {save_dir}\n")
 

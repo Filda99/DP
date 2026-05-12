@@ -9,11 +9,11 @@
 # NORM_DIST = 1000 in env_core.py normalises positions and distances in obs.
 SHARED = {
     "survival_bonus":       0.02,  # per-step survival reward (felt even without fire)
-    "boundary_penalty":     0.3,
-    "boundary_extra":       0.3,
+    "boundary_penalty":     1.5,
+    "boundary_extra":       0.5,
     "crash_penalty":        -10,   # reduced from -50 — must not dominate the learning signal
-    "reward_clip_min":      -5.0,
-    "reward_clip_max":       5.0,
+    "reward_clip_min":      -10.0,
+    "reward_clip_max":       10.0,
 }
 
 # ─── Quadcopter (Scout) ─────────────────────────────────────────────────────
@@ -73,15 +73,15 @@ QUAD = {
 
 # ─── Fixed-wing (Commander) ──────────────────────────────────────────────────
 FIXED = {
-    # Map boundary — fixed
-    "boundary_threshold_m":  300.0,
+    # Map boundary
+    "boundary_threshold_m":  200.0,
     "boundary_extra_frac":      0.35,
 
     # Altitude — fixed
-    "alt_ideal_min":    40.0,
-    "alt_ideal_max":   150.0,
-    "alt_ceiling":     450.0,
-    "alt_penalty":       0.01,   # per-metre above alt_ideal_max
+    "alt_ideal_min":    30.0,
+    "alt_ideal_max":    80.0,
+    "alt_ceiling":     200.0,
+    "alt_penalty":       0.02,   # per-metre above alt_ideal_max
 
     # Survival donut
     "donut_radius":    250.0,
@@ -91,7 +91,7 @@ FIXED = {
 
     # Water trigger bonus — FW receives reward for dropping near fire (ground-truth dist)
     "water_trigger_dist":   50.0,      # radius [m] for fire-proximity bonus (200→50)
-    "water_trigger_alt":    150.0,
+    "water_trigger_alt":    80.0,
     "water_trigger_bonus":    1.5,
     "water_trigger_thresh":   0.0,
     "communication_range_m": 400.0,   # cross-attention message range (used in team reward)

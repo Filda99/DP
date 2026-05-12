@@ -3,21 +3,62 @@ commander_control.py — Shared waypoint controller for the FW commander
 =======================================================================
 
 Encapsulates the logic shared between training, demo, and evaluation:
-  - Boundary emergency override  (fly to map center)
-  - Scripted refill autopilot    (water < 30 % → fly to refill zone)
-  - NN waypoint decision         (water >= 30 % → network decides)
+  - Scripted refill autopilot    (water < 10 % → fly to nearest refill zone)
+  - NN waypoint decision         (water >= 10 % → network decides)
   - PD heading controller        (every physics step)
+  - Rule-based valve             (open over estimated fire position)
+
+Design decisions & problems solved
+-----------------------------------
+1. **Scripted refill vs NN refill**
+   The refill flight is handled by a deterministic autopilot, not the NN.
+   Early experiments showed that the NN struggled to learn both firefighting
+   and refill navigation simultaneously — it would either ignore the refill
+   zone or fly there permanently.  Scripting the low-water regime lets the
+   NN focus entirely on fire suppression while guaranteeing water resupply.
+
+2. **Multiple refill zones**
+   A single refill zone placed far from the fire caused long return trips
+   (up to 500 m), during which the fire grew unchecked.  Three refill zones
+   placed 120° apart around the fire (clipped to 0.6× map boundary) ensure
+   the nearest zone is always within ~150 m, reducing dead time.
+
+3. **Boundary handling — reward shaping vs hard override**
+   The original design used a hard emergency override that forcibly steered
+   the FW to map centre when it approached the boundary.  This caused two
+   problems: (a) the override consumed up to 94 % of control steps for some
+   FW agents, leaving almost no NN training data, and (b) the NN never
+   learned boundary avoidance because the override always rescued it.
+   Solution: remove the override entirely and rely on a quadratic boundary
+   penalty (reward_config.py) plus crash penalty at 2× map bounds.  The NN
+   learns to stay inside through gradient signal alone.
+
+4. **Valve logic — scout proximity vs fire position**
+   The initial valve opened when the FW was within 50 m of a scout reporting
+   fire.  Since scouts hover *near* fire but not exactly *over* it, this
+   caused ~50 % water misses — water fell 30-50 m from the actual blaze.
+   The fix reconstructs the fire's world position from the scout's message:
+     fire_pos = scout_pos + dyn_offset × (FOV / 2)
+   where dyn_offset (msg[3:5]) is the fire centroid in the scout's local
+   camera frame and FOV = max(10, scout_alt × 1.5).  The valve now opens
+   only when the FW is within 30 m of this estimated fire position.
+
+5. **Reward isolation for scripted segments**
+   During scripted refill, the FW flies away from scouts, accumulating
+   negative fire-approach shaping reward.  This reward was originally
+   counted in the episode total, making logged rewards appear much worse
+   than the NN's actual performance.  Fix: exclude scripted segment
+   rewards from ep_reward_cmdr — only NN-controlled segments contribute.
 
 Usage (demo / eval — full convenience):
     ctrl = CommanderController()
-    ctrl.reset(safe_limit=420.0, boundary_emergency=360.0)
+    ctrl.reset(map_half=600.0)
     action, h_cmdr, info = ctrl.step(
         drone, obs_self_state, env, cmdr_actor, h_cmdr,
         scout_msgs_t, scout_mask_t, deterministic=True)
 
 Usage (training — manual segment-end management):
-    in_emergency = ctrl.check_boundary_emergency(pos)
-    if ctrl.need_new_waypoint and not in_emergency:
+    if ctrl.need_new_waypoint:
         h_cmdr, wp_info = ctrl.decide_waypoint(...)
     action = ctrl.heading_action(drone)
     ...
@@ -37,13 +78,13 @@ def _wrap_angle(a):
 class CommanderController:
     """Waypoint-based FW commander with scripted refill autopilot.
 
-    Scripted refill: when water < 30 %, waypoint → refill zone, water_raw = -1.
-    NN firefighting: when water >= 30 %, NN produces [dx, dy, alt, water].
+    Scripted refill: when water < 10 %, waypoint → refill zone, water_raw = -1.
+    NN firefighting: when water >= 10 %, NN produces [dx, dy, alt, water].
     Every physics step: PD heading controller tracks the active waypoint.
     """
 
-    SAFE_LIMIT_FRAC = 0.7
-    BOUNDARY_EMERGENCY_FRAC = 0.85
+    SAFE_LIMIT_FRAC = 0.55
+    BOUNDARY_EMERGENCY_FRAC = 0.65
 
     def __init__(self, waypoint_range=200.0, waypoint_steps=30,
                  wp_reached_dist=30.0):
@@ -60,6 +101,7 @@ class CommanderController:
         self.steps_in_segment = 0
         self.need_new_waypoint = True
         self.wp_reached = False
+        self.in_emergency = False
         self.safe_limit = max(50.0, map_half * self.SAFE_LIMIT_FRAC)
         self.boundary_emergency = max(50.0, map_half * self.BOUNDARY_EMERGENCY_FRAC)
         self.last_scout_msgs = None   # (num_scouts, msg_dim) tensor
@@ -75,9 +117,14 @@ class CommanderController:
     # ------------------------------------------------------------------
 
     def check_boundary_emergency(self, pos):
-        """Return True if the drone is in the emergency zone (>85% map)."""
-        return (abs(pos[0]) > self.boundary_emergency or
-                abs(pos[1]) > self.boundary_emergency)
+        """Disabled — NN learns boundaries through reward shaping.
+
+        The boundary penalty in reward_config.py (quadratic, threshold=300m)
+        plus crash_penalty at 4×map_bounds teaches the NN to stay inside.
+        No hard override needed.
+        """
+        self.in_emergency = False
+        return False
 
     def check_segment_end(self):
         """True if the current waypoint segment is done."""
@@ -105,7 +152,8 @@ class CommanderController:
         water_frac = (drone.current_water / drone.water_capacity
                       if drone.water_capacity > 0 else 1.0)
         rz = env.sim.environment.refill_zone
-        use_scripted = (water_frac <= 0.0 and rz is not None)
+        zones = getattr(env.sim.environment, 'refill_zones', [])
+        use_scripted = (water_frac <= 0.10 and (rz is not None or zones))
 
         s_st = (torch.FloatTensor(obs_self_state).unsqueeze(0)
                 if not isinstance(obs_self_state, torch.Tensor)
@@ -128,8 +176,14 @@ class CommanderController:
                     fw_neighbor_states, fw_neighbor_mask)
             info['scripted'] = True
         elif use_scripted:
-            # ── Scripted refill: waypoint → refill zone ───────────────
-            rz_pos = rz['position']
+            # ── Scripted refill: waypoint → nearest refill zone ───────
+            # Pick the closest zone to minimise travel time
+            if zones:
+                best_zone = min(zones, key=lambda z:
+                    (z['position'][0]-pos[0])**2 + (z['position'][1]-pos[1])**2)
+                rz_pos = best_zone['position']
+            else:
+                rz_pos = rz['position']
             dx_r = float(np.clip((rz_pos[0] - pos[0]) / self.WP_RANGE, -1, 1))
             dy_r = float(np.clip((rz_pos[1] - pos[1]) / self.WP_RANGE, -1, 1))
             self.target_alt_raw = 0.0
@@ -176,7 +230,7 @@ class CommanderController:
         """PD heading controller.  Call every physics step.
 
         Updates ``wp_reached`` and ``steps_in_segment``.
-        Valve is rule-based: open only when close to a scout AND low altitude.
+        Valve is rule-based: open when FW flies over estimated fire position.
 
         Returns
         -------
@@ -198,27 +252,37 @@ class CommanderController:
         else:
             heading_cmd = 0.0
 
-        # Rule-based valve: open only when near a scout that REPORTS fire
-        # via its message[2] (fire intensity) AND below 120m.
-        # This uses only information the commander legitimately receives.
-        valve = -1.0  # default: closed
-        if env is not None and pos[2] < 120.0 and drone.current_water > 0:
-            msgs = self.last_scout_msgs  # (num_scouts, msg_dim) or None
-            mask = self.last_scout_mask  # (num_scouts,) bool — True=absent
+        # ── Rule-based valve ─────────────────────────────────────
+        # Open when FW is within 50m of estimated fire position.
+        # Fire pos = scout_pos + dyn_offset * (FOV/2),
+        # where FOV = max(10, scout_alt * 1.5).
+        # msg layout: [norm_x, norm_y, intensity, dyn_x, dyn_y]
+        valve = -1.0
+        if env is not None and pos[2] < 80.0 and drone.current_water > 0:
+            msgs = self.last_scout_msgs
+            mask = self.last_scout_mask
             if msgs is not None:
+                msg_flat = msgs.view(-1, msgs.size(-1))
                 for i, q in enumerate(env.quad_agents):
+                    # Skip dead scouts
                     if q not in env.sim.drones:
                         continue
-                    # Skip masked-out (dead) scouts
+                    # Skip masked-out scouts
                     if mask is not None and mask.dim() >= 1 and i < mask.size(-1) and mask.view(-1)[i]:
                         continue
-                    # msg[2] = fire intensity reported by scout
-                    fire_intensity = msgs.view(-1, msgs.size(-1))[i, 2].item()
-                    if fire_intensity < 0.01:
+                    # Skip scouts not seeing fire
+                    if msg_flat[i, 2].item() < 0.01:
                         continue
+                    # Reconstruct fire world position from scout camera
                     sq_pos = env.sim.drones[q].get_position()
-                    d_sq = np.hypot(pos[0] - sq_pos[0], pos[1] - sq_pos[1])
-                    if d_sq < 50.0:  # scout hovers over fire
+                    dyn_x = msg_flat[i, 3].item()
+                    dyn_y = msg_flat[i, 4].item()
+                    fov_half = max(10.0, sq_pos[2] * 1.5) / 2.0
+                    fire_est_x = sq_pos[0] + dyn_x * fov_half
+                    fire_est_y = sq_pos[1] + dyn_y * fov_half
+                    # Open valve if FW is close enough to fire
+                    d_fire = np.hypot(pos[0] - fire_est_x, pos[1] - fire_est_y)
+                    if d_fire < 50.0:
                         valve = 1.0
                         break
 
