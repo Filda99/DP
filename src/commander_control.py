@@ -85,8 +85,9 @@ class CommanderController:
 
     SAFE_LIMIT_FRAC = 0.55
     BOUNDARY_EMERGENCY_FRAC = 0.65
+    REFILL_LIMIT_FRAC = 0.90  # wider limit for scripted refill navigation
 
-    def __init__(self, waypoint_range=200.0, waypoint_steps=30,
+    def __init__(self, waypoint_range=50.0, waypoint_steps=30,
                  wp_reached_dist=30.0):
         self.WP_RANGE = waypoint_range
         self.WP_STEPS = waypoint_steps
@@ -103,6 +104,7 @@ class CommanderController:
         self.wp_reached = False
         self.in_emergency = False
         self.safe_limit = max(50.0, map_half * self.SAFE_LIMIT_FRAC)
+        self.refill_limit = max(50.0, map_half * self.REFILL_LIMIT_FRAC)
         self.boundary_emergency = max(50.0, map_half * self.BOUNDARY_EMERGENCY_FRAC)
         self.last_scout_msgs = None   # (num_scouts, msg_dim) tensor
         self.last_scout_mask = None   # (num_scouts,) bool tensor
@@ -110,6 +112,7 @@ class CommanderController:
     def update_limits(self, map_half):
         """Recalculate limits after map size change."""
         self.safe_limit = max(50.0, map_half * self.SAFE_LIMIT_FRAC)
+        self.refill_limit = max(50.0, map_half * self.REFILL_LIMIT_FRAC)
         self.boundary_emergency = max(50.0, map_half * self.BOUNDARY_EMERGENCY_FRAC)
 
     # ------------------------------------------------------------------
@@ -190,10 +193,10 @@ class CommanderController:
             self.water_raw = -1.0
             self.target_x = float(np.clip(
                 pos[0] + dx_r * self.WP_RANGE,
-                -self.safe_limit, self.safe_limit))
+                -self.refill_limit, self.refill_limit))
             self.target_y = float(np.clip(
                 pos[1] + dy_r * self.WP_RANGE,
-                -self.safe_limit, self.safe_limit))
+                -self.refill_limit, self.refill_limit))
             # Dummy forward pass keeps GRU hidden state fresh
             with torch.no_grad():
                 _, _, h_cmdr = cmdr_actor(
@@ -253,38 +256,67 @@ class CommanderController:
             heading_cmd = 0.0
 
         # ── Rule-based valve ─────────────────────────────────────
-        # Open when FW is within 50m of estimated fire position.
-        # Fire pos = scout_pos + dyn_offset * (FOV/2),
-        # where FOV = max(10, scout_alt * 1.5).
-        # msg layout: [norm_x, norm_y, intensity, dyn_x, dyn_y]
+        # Opens when FW is within 50 m of the scout's estimated fire
+        # position AND heading toward it (dot product > 0), or within
+        # 15 m regardless of heading.  The fire position is reconstructed
+        # from the scout camera message:
+        #   fire_pos = scout_pos + dyn_offset × (FOV / 2)
         valve = -1.0
+        self._valve_debug = None
         if env is not None and pos[2] < 80.0 and drone.current_water > 0:
             msgs = self.last_scout_msgs
             mask = self.last_scout_mask
+            any_scout_sees_fire = False
+            best_est_d = float('inf')
+            best_est_x, best_est_y = 0.0, 0.0
+
             if msgs is not None:
                 msg_flat = msgs.view(-1, msgs.size(-1))
                 for i, q in enumerate(env.quad_agents):
-                    # Skip dead scouts
                     if q not in env.sim.drones:
                         continue
-                    # Skip masked-out scouts
                     if mask is not None and mask.dim() >= 1 and i < mask.size(-1) and mask.view(-1)[i]:
                         continue
-                    # Skip scouts not seeing fire
-                    if msg_flat[i, 2].item() < 0.01:
+                    if msg_flat[i, 2].item() <= 0:
                         continue
+                    any_scout_sees_fire = True
                     # Reconstruct fire world position from scout camera
                     sq_pos = env.sim.drones[q].get_position()
                     dyn_x = msg_flat[i, 3].item()
                     dyn_y = msg_flat[i, 4].item()
                     fov_half = max(10.0, sq_pos[2] * 1.5) / 2.0
-                    fire_est_x = sq_pos[0] + dyn_x * fov_half
-                    fire_est_y = sq_pos[1] + dyn_y * fov_half
-                    # Open valve if FW is close enough to fire
-                    d_fire = np.hypot(pos[0] - fire_est_x, pos[1] - fire_est_y)
-                    if d_fire < 50.0:
-                        valve = 1.0
-                        break
+                    est_x = sq_pos[0] + dyn_x * fov_half
+                    est_y = sq_pos[1] + dyn_y * fov_half
+                    d_est = np.hypot(pos[0] - est_x, pos[1] - est_y)
+                    if d_est < best_est_d:
+                        best_est_d = d_est
+                        best_est_x, best_est_y = est_x, est_y
+
+            # Valve opens when FW is within 50 m of scout fire estimate
+            # AND heading toward it (or very close < 15 m).
+            opened = False
+            if any_scout_sees_fire and best_est_d < 50.0:
+                vel = drone.get_velocity()
+                spd = np.hypot(vel[0], vel[1])
+                if spd > 1.0:
+                    to_fire = np.array([best_est_x - pos[0], best_est_y - pos[1]])
+                    dot = vel[0] * to_fire[0] + vel[1] * to_fire[1]
+                    if dot > 0 or best_est_d < 15.0:
+                        opened = True
+                else:
+                    opened = True
+
+            if opened:
+                valve = 1.0
+
+            self._valve_debug = {
+                'scout_sees': any_scout_sees_fire,
+                'opened': opened,
+                'd_est': best_est_d if any_scout_sees_fire else None,
+                'reason': f'est={best_est_d:.0f}m' if opened else (
+                    'no_scout_fire' if not any_scout_sees_fire else
+                    f'est={best_est_d:.0f}m,too_far_or_wrong_dir'),
+            }
 
         self.steps_in_segment += 1
         return np.array(

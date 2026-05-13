@@ -12,8 +12,8 @@ SHARED = {
     "boundary_penalty":     1.5,
     "boundary_extra":       0.5,
     "crash_penalty":        -10,   # reduced from -50 — must not dominate the learning signal
-    "reward_clip_min":      -10.0,
-    "reward_clip_max":       10.0,
+    "reward_clip_min":       -3.0,
+    "reward_clip_max":        3.0,
 }
 
 # ─── Quadcopter (Scout) ─────────────────────────────────────────────────────
@@ -22,11 +22,11 @@ QUAD = {
     "boundary_threshold_m":  150.0,
 
     # Altitude — fixed range, map-independent
-    "alt_ideal_min":    60.0,   # aligned with ground_danger_alt — penalty starts below this
-    "alt_ideal_max":   120.0,   # raised from 80 m — don't penalise higher flight (larger FOV)
+    "alt_ideal_min":    40.0,   # aligned with ground_danger_alt — penalty starts below this
+    "alt_ideal_max":    80.0,   # force scout lower for better fire estimate
     "alt_ceiling":     300.0,   # hard kill
     "alt_sweet_min":    70.0,   # ideal operating band — lower bound
-    "alt_sweet_max":   150.0,   # raised from 100 m
+    "alt_sweet_max":   100.0,   # lowered from 150 m — reward lower flight
     "alt_sweet_bonus":   0.02,  # per-step bonus for flying in the sweet spot
 
     # Mission — original values that worked (1.0/3.0 caused dive-crashes)

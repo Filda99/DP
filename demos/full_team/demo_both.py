@@ -24,6 +24,7 @@ import matplotlib.patches as mpatches
 from matplotlib.collections import PatchCollection
 import imageio
 import io, tqdm
+from matplotlib.backends.backend_pdf import PdfPages
 from PIL import Image
 
 import geopandas as gpd
@@ -47,13 +48,13 @@ CLR_CMDR     = '#ff3333'
 # ============================================================
 # KONFIGURACE
 # ============================================================
-MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/scout_b0670.pt"
-MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/multi/cmdr_b0670.pt"
+MODEL_SCOUT     = "/homes/eva/xj/xjahnf00/tmp/DP/results/TrainingQuad/050626_TrainingMultipleScoutsOnMultipleFires/scout_b0120.pt"
+MODEL_COMMANDER = "/homes/eva/xj/xjahnf00/tmp/DP/saved_models/v6_shortWP/cmdr_best.pt"
 
-N_QUADS    = 3
-N_FIXED    = 2
+N_QUADS    = 4
+N_FIXED    = 3
 MAX_STEPS  = 1000
-GRID_SIZE  = 1200.0
+GRID_SIZE  = 1000.0
 GIF_EVERY  = 3
 GIF_FPS    = 15
 EPISODE_SEED = 111
@@ -63,7 +64,7 @@ OSM_LON      = 16.42
 OSM_CACHE    = os.path.join(project_root, "data")
 
 # Commander waypoint parameters (must match training)
-WAYPOINT_RANGE  = 200.0   # metres per unit of dx/dy
+WAYPOINT_RANGE  = 50.0    # metres per unit of dx/dy
 WAYPOINT_STEPS  = 30      # physics steps per waypoint segment
 WP_REACHED_DIST = 30.0    # metres
 # ============================================================
@@ -192,16 +193,32 @@ def _load_models(device):
 
 def _render_frame(step, fire_map, b,
                   q_paths, q_positions, q_alive_map,
-                  f_path_x, f_path_y, f_pos, f_water_pct,
-                  refill_pos, refill_size,
-                  local_map_np,
+                  f_paths, f_positions, f_alive_map, f_water_pcts,
+                  refill_zones_list, refill_size,
+                  local_maps_dict,
                   total_reward_q, total_reward_f,
-                  fire_seen_sum, f_alive,
-                  terrain_collections=None):
+                  fire_seen_sum, any_f_alive,
+                  terrain_collections=None,
+                  moisture_map=None,
+                  f_valve_open=None):
+    """Render one animation frame.
 
-    fig = plt.figure(figsize=(12, 6), facecolor='white')
-    gs  = gridspec.GridSpec(2, 2, width_ratios=[2, 1], hspace=0.35, wspace=0.25,
-                            left=0.06, right=0.97, top=0.93, bottom=0.07)
+    f_paths      : dict  {f_name: {"x":[], "y":[]}}
+    f_positions  : dict  {f_name: pos or None}
+    f_alive_map  : dict  {f_name: bool}
+    f_water_pcts : dict  {f_name: float}
+    local_maps_dict : dict {q_name: np.ndarray or None}
+    """
+
+    n_scouts = len(q_positions)
+    n_fw = len(f_positions)
+    # Dynamic right-panel rows: scouts on top, stats on bottom
+    right_rows = max(n_scouts, 1) + 1  # +1 for stats
+
+    fig = plt.figure(figsize=(14, 7), facecolor='white')
+    gs  = gridspec.GridSpec(right_rows, 2, width_ratios=[2.2, 1],
+                            hspace=0.4, wspace=0.25,
+                            left=0.05, right=0.97, top=0.93, bottom=0.05)
 
     # ── Panel 1: Global map ─────────────────────────────────────────────
     ax_map = fig.add_subplot(gs[:, 0])
@@ -213,30 +230,42 @@ def _render_frame(step, fire_map, b,
 
     # Fire
     extent = [-b, b, -b, b]
+    # Moisture (blue overlay — shows where water was dropped)
+    if moisture_map is not None:
+        moist_masked = np.ma.masked_where(moisture_map < 0.01, moisture_map)
+        ax_map.imshow(moist_masked, extent=extent, origin='lower',
+                      cmap='Blues', vmin=0, vmax=1.0, alpha=0.55, zorder=3)
+
     fire_masked = np.ma.masked_where(fire_map < 0.01, fire_map)
     ax_map.imshow(fire_masked, extent=extent, origin='lower',
                   cmap='YlOrRd', vmin=0, vmax=1.0, alpha=0.75, zorder=4)
 
-    # Refill zone
-    if refill_pos is not None:
-        circle = plt.Circle((refill_pos[0], refill_pos[1]), 20,
-                            color='deepskyblue', fill=False, linestyle='--',
-                            linewidth=1.5, alpha=0.6, zorder=5)
-        ax_map.add_patch(circle)
-        ax_map.text(refill_pos[0], refill_pos[1] + 25, "REFILL",
-                    color='deepskyblue', fontsize=8, ha='center',
-                    fontweight='bold', alpha=0.8)
+    # Refill zones (all of them)
+    if refill_zones_list:
+        for rz in refill_zones_list:
+            rp = rz['position'] if isinstance(rz, dict) else rz
+            circle = plt.Circle((rp[0], rp[1]), 20,
+                                color='deepskyblue', fill=False, linestyle='--',
+                                linewidth=1.5, alpha=0.6, zorder=5)
+            ax_map.add_patch(circle)
+            ax_map.text(rp[0], rp[1] + 25, "REFILL",
+                        color='deepskyblue', fontsize=6, ha='center',
+                        fontweight='bold', alpha=0.7)
 
-    # Trails
+    # Trails — scouts
     for q_name, paths in q_paths.items():
         if len(paths["x"]) > 1:
             ax_map.plot(paths["x"], paths["y"], color=CLR_SCOUT, alpha=0.4,
                         linewidth=1.2, linestyle=':', zorder=5)
-    if len(f_path_x) > 1:
-        ax_map.plot(f_path_x, f_path_y, color=CLR_CMDR, alpha=0.4,
-                    linewidth=1.2, linestyle=':', zorder=5)
+    # Trails — each FW separately
+    fw_colors = ['#ff3333', '#ff9933', '#cc33ff', '#33ccff', '#33ff99', '#ff6699']
+    for idx, (f_name, fpaths) in enumerate(f_paths.items()):
+        if len(fpaths["x"]) > 1:
+            c = fw_colors[idx % len(fw_colors)]
+            ax_map.plot(fpaths["x"], fpaths["y"], color=c, alpha=0.4,
+                        linewidth=1.2, linestyle=':', zorder=5)
 
-    # Agent positions
+    # Agent positions — scouts
     for q_name in q_positions:
         q_pos = q_positions[q_name]
         if q_alive_map.get(q_name, False) and q_pos is not None:
@@ -249,9 +278,22 @@ def _render_frame(step, fire_map, b,
             ax_map.scatter(q_pos[0], q_pos[1], c=CLR_SCOUT, s=100, marker='^',
                            edgecolors='black', linewidths=0.6, zorder=7)
 
-    if f_alive and f_pos is not None:
-        ax_map.scatter(f_pos[0], f_pos[1], c=CLR_CMDR, s=130, marker='>',
-                       edgecolors='black', linewidths=0.6, zorder=7)
+    # Agent positions — each FW
+    for idx, f_name in enumerate(f_positions):
+        if f_alive_map.get(f_name, False) and f_positions[f_name] is not None:
+            fp = f_positions[f_name]
+            c = fw_colors[idx % len(fw_colors)]
+            ax_map.scatter(fp[0], fp[1], c=c, s=130, marker='>',
+                           edgecolors='black', linewidths=0.6, zorder=7)
+            # Valve-open indicator: blue water-drop ring around FW
+            if f_valve_open and f_valve_open.get(f_name, False):
+                ring = plt.Circle((fp[0], fp[1]), 12,
+                                  color='deepskyblue', fill=False,
+                                  linewidth=2.5, alpha=0.9, zorder=8)
+                ax_map.add_patch(ring)
+                ax_map.text(fp[0], fp[1] - 18, 'W', fontsize=7,
+                            ha='center', va='top', zorder=8,
+                            color='deepskyblue', fontweight='bold')
 
     ax_map.set_xlim(-b, b); ax_map.set_ylim(-b, b)
     ax_map.set_aspect('equal')
@@ -272,34 +314,53 @@ def _render_frame(step, fire_map, b,
     ax_map.legend(handles=leg_h, loc='upper right', fontsize=6.5,
                   framealpha=0.85, edgecolor='#ccc')
 
-    # ── Panel 2: Scout camera ───────────────────────────────────────────
-    ax_cam = fig.add_subplot(gs[0, 1])
-    ax_cam.set_facecolor('#fafafa')
-    if local_map_np is not None:
-        ax_cam.imshow(local_map_np, origin='lower', cmap='YlOrRd', vmin=0, vmax=1.0)
-    ax_cam.set_title("Scout camera (32×32)", fontsize=9, fontweight='bold')
-    ax_cam.set_xticks([]); ax_cam.set_yticks([])
+    # ── Panel 2: Scout cameras (one per scout) ────────────────────────────
+    scout_colors = ['#1f77b4', '#2ca02c', '#9467bd', '#17becf', '#bcbd22', '#e377c2']
+    for qi, q_name in enumerate(sorted(q_positions.keys())):
+        ax_cam = fig.add_subplot(gs[qi, 1])
+        ax_cam.set_facecolor('#fafafa')
+        lm = local_maps_dict.get(q_name) if local_maps_dict else None
+        if lm is not None:
+            ax_cam.imshow(lm, origin='lower', cmap='YlOrRd', vmin=0, vmax=1.0)
+        alive_str = "" if q_alive_map.get(q_name, False) else " [DEAD]"
+        sc = scout_colors[qi % len(scout_colors)]
+        ax_cam.set_title(f"{q_name}{alive_str}", fontsize=8, fontweight='bold', color=sc)
+        ax_cam.set_xticks([]); ax_cam.set_yticks([])
 
-    # ── Panel 3: Stats + Water Bar ──────────────────────────────────────
-    ax_stats = fig.add_subplot(gs[1, 1])
+    # ── Panel 3: Stats + Per-FW Water Bars ──────────────────────────────
+    ax_stats = fig.add_subplot(gs[n_scouts:, 1])
     ax_stats.set_facecolor('#fafafa')
     ax_stats.set_xticks([]); ax_stats.set_yticks([])
 
-    # Water bar
-    ax_stats.add_patch(plt.Rectangle((0.1, 0.15), 0.8, 0.08,
-                       color='#dddddd', transform=ax_stats.transAxes))
-    ax_stats.add_patch(plt.Rectangle((0.1, 0.15), 0.8 * f_water_pct, 0.08,
-                       color='deepskyblue', transform=ax_stats.transAxes))
+    # Per-FW water bars
+    bar_h = 0.045
+    bar_gap = 0.06
+    bar_top = 0.38
+    for fi, f_name in enumerate(sorted(f_water_pcts.keys())):
+        alive = f_alive_map.get(f_name, False)
+        wpct = f_water_pcts[f_name] if alive else 0.0
+        y_pos = bar_top - fi * bar_gap
+        c = fw_colors[fi % len(fw_colors)]
+        # Background
+        ax_stats.add_patch(plt.Rectangle((0.22, y_pos), 0.7, bar_h,
+                           color='#dddddd', transform=ax_stats.transAxes))
+        # Fill
+        ax_stats.add_patch(plt.Rectangle((0.22, y_pos), 0.7 * wpct, bar_h,
+                           color=c, alpha=0.8, transform=ax_stats.transAxes))
+        label = f_name if alive else f"{f_name} ✗"
+        ax_stats.text(0.04, y_pos + bar_h / 2, label, fontsize=7, va='center',
+                      transform=ax_stats.transAxes, fontfamily='monospace',
+                      color=c if alive else '#999999')
+        ax_stats.text(0.93, y_pos + bar_h / 2, f"{wpct*100:.0f}%", fontsize=7,
+                      va='center', transform=ax_stats.transAxes, fontfamily='monospace')
 
-    status = 'TANK FULL' if f_water_pct > 0.9 else 'REFILL NEEDED' if f_water_pct < 0.2 else 'OPERATIONAL'
+    n_fw_alive = sum(1 for v in f_alive_map.values() if v)
+    status = f'{n_fw_alive} FW alive' if n_fw_alive > 0 else 'ALL FW DEAD'
     stats_text = (
-        f"Scout reward:      {total_reward_q:+.1f}\n"
-        f"Commander reward:  {total_reward_f:+.1f}\n\n"
-        f"Fire visibility:   {fire_seen_sum:.2f}\n"
-        f"Water level:       {f_water_pct*100:3.1f}%\n\n"
-        f"Status: {status}"
+        f"R_scout: {total_reward_q:+.1f}  R_cmdr: {total_reward_f:+.1f}\n"
+        f"Fire vis: {fire_seen_sum:.2f}   Status: {status}"
     )
-    ax_stats.text(0.08, 0.9, stats_text, color='#222222', fontsize=8.5,
+    ax_stats.text(0.04, 0.95, stats_text, color='#222222', fontsize=8,
                   va='top', transform=ax_stats.transAxes, fontfamily='monospace')
     ax_stats.set_title("Mission stats", fontsize=9, fontweight='bold')
 
@@ -324,9 +385,12 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
         fire_x, fire_y = env.fire_x, env.fire_y
         rng = np.random.default_rng(seed)
         if scout_dist is not None:
-            for q in quad_names:
+            n_q = len([q for q in quad_names if q in env.sim.drones])
+            for qi, q in enumerate(quad_names):
                 if q in env.sim.drones:
-                    angle = rng.uniform(0, 2 * np.pi)
+                    # Spread scouts evenly around fire + small random jitter
+                    base_angle = 2 * np.pi * qi / max(n_q, 1)
+                    angle = base_angle + rng.uniform(-0.3, 0.3)
                     nx = fire_x + scout_dist * np.cos(angle)
                     ny = fire_y + scout_dist * np.sin(angle)
                     nx = float(np.clip(nx, -env.map_bounds * 0.85, env.map_bounds * 0.85))
@@ -335,15 +399,17 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
                     _p.resetBasePositionAndOrientation(
                         d.drone_id, [nx, ny, 80.0], [0, 0, 0, 1])
         if fw_dist is not None:
-            if "fixed_0" in env.sim.drones:
-                angle = rng.uniform(0, 2 * np.pi)
-                nx = fire_x + fw_dist * np.cos(angle)
-                ny = fire_y + fw_dist * np.sin(angle)
-                nx = float(np.clip(nx, -env.map_bounds * 0.85, env.map_bounds * 0.85))
-                ny = float(np.clip(ny, -env.map_bounds * 0.85, env.map_bounds * 0.85))
-                d = env.sim.drones["fixed_0"]
-                d.state_pos[0] = nx
-                d.state_pos[1] = ny
+            for fi in range(N_FIXED):
+                fname = f"fixed_{fi}"
+                if fname in env.sim.drones:
+                    angle = rng.uniform(0, 2 * np.pi)
+                    nx = fire_x + fw_dist * np.cos(angle)
+                    ny = fire_y + fw_dist * np.sin(angle)
+                    nx = float(np.clip(nx, -env.map_bounds * 0.85, env.map_bounds * 0.85))
+                    ny = float(np.clip(ny, -env.map_bounds * 0.85, env.map_bounds * 0.85))
+                    d = env.sim.drones[fname]
+                    d.state_pos[0] = nx
+                    d.state_pos[1] = ny
         # Re-read obs after teleport so first frame is correct
         obs = {a: env._get_obs(a) for a in env.agents}
 
@@ -359,9 +425,13 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
                 env._prev_fw_water[a] = d.current_water / d.water_capacity
     obs = {a: env._get_obs(a) for a in env.agents}
     # ──────────────────────────────────────────────────
+    # Support multiple refill zones (v4+)
+    refill_zones = getattr(env.sim.environment, 'refill_zones', [])
     refill_info = env.sim.environment.refill_zone
-    refill_pos = refill_info['position'] if refill_info else None
-    refill_size = refill_info['size'] if refill_info else 20.0
+    if not refill_zones and refill_info:
+        refill_zones = [refill_info]
+    refill_pos = refill_zones[0]['position'] if refill_zones else None
+    refill_size = refill_zones[0].get('size', 20.0) if refill_zones else 20.0
 
     print(f"📐 map_bounds={env.map_bounds}")
 
@@ -370,8 +440,15 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
     h_cmdr  = {f: torch.zeros(1, 1, 64).to(device) for f in fixed_names}
 
     hist = { "q_r": {q: [] for q in quad_names},
-             "f_r": [], "q_alt": {q: [] for q in quad_names},
-             "f_alt": [], "fire": [], "water": [] }
+             "f_r": {f: [] for f in fixed_names},
+             "q_alt": {q: [] for q in quad_names},
+             "fire": [], "water": {f: [] for f in fixed_names},
+             "fw": {f: {"x": [], "y": [], "z": [], "v": []} for f in fixed_names},
+             "q_pos": {q: {"x": [], "y": [], "z": [], "v": []} for q in quad_names},
+             # Per-agent reward component breakdown
+             "q_diag": {q: {} for q in quad_names},   # keys added dynamically
+             "f_diag": {f: {} for f in fixed_names},
+             }
     frames, total_rf = [], 0.0
     total_rq = {q: 0.0 for q in quad_names}
     q_paths = {q: {"x": [], "y": []} for q in quad_names}
@@ -391,7 +468,13 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
 
     print(f"  Seed {seed} | 🚀 Mise začíná...  fire=({env.fire_x:.0f}, {env.fire_y:.0f})  "
           f"water={water_val:.0f}L")
+    print(f"  Refill zones: {len(refill_zones)}")
+    for rz in refill_zones:
+        rp = rz['position']
+        print(f"    zone at ({rp[0]:.0f}, {rp[1]:.0f})")
     fire_cells_peak = 0
+    total_water_drops = 0
+    total_water_hits = 0
     for step in tqdm.tqdm(range(MAX_STEPS), desc=f"seed={seed}", leave=False):
         if not env.agents: break
         # Peak fire
@@ -460,6 +543,19 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
 
         obs, rewards, _, _, infos = env.step(actions)
 
+        # Water drop tracking
+        for f_name in fixed_names:
+            fi = infos.get(f_name, {})
+            if "wd_alt" in fi:
+                total_water_drops += 1
+                hit = fi.get("wd_eff", 0) > 0
+                if hit:
+                    total_water_hits += 1
+                tag = "HIT" if hit else "MISS"
+                print(f"  💧 step={step:4d} {f_name} [{tag}] alt={fi['wd_alt']:.0f}m "
+                      f"dist_fire={fi.get('wd_dist',0):.0f}m eff={fi.get('wd_eff',0):.3f} "
+                      f"water_left={fi.get('wd_water',0):.0f}L")
+
         # Commander death diagnostic
         for f_name in fixed_names:
           if f_name in infos and infos[f_name].get("death_cause", ""):
@@ -487,45 +583,71 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
             total_rq[q_name] += rewards.get(q_name, 0.0)
         for f_name in fixed_names:
             total_rf += rewards.get(f_name, 0.0)
-        f_water_pct = 0.0
         f_alive = any(f in env.sim.drones for f in fixed_names)
         f_pos = None
+
+        # Average water across all alive FW for history
+        alive_fw_water = []
+        for f_name in fixed_names:
+            if f_name in env.sim.drones:
+                d = env.sim.drones[f_name]
+                alive_fw_water.append(d.current_water / d.water_capacity if d.water_capacity > 0 else 0)
+        f_water_pct = sum(alive_fw_water) / max(1, len(alive_fw_water)) if alive_fw_water else 0.0
 
         for qi in range(N_QUADS):
             q_name = f"quad_{qi}"
             if q_name in env.sim.drones:
                 q_pos = env.sim.drones[q_name].get_position()
+                q_vel = env.sim.drones[q_name].get_velocity()
                 q_paths[q_name]["x"].append(q_pos[0])
                 q_paths[q_name]["y"].append(q_pos[1])
                 hist["q_alt"][q_name].append(q_pos[2])
+                hist["q_pos"][q_name]["x"].append(q_pos[0])
+                hist["q_pos"][q_name]["y"].append(q_pos[1])
+                hist["q_pos"][q_name]["z"].append(q_pos[2])
+                hist["q_pos"][q_name]["v"].append(np.linalg.norm(q_vel[:2]))
             hist["q_r"][q_name].append(rewards.get(q_name, 0.0))
+            # Collect reward component diagnostics
+            qi_info = infos.get(q_name, {})
+            for dk in ["r_survival", "r_boundary", "r_alt_pen", "r_sweet", "r_ground",
+                        "r_approach", "r_compass", "r_fire", "r_abandon",
+                        "r_separation", "r_exploration", "dist_to_fire", "fire_intensity"]:
+                if dk not in hist["q_diag"][q_name]:
+                    hist["q_diag"][q_name][dk] = []
+                hist["q_diag"][q_name][dk].append(qi_info.get(dk, 0.0))
 
-        # Track all FW positions and pick first alive for display
+        # Track all FW positions, velocity, water
         for f_name in fixed_names:
             if f_name in env.sim.drones:
-                fp = env.sim.drones[f_name].get_position()
+                fd = env.sim.drones[f_name]
+                fp = fd.get_position()
                 f_paths[f_name]["x"].append(fp[0])
                 f_paths[f_name]["y"].append(fp[1])
+                hist["fw"][f_name]["x"].append(fp[0])
+                hist["fw"][f_name]["y"].append(fp[1])
+                hist["fw"][f_name]["z"].append(fp[2])
+                hist["fw"][f_name]["v"].append(getattr(fd, 'state_va', fd.get_speed()))
+                hist["water"][f_name].append(fd.current_water / fd.water_capacity if fd.water_capacity > 0 else 0)
+                hist["f_r"][f_name].append(rewards.get(f_name, 0.0))
                 if f_pos is None:
                     f_pos = fp
-                    f_water_pct = env.sim.drones[f_name].current_water / env.sim.drones[f_name].water_capacity
+            # Collect FW reward component diagnostics
+            fi_info = infos.get(f_name, {})
+            for dk in ["r_survival", "r_boundary", "r_alt_pen",
+                        "r_approach", "r_alt_shape", "fw_dist_scout",
+                        "r_spread"]:
+                if dk not in hist["f_diag"][f_name]:
+                    hist["f_diag"][f_name][dk] = []
+                hist["f_diag"][f_name][dk].append(fi_info.get(dk, 0.0))
 
-        # Use best local map from any scout for display
-        best_local_map = None
-        best_fire_sum = -1
+        # Collect local maps per scout for display
+        fire_seen_vals = []
         for qi in range(N_QUADS):
             lm = last_local_maps[f"quad_{qi}"]
             if lm is not None:
-                s = float(np.sum(lm))
-                if s > best_fire_sum:
-                    best_fire_sum = s
-                    best_local_map = lm
-
-        fire_seen = best_fire_sum if best_fire_sum >= 0 else 0.0
-        hist["f_r"].append(sum(rewards.get(f, 0.0) for f in fixed_names))
+                fire_seen_vals.append(float(np.sum(lm)))
+        fire_seen = max(fire_seen_vals) if fire_seen_vals else 0.0
         hist["fire"].append(fire_seen)
-        hist["water"].append(f_water_pct)
-        if f_pos is not None: hist["f_alt"].append(f_pos[2])
 
         if step % GIF_EVERY == 0:
             if save_gif:
@@ -537,21 +659,43 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
                     q_alive_map[q_name] = q_name in env.sim.drones
                     q_positions[q_name] = env.sim.drones[q_name].get_position() if q_alive_map[q_name] else None
 
-                # Merge all FW trails for display
-                all_fx = []
-                all_fy = []
+                # Per-FW positions and water
+                f_positions = {}
+                f_alive_map_frame = {}
+                f_water_pcts = {}
                 for f_name in fixed_names:
-                    all_fx.extend(f_paths[f_name]["x"])
-                    all_fy.extend(f_paths[f_name]["y"])
+                    alive = f_name in env.sim.drones
+                    f_alive_map_frame[f_name] = alive
+                    if alive:
+                        f_positions[f_name] = env.sim.drones[f_name].get_position()
+                        f_water_pcts[f_name] = env.sim.drones[f_name].current_water / env.sim.drones[f_name].water_capacity
+                    else:
+                        f_positions[f_name] = None
+                        f_water_pcts[f_name] = 0.0
 
+                any_f_alive = any(f_alive_map_frame.values())
+                moisture = env.sim.environment.fire_grid.M.copy() \
+                    if env.sim.environment.fire_grid is not None else None
+                # Valve open status per FW
+                f_valve_open = {}
+                for f_name in fixed_names:
+                    ctrl = cmdr_ctrl.get(f_name)
+                    if ctrl is not None:
+                        vd = getattr(ctrl, '_valve_debug', None)
+                        f_valve_open[f_name] = (vd is not None and vd.get('opened', False))
+                    else:
+                        f_valve_open[f_name] = False
                 frame = _render_frame(
                     step, env.sim.environment.fire_grid.I.copy(), env.map_bounds,
                     q_paths, q_positions, q_alive_map,
-                    list(all_fx), list(all_fy), f_pos, f_water_pct,
-                    refill_pos, refill_size,
-                    best_local_map.copy() if best_local_map is not None else None,
-                    sum(total_rq.values()), total_rf, fire_seen, f_alive,
+                    f_paths, f_positions, f_alive_map_frame, f_water_pcts,
+                    refill_zones, refill_size,
+                    {q: (last_local_maps[q].copy() if last_local_maps[q] is not None else None)
+                     for q in last_local_maps},
+                    sum(total_rq.values()), total_rf, fire_seen, any_f_alive,
                     terrain_collections=terrain_collections,
+                    moisture_map=moisture,
+                    f_valve_open=f_valve_open,
                 )
                 frames.append(frame)
 
@@ -568,6 +712,10 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
     fw_survived = any(f in env.sim.drones for f in fixed_names)
     scouts_survived = {q: q in env.sim.drones for q in quad_names}
 
+    w_acc = (total_water_hits / total_water_drops * 100) if total_water_drops > 0 else 0
+    print(f"  Water: {total_water_drops} drops, {total_water_hits} hits ({w_acc:.0f}% accuracy)")
+    print(f"  Fire: peak={fire_cells_peak}, end={end_cells}, suppressed={supp_pct:.1f}%")
+
     return {
         "seed": seed,
         "peak_cells": fire_cells_peak,
@@ -577,44 +725,321 @@ def run_episode(env, scout_actor, commander_actor, seed, ep_num, device,
         "scouts_survived": scouts_survived,
         "total_rq": total_rq,
         "total_rf": total_rf,
-        "water_used_pct": (1.0 - hist["water"][-1]) * 100.0 if hist["water"] else 0.0,
+        "water_used_pct": 0.0,  # per-FW water tracked in hist["water"]
+        "water_drops": total_water_drops,
+        "water_hits": total_water_hits,
     }
 
 def _save_analysis(hist, project_root, suffix=""):
-    fig, axes = plt.subplots(6, 1, figsize=(12, 16))
-    fig.patch.set_facecolor('white')
+    _save_scout_pdf(hist, project_root, suffix)
+    _save_fw_pdf(hist, project_root, suffix)
+    print("Analysis PDFs saved.")
 
-    axes[0].plot(np.cumsum(hist["f_r"]), label="Commander", color=CLR_CMDR)
-    for q_name in hist["q_r"]:
-        axes[0].plot(np.cumsum(hist["q_r"][q_name]), label=q_name, color=CLR_SCOUT, alpha=0.7)
-    axes[0].set_title("Cumulative reward", fontweight='bold'); axes[0].legend(); axes[0].grid(alpha=0.3)
 
-    for q_name in hist["q_alt"]:
-        axes[1].plot(hist["q_alt"][q_name], color=CLR_SCOUT, alpha=0.7, label=q_name)
-    axes[1].plot(hist["f_alt"], color=CLR_CMDR, label="Commander")
-    axes[1].set_title("Altitude [m]", fontweight='bold'); axes[1].legend(); axes[1].grid(alpha=0.3)
+def _save_scout_pdf(hist, project_root, suffix=""):
+    """Multi-page PDF: one page per scout with full diagnostics."""
+    q_names = sorted(hist["q_r"].keys())
+    q_colors = ['#1f77b4', '#2ca02c', '#9467bd', '#ff7f0e']
+    path = os.path.join(project_root, f"demo_scouts{suffix}.pdf")
 
-    axes[2].fill_between(range(len(hist["fire"])), hist["fire"], color='orange', alpha=0.5)
-    axes[2].set_title("Fire intensity under scout", fontweight='bold'); axes[2].grid(alpha=0.3)
+    with PdfPages(path) as pdf:
+        # ── Page 0: Overview — all scouts together ────────────────
+        fig, axes = plt.subplots(4, 1, figsize=(14, 16))
+        fig.patch.set_facecolor('white')
+        fig.suptitle("SCOUT OVERVIEW", fontsize=14, fontweight='bold')
 
-    axes[3].plot(hist["water"], color='deepskyblue', linewidth=2)
-    axes[3].set_ylim(-0.05, 1.05)
-    axes[3].set_title("Commander water level", fontweight='bold'); axes[3].grid(alpha=0.3)
+        # Cumulative reward
+        for i, q in enumerate(q_names):
+            axes[0].plot(np.cumsum(hist["q_r"][q]), label=q,
+                         color=q_colors[i % len(q_colors)], linewidth=1.5)
+        axes[0].set_title("Cumulative reward"); axes[0].legend(fontsize=8)
+        axes[0].grid(alpha=0.3); axes[0].set_xlabel("Step")
 
-    axes[4].set_title("Scout reward per step", fontweight='bold'); axes[4].grid(alpha=0.3)
-    for q_name in hist["q_r"]:
-        axes[4].plot(hist["q_r"][q_name], color=CLR_SCOUT, alpha=0.3)
+        # Altitude
+        for i, q in enumerate(q_names):
+            if hist["q_pos"][q]["z"]:
+                axes[1].plot(hist["q_pos"][q]["z"], label=q,
+                             color=q_colors[i % len(q_colors)], alpha=0.8)
+        axes[1].axhline(60, ls='--', color='gray', alpha=0.5, label='alt_ideal_min')
+        axes[1].axhline(120, ls='--', color='gray', alpha=0.5, label='alt_ideal_max')
+        axes[1].set_title("Altitude [m]"); axes[1].legend(fontsize=7)
+        axes[1].grid(alpha=0.3); axes[1].set_xlabel("Step")
 
-    axes[5].plot(hist["f_r"], color=CLR_CMDR, alpha=0.4)
-    axes[5].set_title("Commander reward per step", fontweight='bold'); axes[5].grid(alpha=0.3)
+        # XY speed
+        for i, q in enumerate(q_names):
+            if hist["q_pos"][q]["v"]:
+                axes[2].plot(hist["q_pos"][q]["v"], label=q,
+                             color=q_colors[i % len(q_colors)], alpha=0.7)
+        axes[2].set_title("XY speed [m/s]"); axes[2].legend(fontsize=7)
+        axes[2].grid(alpha=0.3); axes[2].set_xlabel("Step")
 
-    for ax in axes:
-        ax.set_xlabel('Step', fontsize=8)
+        # Fire intensity
+        axes[3].fill_between(range(len(hist["fire"])), hist["fire"],
+                             color='orange', alpha=0.5)
+        axes[3].set_title("Fire intensity under best scout")
+        axes[3].grid(alpha=0.3); axes[3].set_xlabel("Step")
 
-    plt.tight_layout()
-    plt.savefig(os.path.join(project_root, f"demo_training_analysis{suffix}.png"), dpi=120,
-                facecolor='white', edgecolor='none')
-    print("Analysis saved.")
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        pdf.savefig(fig); plt.close(fig)
+
+        # ── Per-scout pages ───────────────────────────────────────
+        for qi, q in enumerate(q_names):
+            c = q_colors[qi % len(q_colors)]
+            diag = hist["q_diag"][q]
+            fig, axes = plt.subplots(5, 2, figsize=(16, 20))
+            fig.patch.set_facecolor('white')
+            fig.suptitle(f"{q} — detailed diagnostics", fontsize=14, fontweight='bold')
+
+            # Row 0L: X, Y position
+            ax = axes[0, 0]
+            if hist["q_pos"][q]["x"]:
+                ax.plot(hist["q_pos"][q]["x"], color=c, alpha=0.8, label='x')
+                ax.plot(hist["q_pos"][q]["y"], color=c, alpha=0.4, ls='--', label='y')
+            ax.set_title("Position X, Y [m]"); ax.legend(fontsize=7); ax.grid(alpha=0.3)
+
+            # Row 0R: Altitude
+            ax = axes[0, 1]
+            if hist["q_pos"][q]["z"]:
+                ax.plot(hist["q_pos"][q]["z"], color=c)
+                ax.axhline(60, ls=':', color='red', alpha=0.5, label='ideal_min=60')
+                ax.axhline(120, ls=':', color='red', alpha=0.5, label='ideal_max=120')
+            ax.set_title("Altitude [m]"); ax.legend(fontsize=7); ax.grid(alpha=0.3)
+
+            # Row 1L: Speed
+            ax = axes[1, 0]
+            if hist["q_pos"][q]["v"]:
+                ax.plot(hist["q_pos"][q]["v"], color=c, alpha=0.8)
+            ax.set_title("XY speed [m/s]"); ax.grid(alpha=0.3)
+
+            # Row 1R: Total reward per step
+            ax = axes[1, 1]
+            ax.plot(hist["q_r"][q], color=c, alpha=0.5, linewidth=0.8)
+            # Smoothed
+            if len(hist["q_r"][q]) > 20:
+                w = min(50, len(hist["q_r"][q]) // 5)
+                smoothed = np.convolve(hist["q_r"][q], np.ones(w)/w, mode='valid')
+                ax.plot(range(w-1, w-1+len(smoothed)), smoothed, color='black', linewidth=1.5, label=f'MA-{w}')
+                ax.legend(fontsize=7)
+            ax.set_title("Total reward / step"); ax.grid(alpha=0.3)
+
+            # Row 2L: Physics rewards stacked
+            ax = axes[2, 0]
+            physics_keys = ["r_survival", "r_boundary", "r_alt_pen", "r_sweet", "r_ground"]
+            physics_colors = ['green', 'red', 'orange', 'cyan', 'brown']
+            for pk, pc in zip(physics_keys, physics_colors):
+                if pk in diag and diag[pk]:
+                    ax.plot(diag[pk], label=pk, color=pc, alpha=0.7, linewidth=0.8)
+            ax.set_title("Physics reward components"); ax.legend(fontsize=6); ax.grid(alpha=0.3)
+
+            # Row 2R: Mission rewards
+            ax = axes[2, 1]
+            mission_keys = ["r_approach", "r_compass", "r_fire", "r_abandon", "r_separation", "r_exploration"]
+            mission_colors = ['blue', 'teal', 'orange', 'red', 'purple', 'green']
+            for mk, mc in zip(mission_keys, mission_colors):
+                if mk in diag and diag[mk]:
+                    ax.plot(diag[mk], label=mk, color=mc, alpha=0.7, linewidth=0.8)
+            ax.set_title("Mission reward components"); ax.legend(fontsize=6); ax.grid(alpha=0.3)
+
+            # Row 3L: Cumulative reward breakdown
+            ax = axes[3, 0]
+            all_keys = physics_keys + mission_keys
+            all_colors = physics_colors + mission_colors
+            for ak, ac in zip(all_keys, all_colors):
+                if ak in diag and diag[ak]:
+                    ax.plot(np.cumsum(diag[ak]), label=ak, color=ac, alpha=0.7, linewidth=1)
+            ax.set_title("Cumulative reward per component"); ax.legend(fontsize=5); ax.grid(alpha=0.3)
+
+            # Row 3R: Distance to fire + fire intensity
+            ax = axes[3, 1]
+            if "dist_to_fire" in diag and diag["dist_to_fire"]:
+                ax.plot(diag["dist_to_fire"], color='red', alpha=0.7, label='dist_to_fire')
+                ax.set_ylabel("Distance [m]", color='red')
+            ax2 = ax.twinx()
+            if "fire_intensity" in diag and diag["fire_intensity"]:
+                ax2.plot(diag["fire_intensity"], color='orange', alpha=0.7, label='fire_intensity')
+                ax2.set_ylabel("Intensity", color='orange')
+            ax.set_title("Distance to fire & intensity"); ax.legend(loc='upper left', fontsize=7)
+            ax2.legend(loc='upper right', fontsize=7); ax.grid(alpha=0.3)
+
+            # Row 4: XY trajectory
+            ax = axes[4, 0]
+            if hist["q_pos"][q]["x"] and hist["q_pos"][q]["y"]:
+                ax.plot(hist["q_pos"][q]["x"], hist["q_pos"][q]["y"], color=c, alpha=0.5, linewidth=0.8)
+                ax.scatter(hist["q_pos"][q]["x"][0], hist["q_pos"][q]["y"][0],
+                           c='green', s=80, marker='o', zorder=5, label='start')
+                ax.scatter(hist["q_pos"][q]["x"][-1], hist["q_pos"][q]["y"][-1],
+                           c='red', s=80, marker='x', zorder=5, label='end')
+            ax.set_aspect('equal'); ax.set_title("XY trajectory"); ax.legend(fontsize=7); ax.grid(alpha=0.3)
+
+            axes[4, 1].axis('off')  # empty
+
+            for row in axes:
+                for a in row:
+                    a.set_xlabel("Step", fontsize=7)
+
+            plt.tight_layout(rect=[0, 0, 1, 0.96])
+            pdf.savefig(fig); plt.close(fig)
+
+    print(f"  Scout PDF → {path}")
+
+
+def _save_fw_pdf(hist, project_root, suffix=""):
+    """Multi-page PDF: one page per FW with full diagnostics."""
+    fw_names = sorted(hist["fw"].keys())
+    fw_colors = ['#ff3333', '#ff9933', '#cc33ff']
+    path = os.path.join(project_root, f"demo_fw{suffix}.pdf")
+
+    with PdfPages(path) as pdf:
+        # ── Page 0: Overview — all FW together ────────────────────
+        fig, axes = plt.subplots(4, 1, figsize=(14, 16))
+        fig.patch.set_facecolor('white')
+        fig.suptitle("FIXED-WING OVERVIEW", fontsize=14, fontweight='bold')
+
+        # Cumulative reward
+        for i, f in enumerate(fw_names):
+            if hist["f_r"][f]:
+                axes[0].plot(np.cumsum(hist["f_r"][f]), label=f,
+                             color=fw_colors[i % len(fw_colors)], linewidth=1.5)
+        axes[0].set_title("Cumulative reward"); axes[0].legend(fontsize=8)
+        axes[0].grid(alpha=0.3); axes[0].set_xlabel("Step")
+
+        # Altitude
+        for i, f in enumerate(fw_names):
+            if hist["fw"][f]["z"]:
+                axes[1].plot(hist["fw"][f]["z"], label=f,
+                             color=fw_colors[i % len(fw_colors)], alpha=0.8)
+        axes[1].axhline(30, ls='--', color='gray', alpha=0.5, label='alt_min=30')
+        axes[1].axhline(80, ls='--', color='gray', alpha=0.5, label='alt_max=80')
+        axes[1].set_title("Altitude [m]"); axes[1].legend(fontsize=7)
+        axes[1].grid(alpha=0.3); axes[1].set_xlabel("Step")
+
+        # Airspeed
+        for i, f in enumerate(fw_names):
+            if hist["fw"][f]["v"]:
+                axes[2].plot(hist["fw"][f]["v"], label=f,
+                             color=fw_colors[i % len(fw_colors)], alpha=0.8)
+        axes[2].set_title("Airspeed [m/s]"); axes[2].legend(fontsize=7)
+        axes[2].grid(alpha=0.3); axes[2].set_xlabel("Step")
+
+        # Water level
+        for i, f in enumerate(fw_names):
+            if hist["water"][f]:
+                axes[3].plot(hist["water"][f], label=f,
+                             color=fw_colors[i % len(fw_colors)], linewidth=1.5)
+        axes[3].set_ylim(-0.05, 1.05)
+        axes[3].set_title("Water level"); axes[3].legend(fontsize=7)
+        axes[3].grid(alpha=0.3); axes[3].set_xlabel("Step")
+
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        pdf.savefig(fig); plt.close(fig)
+
+        # ── Per-FW pages ──────────────────────────────────────────
+        for fi, f in enumerate(fw_names):
+            c = fw_colors[fi % len(fw_colors)]
+            fw = hist["fw"][f]
+            diag = hist["f_diag"][f]
+
+            fig, axes = plt.subplots(5, 2, figsize=(16, 20))
+            fig.patch.set_facecolor('white')
+            fig.suptitle(f"{f} — detailed diagnostics", fontsize=14, fontweight='bold')
+
+            # Row 0L: X, Y position
+            ax = axes[0, 0]
+            if fw["x"]:
+                ax.plot(fw["x"], color=c, alpha=0.8, label='x')
+                ax.plot(fw["y"], color=c, alpha=0.4, ls='--', label='y')
+            ax.set_title("Position X, Y [m]"); ax.legend(fontsize=7); ax.grid(alpha=0.3)
+
+            # Row 0R: Altitude
+            ax = axes[0, 1]
+            if fw["z"]:
+                ax.plot(fw["z"], color=c)
+                ax.axhline(30, ls=':', color='red', alpha=0.5, label='min=30')
+                ax.axhline(80, ls=':', color='red', alpha=0.5, label='max=80')
+            ax.set_title("Altitude [m]"); ax.legend(fontsize=7); ax.grid(alpha=0.3)
+
+            # Row 1L: Airspeed
+            ax = axes[1, 0]
+            if fw["v"]:
+                ax.plot(fw["v"], color=c, alpha=0.8)
+            ax.set_title("Airspeed [m/s]"); ax.grid(alpha=0.3)
+
+            # Row 1R: Total reward per step
+            ax = axes[1, 1]
+            if hist["f_r"][f]:
+                ax.plot(hist["f_r"][f], color=c, alpha=0.5, linewidth=0.8)
+                if len(hist["f_r"][f]) > 20:
+                    w = min(50, len(hist["f_r"][f]) // 5)
+                    sm = np.convolve(hist["f_r"][f], np.ones(w)/w, mode='valid')
+                    ax.plot(range(w-1, w-1+len(sm)), sm, color='black', linewidth=1.5, label=f'MA-{w}')
+                    ax.legend(fontsize=7)
+            ax.set_title("Total reward / step"); ax.grid(alpha=0.3)
+
+            # Row 2L: Physics rewards
+            ax = axes[2, 0]
+            physics_keys = ["r_survival", "r_boundary", "r_alt_pen"]
+            physics_colors_l = ['green', 'red', 'orange']
+            for pk, pc in zip(physics_keys, physics_colors_l):
+                if pk in diag and diag[pk]:
+                    ax.plot(diag[pk], label=pk, color=pc, alpha=0.7, linewidth=0.8)
+            ax.set_title("Physics reward components"); ax.legend(fontsize=7); ax.grid(alpha=0.3)
+
+            # Row 2R: Mission rewards
+            ax = axes[2, 1]
+            mission_keys = ["r_approach", "r_alt_shape", "r_spread"]
+            mission_colors_l = ['blue', 'cyan', 'red']
+            for mk, mc in zip(mission_keys, mission_colors_l):
+                if mk in diag and diag[mk]:
+                    ax.plot(diag[mk], label=mk, color=mc, alpha=0.7, linewidth=0.8)
+            ax.set_title("Mission reward components"); ax.legend(fontsize=7); ax.grid(alpha=0.3)
+
+            # Row 3L: Cumulative reward breakdown
+            ax = axes[3, 0]
+            all_k = physics_keys + mission_keys
+            all_c = physics_colors_l + mission_colors_l
+            for ak, ac in zip(all_k, all_c):
+                if ak in diag and diag[ak]:
+                    ax.plot(np.cumsum(diag[ak]), label=ak, color=ac, alpha=0.7, linewidth=1)
+            ax.set_title("Cumulative reward per component"); ax.legend(fontsize=6); ax.grid(alpha=0.3)
+
+            # Row 3R: Distance to scout + water level
+            ax = axes[3, 1]
+            if "fw_dist_scout" in diag and diag["fw_dist_scout"]:
+                ax.plot(diag["fw_dist_scout"], color='red', alpha=0.7, label='dist_to_scout')
+                ax.set_ylabel("Distance [m]", color='red')
+            ax2r = ax.twinx()
+            if hist["water"][f]:
+                ax2r.plot(hist["water"][f], color='deepskyblue', alpha=0.7, label='water')
+                ax2r.set_ylabel("Water frac", color='deepskyblue')
+                ax2r.set_ylim(-0.05, 1.05)
+            ax.set_title("Distance to scout & water"); ax.legend(loc='upper left', fontsize=7)
+            ax2r.legend(loc='upper right', fontsize=7); ax.grid(alpha=0.3)
+
+            # Row 4L: XY trajectory
+            ax = axes[4, 0]
+            if fw["x"] and fw["y"]:
+                ax.plot(fw["x"], fw["y"], color=c, alpha=0.5, linewidth=0.8)
+                ax.scatter(fw["x"][0], fw["y"][0], c='green', s=80, marker='o', zorder=5, label='start')
+                ax.scatter(fw["x"][-1], fw["y"][-1], c='red', s=80, marker='x', zorder=5, label='end')
+            ax.set_aspect('equal'); ax.set_title("XY trajectory"); ax.legend(fontsize=7); ax.grid(alpha=0.3)
+
+            # Row 4R: Water level
+            ax = axes[4, 1]
+            if hist["water"][f]:
+                ax.fill_between(range(len(hist["water"][f])), hist["water"][f],
+                                color='deepskyblue', alpha=0.5)
+                ax.plot(hist["water"][f], color='deepskyblue', linewidth=1.5)
+                ax.set_ylim(-0.05, 1.05)
+            ax.set_title("Water level"); ax.grid(alpha=0.3)
+
+            for row in axes:
+                for a in row:
+                    a.set_xlabel("Step", fontsize=7)
+
+            plt.tight_layout(rect=[0, 0, 1, 0.96])
+            pdf.savefig(fig); plt.close(fig)
+
+    print(f"  FW PDF → {path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -638,6 +1063,8 @@ if __name__ == "__main__":
                         help="Number of scout quadcopters (default: 3)")
     parser.add_argument("--n-fixed",     type=int, default=N_FIXED,
                         help="Number of fixed-wing commanders (default: 2)")
+    parser.add_argument("--n-fires",     type=int, default=1,
+                        help="Number of fires to place (default: 1)")
     args = parser.parse_args()
 
     # Přepis cestám z argumentu
@@ -661,7 +1088,8 @@ if __name__ == "__main__":
 
     env = DroneFireEnv(num_quads=N_QUADS, num_fixed=N_FIXED, grid_size_m=grid_size_demo,
                        max_steps=MAX_STEPS, use_osm=USE_OSM, osm_lat=OSM_LAT,
-                       osm_lon=OSM_LON, osm_cache_dir=OSM_CACHE)
+                       osm_lon=OSM_LON, osm_cache_dir=OSM_CACHE,
+                       n_fires_range=(args.n_fires, args.n_fires))
 
     print(f"\nSpouštím {args.episodes} epizod, seed {args.seed_start}–"
           f"{args.seed_start + args.episodes - 1}\n")

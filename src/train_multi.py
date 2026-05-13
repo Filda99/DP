@@ -88,7 +88,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
 
     map_half           = config['grid_size_m'] / 2.0
     wp_reached_dist    = 30.0
-    wp_timeout_penalty = -1.0
+    wp_timeout_penalty = -0.3
 
     ep_max_steps = config.get('ep_max_steps', max_steps)
     N_FIXED      = config.get('N_FIXED', 1)
@@ -247,6 +247,10 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         ep_cmdr_rd = {"r_extinguish": 0.0, "r_water_waste": 0.0,
                       "r_water_near": 0.0, "r_fire_out": 0.0, "r_spread": 0.0}
         ep_water_drops = []  # (alt, dist_to_fire, eff, water_left)
+        # Per-step FW reward component accumulators
+        ep_fw_diag = {"r_survival": 0.0, "r_boundary": 0.0, "r_alt_pen": 0.0,
+                      "r_approach": 0.0, "r_alt_shape": 0.0,
+                      "fw_dist_scout_sum": 0.0, "fw_dist_scout_n": 0}
 
         msg_buffer = {f: [] for f in fixed_agents}
 
@@ -485,6 +489,14 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
                     fi = infos.get(f_agent, {})
                     for rk in ep_cmdr_rd:
                         ep_cmdr_rd[rk] += fi.get(rk, 0.0)
+                    # Per-step FW reward component diagnostics
+                    for dk in ("r_survival", "r_boundary", "r_alt_pen",
+                               "r_approach", "r_alt_shape"):
+                        ep_fw_diag[dk] += fi.get(dk, 0.0)
+                    ds = fi.get("fw_dist_scout", -1.0)
+                    if ds >= 0:
+                        ep_fw_diag["fw_dist_scout_sum"] += ds
+                        ep_fw_diag["fw_dist_scout_n"] += 1
                     # Water-drop diagnostics
                     if "wd_alt" in fi:
                         ep_water_drops.append((fi["wd_alt"], fi["wd_dist"],
@@ -672,6 +684,7 @@ def collect_multi_worker(num_eps, scout_w, cmdr_w, critic_scout_w, critic_cmdr_w
         all_fire_stats.append((ep_peak_burning, ep_final_burning, round(ep_total_extinguish, 1)))
         all_cmdr_rd.append(ep_cmdr_rd)
         all_cmdr_rd[-1]["_water_drops"] = ep_water_drops
+        all_cmdr_rd[-1]["_fw_diag"] = ep_fw_diag
 
         for q in quad_agents:
             all_scout_lifespans.append(scout_lifespan[q])
@@ -766,20 +779,20 @@ def train_multi(resume_scout="", resume_cmdr="",
     # -----------------------------------------------------------------
     #  Hyperparameters
     # -----------------------------------------------------------------
-    N_QUADS            = 4
+    N_QUADS            = 1
     N_FIXED            = 3
     grid_size_m        = 1000.0
     map_size_range     = (800, 1500)  # domain randomisation like train_scout
-    n_fires_range      = (1, 3)      # 1-3 fires per episode
-    num_episodes       = 30_000
+    n_fires_range      = (1, 1)      # 1 fire — focused fine-tuning
+    num_episodes       = 5_000
     max_steps          = 1000        # longer episodes — FW needs time for refill cycles
     steps_range        = (1000,1500)        # fixed length
     bptt_chunk         = 128
     waypoint_steps     = 30
-    waypoint_range     = 200.0       # metres
+    waypoint_range     = 50.0        # metres — FW travels ~19m per 30-step segment
     num_decisions_cmdr = max_steps // waypoint_steps   # 26
 
-    scout_freeze_batches = 999999     # scouts FROZEN — focus on commander training
+    scout_freeze_batches = 0          # scouts UNFROZEN — fine-tune lower altitude
 
     gamma              = 0.99
     gamma_cmdr         = 0.99        # long horizon for fire suppression
@@ -790,8 +803,8 @@ def train_multi(resume_scout="", resume_cmdr="",
     eps_per_worker     = 2
     episodes_per_batch = num_workers * eps_per_worker
 
-    lr_scout           = 3e-5        # gentle finetuning rate
-    lr_cmdr            = 5e-4
+    lr_scout           = 1e-4        # fine-tuning — slightly higher to adapt alt
+    lr_cmdr            = 1e-4         # also gentle — preserve existing behavior
     lr_critic          = 5e-4
     hidden_dim_scout   = 128
     hidden_dim_cmdr    = 64
@@ -815,9 +828,9 @@ def train_multi(resume_scout="", resume_cmdr="",
     #                             waste penalty, spread penalty ON
     #  Phase 4+ (batch 181+):    full difficulty, domain randomisation
     # -----------------------------------------------------------------
-    CURR_PHASE1_END = 30    # easy: fire close, approach shaping
-    CURR_PHASE2_END = 80    # medium: fire further
-    CURR_PHASE3_END = 150   # full mission on fixed map
+    CURR_PHASE1_END = 0    # skip curriculum — fine-tuning pre-trained models
+    CURR_PHASE2_END = 0    # skip curriculum
+    CURR_PHASE3_END = 0    # skip curriculum — go straight to full difficulty
 
     # Behavioural cloning coefficient (decays, floor = 0.03)
     bc_coef = 0.5
@@ -963,7 +976,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     scout_reward_history     = []
 
     save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "..", "saved_models", "v5_fireValve")
+                            "..", "saved_models", "v7_finetune")
     os.makedirs(save_dir, exist_ok=True)
     print(f"Checkpoints -> {save_dir}\n")
 
@@ -1162,6 +1175,21 @@ def train_multi(resume_scout="", resume_cmdr="",
                       f"({100*n_hit/len(all_wd):.0f}% accuracy)  "
                       f"alt={statistics.mean(alts):.0f}m [{min(alts):.0f}-{max(alts):.0f}]  "
                       f"dist={statistics.mean(dists):.0f}m [{min(dists):.0f}-{max(dists):.0f}]")
+
+            # FW per-step reward component breakdown
+            all_diag = [d.get("_fw_diag", {}) for d in batch_cmdr_rd]
+            if all_diag and all_diag[0]:
+                nd = len(all_diag)
+                avg_surv   = sum(d.get("r_survival", 0) for d in all_diag) / nd
+                avg_bound  = sum(d.get("r_boundary", 0) for d in all_diag) / nd
+                avg_altpen = sum(d.get("r_alt_pen", 0) for d in all_diag) / nd
+                avg_appr   = sum(d.get("r_approach", 0) for d in all_diag) / nd
+                avg_altsh  = sum(d.get("r_alt_shape", 0) for d in all_diag) / nd
+                total_dn   = sum(d.get("fw_dist_scout_n", 0) for d in all_diag)
+                avg_ds     = (sum(d.get("fw_dist_scout_sum", 0) for d in all_diag) / max(1, total_dn))
+                print(f"   FW shaping: surv={avg_surv:+.1f} bound={avg_bound:+.1f} "
+                      f"alt_pen={avg_altpen:+.1f} approach={avg_appr:+.1f} "
+                      f"alt_shape={avg_altsh:+.1f}  avg_dist_scout={avg_ds:.0f}m")
 
         # -- Checkpoint: best & periodic ------------------------------
         if episodes_played >= 60 and avg_roll > best_avg:

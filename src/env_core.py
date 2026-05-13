@@ -845,7 +845,8 @@ class DroneFireEnv(ParallelEnv):
                     effective_spawn_radius = spawn_radius
 
                 # Unique position per scout with guaranteed separation
-                for _attempt in range(20):
+                MIN_SCOUT_SEP = 150.0
+                for _attempt in range(50):
                     quad_start_x = target_fx + random.uniform(-effective_spawn_radius, effective_spawn_radius)
                     quad_start_y = target_fy + random.uniform(-effective_spawn_radius, effective_spawn_radius)
                     # Check distance to already-spawned quads
@@ -854,7 +855,7 @@ class DroneFireEnv(ParallelEnv):
                         if other == agent or other not in self.sim.drones:
                             continue
                         op = self.sim.drones[other].get_position()
-                        if np.hypot(quad_start_x - op[0], quad_start_y - op[1]) < 40.0:
+                        if np.hypot(quad_start_x - op[0], quad_start_y - op[1]) < MIN_SCOUT_SEP:
                             too_close = True
                             break
                     if not too_close:
@@ -863,7 +864,7 @@ class DroneFireEnv(ParallelEnv):
                 # Clamp to map bounds (safety)
                 quad_start_x = float(np.clip(quad_start_x, -self.map_bounds * 0.9, self.map_bounds * 0.9))
                 quad_start_y = float(np.clip(quad_start_y, -self.map_bounds * 0.9, self.map_bounds * 0.9))
-                quad_start_z = random.uniform(60.0, 90.0)
+                quad_start_z = random.uniform(50.0, 70.0)
                 
                 self.sim.add_quadcopter(agent, position=[quad_start_x, quad_start_y, quad_start_z])
 
@@ -1024,14 +1025,11 @@ class DroneFireEnv(ParallelEnv):
                     pitch_cmd = np.clip(0.008 * alt_error - 0.02 * vz, -0.5, 0.5)
 
                     # --- 3. THROTTLE ---
-                    # Full speed (30 m/s) normally; slow to 15 m/s when:
-                    #  - dropping water (more time over fire → more effective)
-                    #  - near map boundary (tighter turn radius: 23m vs 92m)
+                    # Full speed (30 m/s) always — slowing down wastes time
+                    # and makes the FW harder to control near boundaries.
                     # --- 4. WATER ---
                     water_trigger = 1.0 if water_raw > 0.0 else 0.0
-                    near_edge = (abs(drone.state_pos[0]) > self.map_bounds * 0.65 or
-                                 abs(drone.state_pos[1]) > self.map_bounds * 0.65)
-                    throttle = 0.5 if (water_trigger > 0.5 or near_edge) else 1.0
+                    throttle = 1.0
 
                     mapped_action = np.array([roll_cmd, pitch_cmd, throttle, water_trigger])
                     drone_controls[agent_name] = mapped_action
@@ -1085,8 +1083,16 @@ class DroneFireEnv(ParallelEnv):
 
                 if "fixed" in agent:
                     rewards[agent] += self._get_fixed_reward_nav(agent)
+                    # Attach per-step reward diagnostics for training log
+                    diag = getattr(self, '_fw_reward_diag', {}).get(agent, {})
+                    for dk, dv in diag.items():
+                        infos[agent][dk] = dv
                 else:
                     rewards[agent] += self._get_quad_reward(agent)
+                    # Attach per-step quad reward diagnostics
+                    diag = getattr(self, '_quad_reward_diag', {}).get(agent, {})
+                    for dk, dv in diag.items():
+                        infos[agent][dk] = dv
                 
                 if time_is_up:
                     rewards[agent] += 2.0
@@ -1227,41 +1233,66 @@ class DroneFireEnv(ParallelEnv):
         dist_to_edge = min(dist_boundaries)
 
         if "fixed" in agent:
-            # Scale threshold with map size — on small maps a fixed 300 m
-            # threshold would cause permanent penalty → crash.
             threshold = min(FIXED["boundary_threshold_m"], self.map_bounds * 0.5)
         else:
             threshold = QUAD["boundary_threshold_m"]
 
+        r_boundary = 0.0
         if dist_to_edge < threshold:
-            reward -= SHARED["boundary_penalty"] * (1.0 - dist_to_edge / threshold) ** 2
+            r_boundary = -SHARED["boundary_penalty"] * (1.0 - dist_to_edge / threshold) ** 2
+        reward += r_boundary
 
         # --- Altitude penalty ---
+        r_alt_pen = 0.0
         if "fixed" in agent:
             alt_min = FIXED["alt_ideal_min"]
             alt_max = FIXED["alt_ideal_max"]
             if pos[2] > alt_max:
-                excess = pos[2] - alt_max
-                reward -= excess * FIXED["alt_penalty"]
+                r_alt_pen = -(pos[2] - alt_max) * FIXED["alt_penalty"]
             elif pos[2] < alt_min:
-                excess = alt_min - pos[2]
-                reward -= excess * FIXED["alt_penalty"]
+                r_alt_pen = -(alt_min - pos[2]) * FIXED["alt_penalty"]
+            reward += r_alt_pen
+
+            # Store physics diagnostics for FW
+            if not hasattr(self, '_fw_reward_diag'):
+                self._fw_reward_diag = {}
+            diag = self._fw_reward_diag.get(agent, {})
+            diag["r_survival"] = SHARED["survival_bonus"]
+            diag["r_boundary"] = r_boundary
+            diag["r_alt_pen"] = r_alt_pen
+            self._fw_reward_diag[agent] = diag
         else:
+            r_alt_pen_q = 0.0
+            r_sweet = 0.0
+            r_ground = 0.0
             if pos[2] > QUAD["alt_ideal_max"]:
                 excess_alt = pos[2] - QUAD["alt_ideal_max"]
-                reward -= (excess_alt * QUAD["alt_penalty"])
+                r_alt_pen_q = -(excess_alt * QUAD["alt_penalty"])
             elif pos[2] < QUAD["alt_ideal_min"]:
                 excess_alt = QUAD["alt_ideal_min"] - pos[2]
-                reward -= (excess_alt * QUAD["alt_penalty"])
+                r_alt_pen_q = -(excess_alt * QUAD["alt_penalty"])
 
             if QUAD["alt_sweet_min"] <= pos[2] <= QUAD["alt_sweet_max"]:
-                reward += QUAD["alt_sweet_bonus"]
+                r_sweet = QUAD["alt_sweet_bonus"]
 
             # --- Ground proximity: exponential penalty below danger_alt ---
             danger_alt = QUAD["ground_danger_alt"]
             if pos[2] < danger_alt:
-                frac = 1.0 - pos[2] / danger_alt  # 0 na hranici, 1 na zemi
-                reward -= QUAD["ground_danger_pen"] * (frac ** 2)
+                frac = 1.0 - pos[2] / danger_alt
+                r_ground = -QUAD["ground_danger_pen"] * (frac ** 2)
+
+            reward += r_alt_pen_q + r_sweet + r_ground
+
+            # Store physics diagnostics for quad
+            if not hasattr(self, '_quad_reward_diag'):
+                self._quad_reward_diag = {}
+            diag = self._quad_reward_diag.get(agent, {})
+            diag["r_survival"] = SHARED["survival_bonus"]
+            diag["r_boundary"] = r_boundary
+            diag["r_alt_pen"] = r_alt_pen_q
+            diag["r_sweet"] = r_sweet
+            diag["r_ground"] = r_ground
+            self._quad_reward_diag[agent] = diag
 
         return reward
 
@@ -1326,22 +1357,24 @@ class DroneFireEnv(ParallelEnv):
         vel = drone.get_velocity()
         reward = 0.0
 
+        # Component accumulators for diagnostics
+        r_approach = 0.0
+        r_compass = 0.0
+        r_fire = 0.0
+        r_abandon = 0.0
+        r_separation = 0.0
+        r_exploration = 0.0
+
         # ── Potential-based approach shaping (always active) ────────
-        # Use NEAREST fire so the shaping is consistent with the compass.
         _, _, dist_to_fire = self._nearest_fire(pos)
         prev_dist = self._prev_fire_dists.get(agent, dist_to_fire)
         delta = prev_dist - dist_to_fire  # positive = approaching
-        reward += delta * QUAD["approach_k"]
+        r_approach = delta * QUAD["approach_k"]
+        reward += r_approach
         self._prev_fire_dists[agent] = dist_to_fire
         fire_cx, fire_cy = self._get_fire_centroid()
 
         # ── Compass-follow: reward for heading towards fire ─────────
-        # cos(angle) between velocity and fire direction.
-        # +1 = flying straight at fire, -1 = flying away.
-        # Active only when moving and > 10 m from fire.
-        # Scaled down when another scout is closer to fire — prevents
-        # the "loser" scout from being penalised for not chasing a fire
-        # that is already covered by another scout.
         closest_to_fire = True
         for other in self.quad_agents:
             if other == agent or other not in self.sim.drones:
@@ -1358,33 +1391,30 @@ class DroneFireEnv(ParallelEnv):
             vel_dir = np.array([vel[0], vel[1]]) / speed_xy
             fire_dir = np.array([fire_cx - pos[0], fire_cy - pos[1]]) / dist_to_fire
             alignment = np.dot(vel_dir, fire_dir)  # -1 to +1
-            reward += alignment * QUAD["compass_follow_k"] * compass_scale
+            r_compass = alignment * QUAD["compass_follow_k"] * compass_scale
+            reward += r_compass
 
         local_map = self._extract_local_fire_map(pos)
         avg_fire_intensity = np.mean(local_map)
 
         if avg_fire_intensity > 0.001:
-            # ── Fire visible → large reward ──
-            reward += QUAD["fire_flat_bonus"]
-            reward += avg_fire_intensity * QUAD["fire_intensity_k"]
+            r_fire += QUAD["fire_flat_bonus"]
+            r_fire += avg_fire_intensity * QUAD["fire_intensity_k"]
             speed = np.linalg.norm(vel)
-            reward -= speed * QUAD["fire_speed_pen"]
-
-            # ── First discovery bonus (one-shot per episode) ──
+            r_fire -= speed * QUAD["fire_speed_pen"]
             if not self.fire_discovered:
                 self.fire_discovered = True
-                reward += QUAD["first_discovery_bonus"]
+                r_fire += QUAD["first_discovery_bonus"]
+        reward += r_fire
 
         # ── Fire abandonment penalty ──────────────────────────────
-        # The scout was above fire (avg_intensity > threshold) but now
-        # lost visual.  Penalty scales with previous intensity — the more
-        # fire the scout was seeing, the more costly it is to leave.
         prev_fire = self._prev_fire_seen.get(agent, 0.0)
         if prev_fire > QUAD["fire_abandon_threshold"] and avg_fire_intensity < QUAD["fire_abandon_threshold"]:
-            reward -= QUAD["fire_abandon_penalty"] * prev_fire
+            r_abandon = -QUAD["fire_abandon_penalty"] * prev_fire
+            reward += r_abandon
         self._prev_fire_seen[agent] = avg_fire_intensity
 
-        # ── Separation bonus: reward for keeping distance from other scouts
+        # ── Separation bonus
         sep_min = QUAD["separation_min_m"]
         for other in self.quad_agents:
             if other == agent or other not in self.sim.drones:
@@ -1392,18 +1422,31 @@ class DroneFireEnv(ParallelEnv):
             other_pos = self.sim.drones[other].get_position()
             dist_to_other = np.hypot(pos[0] - other_pos[0], pos[1] - other_pos[1])
             if dist_to_other >= sep_min:
-                reward += QUAD["separation_bonus"]
+                r_separation += QUAD["separation_bonus"]
             else:
-                # Linear penalty: 0 at threshold, -separation_bonus at dist=0
-                reward -= QUAD["separation_bonus"] * (1.0 - dist_to_other / sep_min)
+                r_separation -= QUAD["separation_bonus"] * (1.0 - dist_to_other / sep_min)
+        reward += r_separation
 
-        # ── Exploration bonus: reward for visiting new areas ────────
-        # Coarse 50 m grid buckets — gives the "loser" scout something
-        # productive to do instead of crashing.
+        # ── Exploration bonus
         explore_cell = (int(pos[0] // 50), int(pos[1] // 50))
         if explore_cell not in self.visited_cells[agent]:
             self.visited_cells[agent].add(explore_cell)
-            reward += QUAD["exploration_bonus"]
+            r_exploration = QUAD["exploration_bonus"]
+            reward += r_exploration
+
+        # Store diagnostics
+        if not hasattr(self, '_quad_reward_diag'):
+            self._quad_reward_diag = {}
+        self._quad_reward_diag[agent] = {
+            "r_approach": r_approach,
+            "r_compass": r_compass,
+            "r_fire": r_fire,
+            "r_abandon": r_abandon,
+            "r_separation": r_separation,
+            "r_exploration": r_exploration,
+            "dist_to_fire": dist_to_fire,
+            "fire_intensity": avg_fire_intensity,
+        }
 
         return reward
     
@@ -1414,14 +1457,18 @@ class DroneFireEnv(ParallelEnv):
         demo_both), so the NN only controls when water >= 30%.
         Approach shaping + altitude shaping near fire.
         Extinguish bonuses come from step() via drone_extinguish_stats.
+
+        Stores per-step diagnostics in self._fw_reward_diag[agent] so
+        the training loop can aggregate and log component breakdowns.
         """
         drone = self.sim.drones[agent]
         pos = drone.get_position()
 
-        reward = 0.0
+        r_approach = 0.0
+        r_alt_shape = 0.0
+        dist_to_scout = -1.0
 
         # ── Fire approach: potential-based shaping to nearest scout ────
-        # Scouts hover near fire, so flying towards a scout ≈ fire.
         live_quads = [q for q in self.quad_agents if q in self.sim.drones]
         if live_quads:
             dist_to_scout = min(
@@ -1432,19 +1479,24 @@ class DroneFireEnv(ParallelEnv):
             prev_key = f"_fire_approach_{agent}"
             prev_dist = self._fw_fire_approach.get(prev_key, dist_to_scout)
             delta = prev_dist - dist_to_scout   # positive = approaching
-            reward += delta * FIXED["fire_approach_k"]
+            r_approach = delta * FIXED["fire_approach_k"]
             self._fw_fire_approach[prev_key] = dist_to_scout
 
             # ── Altitude shaping near fire: reward lower altitude ─────
-            # When FW is close to a scout (< 200m), reward descending.
-            # effectiveness = 1 - (alt/150)^2, matching water physics.
-            # Bonus = 0.3 * eff when close → strong gradient to fly low.
-            #   at 50m: +0.27/step, at 80m: +0.21/step, at 120m: +0.11/step
             if dist_to_scout < 200.0:
                 alt_effectiveness = max(0.0, 1.0 - (pos[2] / 150.0) ** 2)
-                reward += 0.3 * alt_effectiveness
+                r_alt_shape = 0.3 * alt_effectiveness
 
-        return reward
+        # Store diagnostics for aggregation in train_multi
+        if not hasattr(self, '_fw_reward_diag'):
+            self._fw_reward_diag = {}
+        self._fw_reward_diag[agent] = {
+            "r_approach": r_approach,
+            "r_alt_shape": r_alt_shape,
+            "fw_dist_scout": dist_to_scout,
+        }
+
+        return r_approach + r_alt_shape
 
     def _check_death(self, agent):
         """Detect agent crash.
