@@ -1,0 +1,17 @@
+Nejdřív si pojďme spočítat čísla, abych měl jistotu, že sedí.
+Co víme z práce:
+
+PyBullet běží na 240 Hz (uvedeno v sekci 4.4.3 — "240 Hz" u PD controlleru) — to znamená 1 physics step = 1/240 s ≈ 4.17 ms.
+Ale počkat — v sekci 4.3 (Multi-scale Temporal Resolution) říkáš, že scout query je každých 5 simulation steps a commander každých 30 scout decision steps = 150 simulation steps. Takže 1 simulation step v té úvaze není 1/240 s.
+Section 3.3.4 (Water Suppression Dynamics) — uvádíš:
+
+Flow rate: 100 L/s
+Simulation timestep Δt = 1/30 s
+Yields approximately 3.3 L per simulation step
+Tank capacity: 200 L
+"Continuously dropping commander exhausts its payload in 2 s (60 simulation steps at 30 Hz)"
+
+Takže v práci je fire simulation timestep = 1/30 s (30 Hz), tank se vyprázdní za 2 sekundy (60 sim steps).
+Commander decision frequency — 1 decision každých 30 sim steps. Při 30 Hz je to 1 decision za sekundu (každých 30 × 1/30 = 1 s).
+Wait — v sekci 4.3 píšeš "every 30 scout decision steps (effectively 150 simulation steps)". A scout query je každých 5 sim steps. Tak 30 scout decisions × 5 sim steps = 150 sim steps. Pokud 1 sim step = 1/30 s, pak 150 sim steps = 5 sekund.
+Tady je nekonzistence v práci samotné — v 4.2.2 (Hierarchical Control) říkáš "N=30 physics steps", ale v 4.3 (Multi-scale) říkáš "150 simulation steps". Jedno z toho je překlep nebo nepřesnost.
