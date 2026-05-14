@@ -4,114 +4,98 @@
 # All thresholds, weights and limits in one place.
 # Import: from reward_config import QUAD, FIXED, SHARED
 
-# ─── Shared parameters ──────────────────────────────────────────────────────
-# All values are FIXED — independent of map size.
-# NORM_DIST = 1000 in env_core.py normalises positions and distances in obs.
+# ─── Shared parameters (both scout and commander) ───────────────────────────
 SHARED = {
-    "survival_bonus":       0.02,  # per-step survival reward (felt even without fire)
-    "boundary_penalty":     1.5,
-    "boundary_extra":       0.5,
-    "crash_penalty":        -10,   # reduced from -50 — must not dominate the learning signal
-    "reward_clip_min":       -3.0,
-    "reward_clip_max":        3.0,
+    "survival_bonus":       0.02,  # per-step reward for staying alive
+    "boundary_penalty":     1.5,   # quadratic penalty near map edge
+    "boundary_extra":       0.5,   # additional penalty beyond boundary zone
+    "crash_penalty":        -10,   # one-time penalty on crash/death
+    "reward_clip_min":       -3.0, # per-step reward lower bound
+    "reward_clip_max":        3.0, # per-step reward upper bound
 }
 
 # ─── Quadcopter (Scout) ─────────────────────────────────────────────────────
 QUAD = {
-    # Map boundary — fixed, independent of map_bounds
-    "boundary_threshold_m":  150.0,
+    # Map boundary
+    "boundary_threshold_m":  150.0,  # distance from edge where penalty starts [m]
 
-    # Altitude — fixed range, map-independent
-    "alt_ideal_min":    40.0,   # aligned with ground_danger_alt — penalty starts below this
-    "alt_ideal_max":    80.0,   # force scout lower for better fire estimate
-    "alt_ceiling":     300.0,   # hard kill
-    "alt_sweet_min":    70.0,   # ideal operating band — lower bound
-    "alt_sweet_max":   100.0,   # lowered from 150 m — reward lower flight
-    "alt_sweet_bonus":   0.02,  # per-step bonus for flying in the sweet spot
+    # Altitude band — penalty outside [alt_ideal_min, alt_ideal_max]
+    "alt_ideal_min":    40.0,   # lower bound of penalty-free altitude [m]
+    "alt_ideal_max":    80.0,   # upper bound of penalty-free altitude [m]
+    "alt_ceiling":     300.0,   # instant kill above this altitude [m]
+    "alt_sweet_min":    70.0,   # lower bound of bonus altitude band [m]
+    "alt_sweet_max":   100.0,   # upper bound of bonus altitude band [m]
+    "alt_sweet_bonus":   0.02,  # per-step bonus inside [sweet_min, sweet_max]
 
-    # Mission — original values that worked (1.0/3.0 caused dive-crashes)
-    "fire_flat_bonus":   0.5,    # per-step bonus for fire visibility
-    "fire_intensity_k":  2.0,    # proportional to intensity
-    "fire_speed_pen":    0.01,   # penalty for speed over fire
+    # Fire observation rewards
+    "fire_flat_bonus":   0.5,    # per-step bonus when fire is visible in local map
+    "fire_intensity_k":  2.0,    # bonus proportional to mean fire intensity in FOV
+    "fire_speed_pen":    0.01,   # per-step penalty for speed while over fire (encourages hovering)
 
-    # Approach — potential-based shaping (dense gradient towards fire)
-    # Must be strong enough for the agent to FEEL departure from fire.
-    # At 10 m/s departure: 10 * 0.03 = -0.3/step penalty → -15.0 over 50 steps
-    "approach_k":        0.03,
+    # Approach shaping — potential-based dense gradient towards nearest fire
+    "approach_k":        0.03,   # reward = (prev_dist - curr_dist) × approach_k
 
-    # Compass follow — reward for heading towards fire (velocity · fire_dir)
-    # Distance-independent, pure directional signal.
-    "compass_follow_k":  0.25,
+    # Compass follow — reward for velocity aligned with fire direction
+    "compass_follow_k":  0.25,   # reward = dot(vel_dir, fire_dir) × compass_follow_k
 
-    # First discovery bonus
+    # One-time bonus when any scout first discovers fire
     "first_discovery_bonus": 1.0,
 
-    # Ground proximity — exponential penalty prevents dive-crashes
-    # ground_danger_alt must be >= alt_ideal_min for a consistent reward landscape
-    # Max fire reward: flat(0.5) + intensity_k(2.0)*0.5 = 1.5/step
-    # ground_danger_pen=5.0 at z=0: -5.0 >> +1.5 → diving never pays off
-    # at z=35 m (half of danger zone): -5.0*(0.5)^2 = -1.25 → still > fire reward
-    "ground_danger_alt":  70.0,   # same as alt_ideal_min
-    "ground_danger_pen":  5.0,    # reduced from 8.0 — less volatile, still outweighs fire reward
+    # Ground proximity — quadratic penalty below ground_danger_alt
+    # penalty = -ground_danger_pen × (1 - alt/ground_danger_alt)²
+    "ground_danger_alt":  20.0,   # altitude below which penalty is applied [m]
+    "ground_danger_pen":  5.0,    # max penalty magnitude (at alt=0)
 
-    # Separation — bonus for spacing between scouts
-    "separation_min_m":   30.0,   # below this distance: penalty (too close)
-    "separation_bonus":   0.05,   # per-step bonus when farther than separation_min_m
+    # Separation — encourages spacing between multiple scouts
+    "separation_min_m":   30.0,   # min distance for bonus; penalty below [m]
+    "separation_bonus":   0.05,   # per-step per-pair bonus/penalty
 
-    # Alt penalty
-    "alt_penalty":       0.05,  # flat penalty for flying outside the ideal range
+    # Altitude penalty — linear penalty per metre outside ideal band
+    "alt_penalty":       0.05,   # penalty = excess_metres × alt_penalty
 
-    # Exploration — bonus for visiting a new 50 m cell (scout motivation without fire)
+    # Exploration — one-time bonus for visiting a new 50 m grid cell
     "exploration_bonus":  0.1,
 
-    # Fire abandonment — penalty for flying away from previously seen fire.
-    # Applied only on transition fire_seen > threshold → fire_seen < threshold.
-    # Helps scouts stay near discovered fire (critical in multi-fire scenarios).
-    "fire_abandon_penalty": 1.0,  # scaled by previous intensity (max ~1.0/step)
-    "fire_abandon_threshold": 0.05,  # min intensity to count as "saw fire"
+    # Fire abandonment — penalty on transition from seeing fire to not seeing it
+    "fire_abandon_penalty": 1.0,    # penalty = prev_intensity × fire_abandon_penalty
+    "fire_abandon_threshold": 0.05, # min intensity to count as "seeing fire"
 }
 
 # ─── Fixed-wing (Commander) ──────────────────────────────────────────────────
 FIXED = {
     # Map boundary
-    "boundary_threshold_m":  200.0,
-    "boundary_extra_frac":      0.35,
+    "boundary_threshold_m":  200.0,    # distance from edge where penalty starts [m]
+    "boundary_extra_frac":      0.35,  # extra penalty fraction beyond boundary zone
 
-    # Altitude — fixed
-    "alt_ideal_min":    30.0,
-    "alt_ideal_max":    80.0,
-    "alt_ceiling":     200.0,
-    "alt_penalty":       0.02,   # per-metre above alt_ideal_max
+    # Altitude band — penalty outside [alt_ideal_min, alt_ideal_max]
+    "alt_ideal_min":    30.0,   # lower bound of penalty-free altitude [m]
+    "alt_ideal_max":    80.0,   # upper bound of penalty-free altitude [m]
+    "alt_ceiling":     200.0,   # instant kill above this altitude [m]
+    "alt_penalty":       0.02,  # linear penalty per metre outside ideal band
 
-    # Survival donut
+    # UNUSED in env_core.py — kept for backwards compatibility
     "donut_radius":    250.0,
     "donut_bonus":       0.05,
     "survival_base":     0.02,
     "rubber_band_k":     0.02,
 
-    # Water trigger bonus — FW receives reward for dropping near fire (ground-truth dist)
-    "water_trigger_dist":   50.0,      # radius [m] for fire-proximity bonus (200→50)
+    # UNUSED in env_core.py — kept for backwards compatibility
+    "water_trigger_dist":   50.0,
     "water_trigger_alt":    80.0,
     "water_trigger_bonus":    1.5,
     "water_trigger_thresh":   0.0,
-    "communication_range_m": 400.0,   # cross-attention message range (used in team reward)
-    "water_guidance_bonus": 1.0,       # max bonus for dropping directly over fire
-    "water_waste_penalty": 0.5,        # per-step penalty for open valve without hitting fire
+    "communication_range_m": 400.0,
+    "water_guidance_bonus": 1.0,
+    "water_waste_penalty": 0.5,        # per-step penalty for water drop that misses fire
 
-    # Fire approach — potential-based shaping towards nearest scout (fire proxy)
-    # Scouts hover near fire, so approach-to-scout ≈ approach-to-fire.
-    # At 15 m/s approach speed: 15 * 0.25 = +3.75/waypoint-step → strong gradient.
-    "fire_approach_k":  0.25,
+    # Fire approach — potential-based shaping towards nearest scout (proxy for fire)
+    "fire_approach_k":  0.25,          # reward = (prev_dist - curr_dist) × fire_approach_k
 
-    # Refill bonus
+    # UNUSED in env_core.py — kept for backwards compatibility
     "refill_state_bonus":  0.0,
     "refill_proximity_dist":  100.0,
     "refill_proximity_bonus":   0.05,
-
-    # Blending survival vs mission
     "survival_weight":  0.2,
     "mission_weight":   0.8,
-
-    # Scale
     "reward_scale":     0.5,
 }

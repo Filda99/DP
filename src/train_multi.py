@@ -779,11 +779,11 @@ def train_multi(resume_scout="", resume_cmdr="",
     # -----------------------------------------------------------------
     #  Hyperparameters
     # -----------------------------------------------------------------
-    N_QUADS            = 1
-    N_FIXED            = 3
+    N_QUADS            = 3
+    N_FIXED            = 5
     grid_size_m        = 1000.0
     map_size_range     = (800, 1500)  # domain randomisation like train_scout
-    n_fires_range      = (1, 1)      # 1 fire — focused fine-tuning
+    n_fires_range      = (1, 3)      # 1 fire — focused fine-tuning
     num_episodes       = 5_000
     max_steps          = 1000        # longer episodes — FW needs time for refill cycles
     steps_range        = (1000,1500)        # fixed length
@@ -976,7 +976,7 @@ def train_multi(resume_scout="", resume_cmdr="",
     scout_reward_history     = []
 
     save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "..", "saved_models", "v7_finetune")
+                            "..", "saved_models", "v10_finetune")
     os.makedirs(save_dir, exist_ok=True)
     print(f"Checkpoints -> {save_dir}\n")
 
