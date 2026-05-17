@@ -1,11 +1,12 @@
 # Evaluation scripts
 
-Two headless evaluation scripts — no GIFs, pure metrics + CSV.
+Headless evaluation scripts — no GIFs, pure metrics + CSV.
 
 | Script | Purpose |
-|--------|---------|
+|--------|--------|
 | `eval_full_team.py` | Thesis result table: multi-config sweep (map size × scout count) |
-| `demo_scout.py` (in `demos/scout/`) | Scout-only evaluation: discovery rate, coverage |
+| `eval_scout.py` | Scout-only headless evaluation: discovery, coverage, separation metrics |
+| `eval_3scouts_multifire.py` | 3 scouts + 1 FW on 3–4 fires — GIF + analysis per seed |
 
 ---
 

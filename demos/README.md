@@ -20,10 +20,10 @@ cd ~/tmp/DP
 python demos/scout/demo_scout.py
 
 # Full team demo — scouts + commander
-python demos/full_team/demo_both_training.py
+python demos/full_team/demo_both.py
 
-# Quantitative evaluation — 30 episodes
-python demos/evaluation/demo_eval_2scouts.py --episodes 30
+# Quantitative evaluation — 50 episodes
+python demos/evaluation/eval_full_team.py --episodes 50
 ```
 
 All scripts auto-detect the latest checkpoint from `saved_models/`. Use `--model` / `--scout` / `--commander` to specify a path.

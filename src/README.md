@@ -13,6 +13,8 @@
 | `fire_grid.py` | Cellular automaton fire spread model |
 | `grid_mapper.py` | World ↔ grid coordinate mapping utilities |
 | `map_importer.py` | OSM terrain loading (`load_environment_from_osm_cache`) |
+| `regional_cache.py` | Offline OSM data cache (pre-downloaded GeoPackage files) |
+| `commander_control.py` | Shared waypoint controller for FW commander (scripted refill, NN waypoint, PD heading) |
 | `drones/` | Per-drone physics controllers (quadrotor, fixed-wing) |
 
 ---

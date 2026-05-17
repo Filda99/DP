@@ -252,21 +252,21 @@ tmux attach -t train
 
 ---
 
-## Demo (`demo_both_training.py`)
+## Demo — full team (`demo_both.py`)
 
 Vizualizace natrénovaných modelů. Defaultně bere `saved_models/multi/scout_best.pt` + `cmdr_best.pt`.
 
 ### Spuštění s nejlepšími modely
 ```bash
 cd ~/tmp/DP
-python demos/MAPPO_easiestScenario/demo_both_training.py
+python demos/full_team/demo_both.py
 ```
 
 ### Demo s konkrétním checkpointem
-Uprav cesty v `demo_both_training.py` (řádky 35–36):
-```python
-MODEL_SCOUT     = os.path.join(project_root, "saved_models", "multi", "scout_b0070.pt")
-MODEL_COMMANDER = os.path.join(project_root, "saved_models", "multi", "cmdr_b0070.pt")
+```bash
+python demos/full_team/demo_both.py \
+    --scout     saved_models/multi/scout_b0070.pt \
+    --commander saved_models/multi/cmdr_b0070.pt
 ```
 
 ---

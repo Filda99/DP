@@ -1,11 +1,21 @@
-# demo_both_training — Heterogeneous team: Scout + Commander (visual demo)
+# full_team/ — Heterogeneous team demos: Scout + Commander
 
-Visualisation demo for the **full heterogeneous team**: N quadcopter scouts +
-1 fixed-wing commander. The commander is controlled by a trained `CommanderActor`
+Visualisation demos for the **full heterogeneous team**: N quadcopter scouts +
+N fixed-wing commanders. The commander is controlled by a trained `CommanderActor`
 network and navigates toward fire exclusively through scout messages (cross-attention).
-Scouts are frozen (`scout_b0030.pt`); the commander is the component under training.
 
-## Outputs
+## Scripts
+
+| Script | Purpose |
+|---|---|
+| `demo_both.py` | Interactive visual demo — GIF + analysis PNG per episode |
+| `demo_final_collage.py` | Thesis figure generator — saves frame snapshots at checkpoint steps + collage |
+
+---
+
+## demo_both.py
+
+### Outputs
 
 | File | Description |
 |---|---|
@@ -21,27 +31,27 @@ Scouts are frozen (`scout_b0030.pt`); the commander is the component under train
 | `S` | Each scout's survival (✓ / ✗) |
 | `R_cmdr` | Commander total reward for the episode |
 
-## Usage
+### Usage
 
 ```bash
 cd ~/tmp/DP
 
 # Default — auto-detect latest checkpoints
-python demos/full_team/demo_both_training.py
+python demos/full_team/demo_both.py
 
 # 30 episodes from seed=200 with specific checkpoints
-python demos/full_team/demo_both_training.py \
+python demos/full_team/demo_both.py \
     --scout     saved_models/multi/scout_b0030.pt \
     --commander saved_models/multi/cmdr_b0780.pt \
     --episodes  30 \
     --seed-start 200
 
 # GIF for every episode
-python demos/full_team/demo_both_training.py \
+python demos/full_team/demo_both.py \
     --episodes 10 --seed-start 200 --gif-all
 
 # Fast run without GIF
-python demos/full_team/demo_both_training.py \
+python demos/full_team/demo_both.py \
     --episodes 30 --seed-start 200 --no-gif
 ```
 
@@ -78,3 +88,27 @@ The compass is computed from `msg[2] > 0.01` (scout sees fire).
 - The FW operates in **waypoint mode**: every 50 steps the NN outputs a new waypoint;
   between waypoints a heading controller tracks the target
 - The refill zone is on the opposite side of the map from the fire (~1 000 m away)
+
+---
+
+## demo_final_collage.py
+
+Runs the full-team simulation and saves individual PNG frames at configurable
+checkpoint steps plus a final collage image (PNG + PDF). Intended for thesis figures.
+
+### Usage
+
+```bash
+python demos/full_team/demo_final_collage.py
+```
+
+Configuration is done by editing constants at the top of the script
+(`N_QUADS`, `N_FIXED`, `GRID_SIZE`, `MAX_STEPS`, `EPISODE_SEEDS`, etc.).
+
+### Outputs
+
+| File | Description |
+|---|---|
+| `step_{NNNN}.png` | Individual frame snapshot at each checkpoint step |
+| `collage_seed{N}.png` | Combined collage of all checkpoint frames |
+| `collage_seed{N}.pdf` | PDF version of the collage |
