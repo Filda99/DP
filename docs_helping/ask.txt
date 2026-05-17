@@ -57,3 +57,248 @@ Roll/pitch/airspeed command saturation limits
 Tabulka A.5 — Quadcopter PID (pokud máš oddělený quadcopter model):
 
 všechny PID gainy
+
+
+% ======================================================================
+% APPENDIX A — SIMULATION HYPERPARAMETERS (LaTeX)
+% ======================================================================
+
+\appendix
+\chapter{Simulation Hyperparameters}
+\label{app:hyperparams}
+
+All numerical constants used in the simulation environment are listed below.
+Values were tuned empirically unless stated otherwise.
+
+% ------------------------------------------------------------------
+\section{Fire Propagation Parameters}
+\label{app:fire-propagation}
+
+\begin{table}[h]
+\centering
+\caption{Fire grid propagation parameters.}
+\label{tab:fire-propagation}
+\begin{tabular}{llll}
+\toprule
+\textbf{Symbol} & \textbf{Parameter} & \textbf{Value} & \textbf{Unit} \\
+\midrule
+$\Delta t$ & Simulation time step & $0.1$ & s \\
+$\Delta t_{\text{physics}}$ & PyBullet physics step & $1/30$ & s \\
+$c$ & Cell size & $5.0$ & m \\
+$\alpha$ & Distance decay coefficient & $1.0$ & -- \\
+$k_{\text{wind}}$ & Wind spread coefficient & $1.5$ & -- \\
+$k_{\text{slope}}$ & Slope coefficient & $1.0$ & -- (flat terrain) \\
+$\lambda_b$ & Base spread rate & $0.02$ & cells/s \\
+& \quad (physical spread speed) & $0.1$ & m/s \\
+\midrule
+\multicolumn{4}{l}{\textit{Fuel types (per m$^2$):}} \\
+$F_0^{\text{grass}}$ & Initial fuel (grass) & $0.3$ & -- \\
+$\beta^{\text{grass}}$ & Burn rate (grass) & $0.01$ & s$^{-1}$m$^{-2}$ \\
+$F_0^{\text{forest}}$ & Initial fuel (forest) & $0.8$ & -- \\
+$\beta^{\text{forest}}$ & Burn rate (forest) & $0.0067$ & s$^{-1}$m$^{-2}$ \\
+$F_0^{\text{building}}$ & Initial fuel (building) & $0.9$ & -- \\
+$\beta^{\text{building}}$ & Burn rate (building) & $0.0015$ & s$^{-1}$m$^{-2}$ \\
+$F_0^{\text{water}}$ & Initial fuel (water body) & $0.0$ & -- \\
+\midrule
+\multicolumn{4}{l}{\textit{Neighbourhood \& ignition:}} \\
+& Neighbourhood type & Moore (8-connected) & -- \\
+& Ignition formula & $P = 1 - e^{-\lambda_b \cdot e^{-\alpha d} \cdot w_{\text{gain}} \cdot \Delta t}$ & -- \\
+& Moisture suppression & $P_{\text{eff}} = P \cdot (1-M)^2$ & -- \\
+& Intensity formula & $I = \text{clip}(F \cdot (1-M)^{1.5},\; 0,\; 1)$ & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ------------------------------------------------------------------
+\section{Fire--Atmosphere Coupling}
+\label{app:fire-atmo}
+
+\begin{table}[h]
+\centering
+\caption{Fire-induced convection (buoyant plume) parameters.}
+\label{tab:fire-atmo}
+\begin{tabular}{llll}
+\toprule
+\textbf{Symbol} & \textbf{Parameter} & \textbf{Value} & \textbf{Unit} \\
+\midrule
+$k_{\text{conv}}$ & Convection gain & $8.0$ & m/s \\
+$\sigma_{\text{plume}}$ & Plume radius factor & $2.0$ & cells \\
+& \quad (effective radius = $\sigma_{\text{plume}} \cdot c$) & $10.0$ & m \\
+$H_{\text{scale}}$ & Vertical influence height & $100.0$ & m \\
+$k_{\text{radial}}$ & Radial flow factor & $0.3$ & -- \\
+$\mathcal{C}$ & Active neighbourhood & $10 \times 10$ cells & ($\pm 5$) \\
+\midrule
+\multicolumn{4}{l}{\textit{Height taper function:}} \\
+& $z_{\text{norm}} < 0.3$: & $h_t = z_{\text{norm}} / 0.3$ & (linear ramp-up) \\
+& $z_{\text{norm}} \geq 0.3$: & $h_t = (1 - z_{\text{norm}}) / 0.7$ & (linear decay) \\
+\midrule
+\multicolumn{4}{l}{\textit{Updraft formula:}} \\
+& $w = I \cdot k_{\text{conv}} \cdot h_t \cdot \exp\!\bigl(-\tfrac{1}{2}(r/\sigma_{\text{plume}})^2\bigr)$ & & m/s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ------------------------------------------------------------------
+\section{Water Suppression}
+\label{app:water-supp}
+
+\begin{table}[h]
+\centering
+\caption{Water drop and suppression parameters.}
+\label{tab:water-supp}
+\begin{tabular}{llll}
+\toprule
+\textbf{Symbol} & \textbf{Parameter} & \textbf{Value} & \textbf{Unit} \\
+\midrule
+$C_{\text{tank}}$ & Tank capacity & $200$ & L \\
+$\dot{V}_{\text{flow}}$ & Flow rate & $100$ & L/s \\
+$H_{\max}$ & Max effective drop altitude & $150$ & m \\
+\midrule
+\multicolumn{4}{l}{\textit{Altitude effectiveness:}} \\
+$\eta(z)$ & Effectiveness & $\max\bigl(0,\; 1 - (z/150)^2\bigr)$ & -- \\
+& \quad At $z=40$\,m & $0.93$ & -- \\
+& \quad At $z=60$\,m & $0.84$ & -- \\
+& \quad At $z=100$\,m & $0.56$ & -- \\
+& \quad At $z=140$\,m & $0.13$ & -- \\
+\midrule
+\multicolumn{4}{l}{\textit{Spatial dispersion (Gaussian):}} \\
+$r_{\text{eff}}(z)$ & Effective radius & $10 + 0.3z$ & m \\
+$\sigma_{\text{cells}}$ & Gaussian $\sigma$ & $r_{\text{eff}} / (c \cdot 2.5)$ & cells \\
+& Influence radius & $3\sigma_{\text{cells}}$ & cells \\
+& Scaling factor & $10.0$ & -- \\
+\midrule
+\multicolumn{4}{l}{\textit{Grid-level suppression (per cell per step):}} \\
+$\alpha_{\text{supp}}$ & Intensity suppression & $M_{\text{new}} \cdot 0.8$ & -- \\
+& Extinguishment & $P(\text{ext}) = M_{\text{new}}$ & (stochastic) \\
+\midrule
+$\varepsilon_{\text{evap}}$ & Moisture evaporation (burning) & $0.005 \cdot \Delta t$ & per step \\
+$\varepsilon_{\text{evap}}$ & Moisture evaporation (non-burning) & $0.01 \cdot \Delta t$ & per step \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ------------------------------------------------------------------
+\section{Fixed-Wing Autopilot (Kinematic Guidance Model)}
+\label{app:fw-autopilot}
+
+\begin{table}[h]
+\centering
+\caption{Fixed-wing guidance model parameters.}
+\label{tab:fw-autopilot}
+\begin{tabular}{llll}
+\toprule
+\textbf{Symbol} & \textbf{Parameter} & \textbf{Value} & \textbf{Unit} \\
+\midrule
+\multicolumn{4}{l}{\textit{Controller gains:}} \\
+$K_{p,V_a}$ & Airspeed proportional gain & $2.0$ & s$^{-1}$ \\
+$K_{p,\gamma}$ & Flight-path angle gain & $5.0$ & s$^{-1}$ \\
+$K_{p,\phi}$ & Roll angle proportional gain & $5.0$ & s$^{-2}$ \\
+$K_{d,\phi}$ & Roll rate derivative gain & $2.0$ & s$^{-1}$ \\
+$K_{p,h}$ & Height proportional gain & $2.0$ & s$^{-1}$ \\
+\midrule
+\multicolumn{4}{l}{\textit{Speed limits:}} \\
+$V_{\max}$ & Maximum airspeed & $30.0$ & m/s \\
+$V_{\min}$ & Minimum airspeed & $10.0$ & m/s \\
+$V_{\text{stall}}$ & Stall speed & $7.0$ & m/s \\
+$V_0$ & Initial / target airspeed & $15.0$ & m/s \\
+\midrule
+\multicolumn{4}{l}{\textit{Attitude limits:}} \\
+$\phi_{\max}$ & Maximum roll angle & $45$ & deg \\
+$\gamma_{\max}$ & Maximum pitch command & $\pm 15$ & deg \\
+$\gamma_{\text{stall}}$ & Stall recovery pitch & $-15$ & deg \\
+\midrule
+\multicolumn{4}{l}{\textit{Stall behaviour:}} \\
+& Stall trigger & $V_a < 7.0$ m/s & -- \\
+& Roll authority in stall & $\times 0.5$ & -- \\
+& Gravity assist & $-g \sin\gamma$ added to $\dot{V}_a$ & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ------------------------------------------------------------------
+\section{Quadcopter Controller (High-Level Velocity Model)}
+\label{app:quad-controller}
+
+\begin{table}[h]
+\centering
+\caption{Quadcopter velocity controller parameters.}
+\label{tab:quad-controller}
+\begin{tabular}{llll}
+\toprule
+\textbf{Symbol} & \textbf{Parameter} & \textbf{Value} & \textbf{Unit} \\
+\midrule
+\multicolumn{4}{l}{\textit{Velocity limits:}} \\
+$V_{xy,\max}$ & Max horizontal velocity & $15.0$ & m/s \\
+$V_{z,\max}$ & Max vertical velocity & $4.0$ & m/s \\
+$\dot{\psi}_{\max}$ & Max yaw rate & $2.5$ & rad/s \\
+$V_{\text{wind,max}}$ & Wind resistance threshold & $14.7$ & m/s \\
+\midrule
+\multicolumn{4}{l}{\textit{Controller gains ($K_p$ matrix):}} \\
+$K_{p,xy}$ & Horizontal velocity gain & $6.0$ & s$^{-1}$ \\
+$K_{p,z}$ & Vertical velocity gain & $25.0$ & s$^{-1}$ \\
+$K_{p,\psi}$ & Yaw rate gain & $1.0$ & -- \\
+$K_{p,\text{att}}$ & Attitude stabilisation (roll/pitch) & $5.0$ & s$^{-2}$ \\
+$K_{d,\text{att}}$ & Attitude damping (roll/pitch) & $1.0$ & s$^{-1}$ \\
+\midrule
+\multicolumn{4}{l}{\textit{Force computation:}} \\
+$F_x, F_y$ & $= m \cdot K_{p,xy} \cdot (v_{\text{target}} - v_{\text{current}})$ & & N \\
+$F_z$ & $= m \cdot K_{p,z} \cdot (v_{z,\text{target}} - v_z) + mg$ & & N \\
+\midrule
+\multicolumn{4}{l}{\textit{Physical parameters:}} \\
+$m$ & Mass & $0.5$ & kg \\
+$C_d$ & Drag coefficient (wind $> V_{\text{wind,max}}$) & $0.8$ & -- \\
+$A$ & Reference area & $0.05$ & m$^2$ \\
+$\rho$ & Air density & $1.225$ & kg/m$^3$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ------------------------------------------------------------------
+\section{Training Hyperparameters}
+\label{app:training}
+
+\begin{table}[h]
+\centering
+\caption{Multi-agent PPO training hyperparameters.}
+\label{tab:training}
+\begin{tabular}{llll}
+\toprule
+\textbf{Symbol} & \textbf{Parameter} & \textbf{Value} & \textbf{Unit} \\
+\midrule
+\multicolumn{4}{l}{\textit{Environment:}} \\
+& Number of scouts ($N_{\text{quad}}$) & $3$ & -- \\
+& Number of fixed-wing ($N_{\text{FW}}$) & $5$ & -- \\
+& Grid size (training) & $800$--$1500$ & m \\
+& Number of fires & $1$--$3$ & -- \\
+& Max steps per episode & $1000$--$1500$ & -- \\
+\midrule
+\multicolumn{4}{l}{\textit{Commander (waypoint-based):}} \\
+& Waypoint range & $50.0$ & m \\
+& Waypoint steps & $30$ & physics steps \\
+& Waypoint reached distance & $30.0$ & m \\
+& Commander decisions per episode & $\lfloor 1000/30 \rfloor = 33$ & -- \\
+\midrule
+\multicolumn{4}{l}{\textit{PPO:}} \\
+$\gamma$ & Discount factor & $0.99$ & -- \\
+$\lambda_{\text{GAE}}$ & GAE lambda & $0.95$ & -- \\
+$\epsilon_{\text{clip}}$ & Clip coefficient & $0.2$ & -- \\
+& Update epochs & $4$ & -- \\
+$\eta_{\text{scout}}$ & Learning rate (scout) & $10^{-4}$ & -- \\
+$\eta_{\text{cmdr}}$ & Learning rate (commander) & $10^{-4}$ & -- \\
+$\eta_{\text{critic}}$ & Learning rate (critic) & $5 \times 10^{-4}$ & -- \\
+\midrule
+\multicolumn{4}{l}{\textit{Network architecture:}} \\
+& Scout hidden dim & $128$ & -- \\
+& Commander hidden dim & $64$ & -- \\
+& Scout message dim & $5$ & -- \\
+& Entropy coefficient (scout) & $0.002$ & -- \\
+& Entropy coefficient (commander) & $0.02$ & -- \\
+\midrule
+\multicolumn{4}{l}{\textit{Parallelisation:}} \\
+& Workers & $15$ & -- \\
+& Episodes per worker & $2$ & -- \\
+& Episodes per batch & $30$ & -- \\
+& BPTT chunk length & $128$ & steps \\
+\bottomrule
+\end{tabular}
+\end{table}
