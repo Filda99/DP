@@ -1,89 +1,59 @@
-Nejdřív si pojďme spočítat čísla, abych měl jistotu, že sedí.
-Co víme z práce:
+1. Appendix s koeficienty — co tam musí být
+Vytvoř Appendix A: Simulation Hyperparameters nebo Appendix A: Model Parameters s několika tabulkami. Z toho, co máš v textu, jsem našel tyhle „magic numbers", které musí někde žít:
+Tabulka A.1 — Fire Propagation Parameters:
 
-PyBullet běží na 240 Hz (uvedeno v sekci 4.4.3 — "240 Hz" u PD controlleru) — to znamená 1 physics step = 1/240 s ≈ 4.17 ms.
-Ale počkat — v sekci 4.3 (Multi-scale Temporal Resolution) říkáš, že scout query je každých 5 simulation steps a commander každých 30 scout decision steps = 150 simulation steps. Takže 1 simulation step v té úvaze není 1/240 s.
-Section 3.3.4 (Water Suppression Dynamics) — uvádíš:
+λb\lambda_b
+λb​ — base spread rate (per fuel type)
+λmax⁡\lambda_{\max}
+λmax​ — max spread rate s větrem
+Δt\Delta t
+Δt — simulation timestep (130\frac{1}{30}
+301​ s)
+β\beta
+β — fuel burn rate per step
+Neighborhood definition (Moore? Von Neumann? Rozšířený?)
+Initial fuel range F0F_0
+F0​
+Slope factor (= 0 v tvém případě, ale měl bys to říct)
 
-Flow rate: 100 L/s
-Simulation timestep Δt = 1/30 s
-Yields approximately 3.3 L per simulation step
-Tank capacity: 200 L
-"Continuously dropping commander exhausts its payload in 2 s (60 simulation steps at 30 Hz)"
+Tabulka A.2 — Fire-Atmosphere Coupling:
 
-Takže v práci je fire simulation timestep = 1/30 s (30 Hz), tank se vyprázdní za 2 sekundy (60 sim steps).
-Commander decision frequency — 1 decision každých 30 sim steps. Při 30 Hz je to 1 decision za sekundu (každých 30 × 1/30 = 1 s).
-Wait — v sekci 4.3 píšeš "every 30 scout decision steps (effectively 150 simulation steps)". A scout query je každých 5 sim steps. Tak 30 scout decisions × 5 sim steps = 150 sim steps. Pokud 1 sim step = 1/30 s, pak 150 sim steps = 5 sekund.
-Tady je nekonzistence v práci samotné — v 4.2.2 (Hierarchical Control) říkáš "N=30 physics steps", ale v 4.3 (Multi-scale) říkáš "150 simulation steps". Jedno z toho je překlep nebo nepřesnost.
+kconvk_{conv}
+kconv​ — convection gain
+σ\sigma
+σ — plume radius factor
+HscaleH_{scale}
+Hscale​ — vertical scale height
+Active neighborhood C\mathcal{C}
+C rozsah
 
-===========================================================================
-ODPOVĚĎ — jak to reálně je v kódu:
-===========================================================================
+Tabulka A.3 — Water Suppression:
 
-V kódu existuje JEDEN hlavní timestep — NE 240 Hz.
+V˙flow=100\dot{V}_{flow} = 100
+V˙flow​=100 L/s
+Tank capacity = 200 L
+Hmax=200H_{max} = 200
+Hmax​=200 m
+σ(z)\sigma(z)
+σ(z) — funkční forma (lineární? jaká konstanta?)
+αsupp\alpha_{supp}
+αsupp​ — suppression coefficient
+Moisture evaporation rate = 1%/s
+Probabilistic extinguishment threshold a probability
 
-  simulation.py:
-    self.fps = 30
-    self.timestep = 1/self.fps          →  dt = 1/30 s = 33.3 ms
+Tabulka A.4 — Fixed-Wing Autopilot Gains (PID):
 
-  PyBullet:
-    p.setTimeStep(self.timestep)        →  PyBullet physics runs at 30 Hz
+kpVak_{p V_a}
+kpVa​​, kpγk_{p\gamma}
+kpγ​, kpϕk_{p\phi}
+kpϕ​, kdϕk_{d\phi}
+kdϕ​
+VstallV_{stall}
+Vstall​
+γ\gamma
+γ recovery angle (–30°)
+Roll/pitch/airspeed command saturation limits
 
-  env_core.py step():
-    frame_skip = 5
-    for _ in range(frame_skip):
-        sim.step_simulation()           →  5× physics sub-steps per RL step
+Tabulka A.5 — Quadcopter PID (pokud máš oddělený quadcopter model):
 
-Takže:
-
-  1 physics sub-step     = 1/30 s = 33.3 ms     (PyBullet timestep)
-  1 RL step (= 1 "step") = 5 × 1/30 s = 1/6 s = 166.7 ms
-  Scout rozhoduje         = KAŽDÝ RL step (NENÍ žádné další dělení)
-  Commander rozhoduje     = každých 30 RL stepů = 30 × 1/6 s = 5.0 s
-
-Komentář v kódu "5 sub-steps at ~240 Hz physics" JE CHYBNÝ — PyBullet
-běží na 30 Hz (setTimeStep = 1/30), ne 240 Hz. 5 × 30 Hz = 150 Hz
-effective sub-step rate, ne 240 Hz. Tento komentář je pozůstatek z doby
-kdy se uvažovalo o 240 Hz, ale reálně nastavení je 30 Hz.
-
-Přepočet:
-  1 RL step              = 5/30 s = 0.1667 s
-  FW max_speed = 30 m/s  → za 1 RL step uletí 30 × 0.1667 = 5.0 m
-  Za 30 RL stepů (1 WP segment) = 5.0 × 30 = 150 m (pokud letí rovně)
-  Ale WP_RANGE = 50 m, takže FW typicky dosáhne waypoint dřív než za 30 stepů.
-
-Water:
-  drain = 100 L/s × dt = 100 × 1/30 = 3.33 L per physics sub-step
-  Za 1 RL step (5 sub-stepů): 5 × 3.33 = 16.67 L
-  Tank 200 L → prázdný za 200/16.67 = 12 RL stepů = 12 × 0.1667 s = 2.0 s  ✓
-
-Celková doba epizody:
-  max_steps = 1000 RL stepů = 1000 × 0.1667 s = 166.7 s ≈ 2 min 47 s sim-time
-
-===========================================================================
-CO JE V TEXTU ŠPATNĚ (a jak to opravit):
-===========================================================================
-
-1) "PyBullet at 240 Hz" → ŠPATNĚ. Kód nastavuje p.setTimeStep(1/30).
-   PyBullet physics běží na 30 Hz. Komentář v env_core.py "~240 Hz" je
-   taky špatně. Opravit na 30 Hz, nebo na "150 physics sub-steps/s"
-   (5 sub-steps × 30 Hz).
-
-2) "Scout query every 5 simulation steps" → Záleží co myslíš "simulation
-   step". Scout rozhoduje KAŽDÝ RL step. Jeden RL step = 5 physics
-   sub-stepů. Takže scout = 1 decision per RL step = 6 Hz.
-
-3) "Commander every 30 scout decision steps (150 sim steps)" →
-   Commander = 30 RL stepů = 30 × 5 = 150 physics sub-stepů. To sedí.
-   Ale v reálném čase: 150 × (1/30 s) = 5.0 s per waypoint decision.
-
-4) V 4.2.2 "N=30 physics steps" → ŠPATNĚ pokud myslíš physics sub-steps.
-   Je to N=30 RL steps = 150 physics sub-steps. Opravit na "N=30 RL
-   decision steps".
-
-SHRNUTÍ — konzistentní terminologie pro text:
-  - Physics engine:     30 Hz (dt = 1/30 s)
-  - RL step:            5 physics steps = 1/6 s ≈ 6 Hz
-  - Scout decision:     every RL step = 6 Hz
-  - Commander decision: every 30 RL steps = 0.2 Hz (5 s period)
-  - frame_skip = 5:     between each RL decision, physics simulates 5×
+všechny PID gainy
