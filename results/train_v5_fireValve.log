@@ -1,0 +1,314 @@
+nohup: ignoring input
+======================================================================
+  Multi-Agent Training: Scout (frame-by-frame) + Commander (waypoint)
+======================================================================
+pybullet build time: Mar 10 2026 14:33:15
+Device: cpu
+
+scout_self_dim   = 16
+fixed_self_dim   = 19
+max_steps        = 1000
+waypoint_steps   = 30
+waypoint_range   = 200.0m
+num_decisions    = 33 (commander)
+
+ScoutActor params:  323,320
+  Loaded scout from /homes/eva/xj/xjahnf00/tmp/DP/results/TrainingQuad/050626_TrainingMultipleScoutsOnMultipleFires/scout_b0120.pt
+Commander params:   101,706
+  Loaded commander from /homes/eva/xj/xjahnf00/tmp/DP/saved_models/v4_multiRefill/cmdr_best.pt
+  Reset action_logstd for fresh exploration
+  Re-init encoder weights for refill compass dims (11-12)
+  Scout FROZEN for first 999999 batches
+ScoutCritic params: 118,657
+CmdrCritic params:  30,849
+  CmdrCritic weights re-initialised (--reset-cmdr-critic)
+Checkpoints -> /homes/eva/xj/xjahnf00/tmp/DP/src/../saved_models/v5_fireValve
+
+   [CURRICULUM] Batch 1: phase 1 (map=(1200.0, 1200.0), waste_pen=0.0)
+14:47:23 | Batch 0001 (Ep 00030) | R:   -126.9 (  -126.9)  Scout_R:   +79.4  Cmdr_R:  -206.3  Scout:100% Cmdr:99%  scout:[survived=120] cmdr:[survived=89 boundary=1] refills=122  NN_dec=2861/2970  fire: peak=102 final=74 supp=28 ext=29.2  70.4s
+   Cmdr reward breakdown: r_extinguish=+160.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 663 total, 481 hit, 182 miss (73% accuracy)  alt=58m [42-80]  dist=41m [3-89]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0125+/-0.9912 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0168+/-0.2340 [0.0128,4.1916] | adv: 0.1697+/-0.2176 | alive=690/726 | bc_coef=0.497
+14:48:55 | Batch 0002 (Ep 00060) | R:   -513.6 (  -320.2)  Scout_R:   +92.3  Cmdr_R:  -605.9  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=191  NN_dec=2819/2970  fire: peak=122 final=101 supp=21 ext=31.7  74.5s
+   Cmdr reward breakdown: r_extinguish=+168.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 712 total, 506 hit, 206 miss (71% accuracy)  alt=56m [41-80]  dist=44m [2-97]
+   New best! rolling avg = -320.2
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.2802+/-1.3233 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0095+/-0.1349 [0.4918,1.6001] | adv: 0.1475+/-0.5050 | alive=699/726 | bc_coef=0.493
+14:50:25 | Batch 0003 (Ep 00090) | R:   -972.2 (  -742.9)  Scout_R:  -103.9  Cmdr_R:  -868.3  Scout:100% Cmdr:99%  scout:[survived=119 ceiling=1] cmdr:[survived=89 boundary=1] refills=132  NN_dec=2833/2970  fire: peak=126 final=116 supp=10 ext=25.1  71.1s
+   Cmdr reward breakdown: r_extinguish=+117.000  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 474 total, 351 hit, 123 miss (74% accuracy)  alt=59m [41-80]  dist=42m [6-92]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0008+/-0.9789 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0063+/-0.1963 [0.2412,3.9525] | adv: 0.2602+/-0.6627 | alive=726/726 | bc_coef=0.490
+14:51:56 | Batch 0004 (Ep 00120) | R:   -185.7 (  -578.9)  Scout_R:   +49.0  Cmdr_R:  -234.6  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=155  NN_dec=2856/2970  fire: peak=105 final=65 supp=40 ext=29.4  73.2s
+   Cmdr reward breakdown: r_extinguish=+163.000  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 724 total, 489 hit, 235 miss (68% accuracy)  alt=56m [42-77]  dist=43m [2-97]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.1864+/-0.5866 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0015+/-0.1823 [0.1178,2.5706] | adv: 0.1123+/-0.3744 | alive=716/726 | bc_coef=0.487
+14:53:26 | Batch 0005 (Ep 00150) | R:  -1010.3 (  -598.0)  Scout_R:   +66.7  Cmdr_R: -1077.0  Scout:100% Cmdr:98%  scout:[survived=120] cmdr:[survived=87 boundary=3] refills=219  NN_dec=2719/2970  fire: peak=156 final=125 supp=30 ext=24.4  71.3s
+   Cmdr reward breakdown: r_extinguish=+134.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+10.000  r_spread=+0.000
+   Water drops: 573 total, 403 hit, 170 miss (70% accuracy)  alt=57m [39-79]  dist=42m [4-107]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.0493+/-0.9096 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0138+/-0.1582 [0.3572,2.2345] | adv: 0.0172+/-0.9162 | alive=697/726 | bc_coef=0.483
+14:54:53 | Batch 0006 (Ep 00180) | R:   -691.9 (  -851.1)  Scout_R:   -31.2  Cmdr_R:  -660.7  Scout:100% Cmdr:99%  scout:[survived=120] cmdr:[survived=89 boundary=1] refills=125  NN_dec=2850/2970  fire: peak=146 final=126 supp=20 ext=23.9  69.7s
+   Cmdr reward breakdown: r_extinguish=+123.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 523 total, 371 hit, 152 miss (71% accuracy)  alt=57m [37-80]  dist=42m [2-94]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.1180+/-0.9326 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0161+/-0.1501 [0.6190,2.7451] | adv: -0.1733+/-1.2537 | alive=661/726 | bc_coef=0.480
+14:56:23 | Batch 0007 (Ep 00210) | R:   -645.7 (  -668.8)  Scout_R:   -76.2  Cmdr_R:  -569.5  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=186  NN_dec=2820/2970  fire: peak=141 final=107 supp=34 ext=28.2  71.6s
+   Cmdr reward breakdown: r_extinguish=+132.000  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 560 total, 396 hit, 164 miss (71% accuracy)  alt=56m [40-80]  dist=41m [5-93]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.1708+/-0.7822 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9920+/-0.1515 [0.2296,2.0680] | adv: 0.1032+/-0.7953 | alive=686/726 | bc_coef=0.477
+14:57:56 | Batch 0008 (Ep 00240) | R:   -668.2 (  -656.9)  Scout_R:  -312.9  Cmdr_R:  -355.3  Scout:100% Cmdr:98%  scout:[survived=120] cmdr:[survived=88 boundary=2] refills=146  NN_dec=2822/2970  fire: peak=113 final=86 supp=27 ext=24.9  73.8s
+   Cmdr reward breakdown: r_extinguish=+128.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+11.667  r_spread=+0.000
+   Water drops: 604 total, 385 hit, 219 miss (64% accuracy)  alt=56m [39-79]  dist=45m [8-87]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.0922+/-0.9429 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0009+/-0.1891 [0.2944,2.3156] | adv: 0.0091+/-0.8990 | alive=726/726 | bc_coef=0.473
+14:59:28 | Batch 0009 (Ep 00270) | R:   -725.1 (  -696.6)  Scout_R:   +19.7  Cmdr_R:  -744.8  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=89 boundary=1] refills=203  NN_dec=2794/2970  fire: peak=128 final=99 supp=29 ext=24.9  74.9s
+   Cmdr reward breakdown: r_extinguish=+136.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+20.000  r_spread=+0.000
+   Water drops: 618 total, 409 hit, 209 miss (66% accuracy)  alt=56m [41-79]  dist=43m [3-93]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.1019+/-1.2278 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9900+/-0.1653 [0.3078,2.7571] | adv: 0.1368+/-0.6613 | alive=645/726 | bc_coef=0.470
+15:00:55 | Batch 0010 (Ep 00300) | R:   -497.9 (  -611.5)  Scout_R:  -101.3  Cmdr_R:  -396.6  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=96  NN_dec=2905/2970  fire: peak=103 final=74 supp=29 ext=29.0  68.1s
+   Cmdr reward breakdown: r_extinguish=+152.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 611 total, 458 hit, 153 miss (75% accuracy)  alt=56m [39-77]  dist=43m [2-90]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.0655+/-0.8214 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0135+/-0.2286 [0.2472,2.8769] | adv: 0.0273+/-1.0548 | alive=711/726 | bc_coef=0.467
+15:02:26 | Batch 0011 (Ep 00330) | R:   -566.6 (  -532.2)  Scout_R:   -63.4  Cmdr_R:  -503.2  Scout:100% Cmdr:99%  scout:[survived=120] cmdr:[survived=89 boundary=1] refills=212  NN_dec=2773/2970  fire: peak=141 final=109 supp=32 ext=27.3  70.8s
+   Cmdr reward breakdown: r_extinguish=+140.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 632 total, 421 hit, 211 miss (67% accuracy)  alt=55m [36-80]  dist=44m [5-102]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0382+/-1.1503 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0067+/-0.1721 [0.3272,3.0253] | adv: 0.0531+/-0.8945 | alive=672/726 | bc_coef=0.463
+15:03:57 | Batch 0012 (Ep 00360) | R:   -422.9 (  -494.7)  Scout_R:    +0.9  Cmdr_R:  -423.8  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=122  NN_dec=2884/2970  fire: peak=115 final=88 supp=28 ext=29.1  73.1s
+   Cmdr reward breakdown: r_extinguish=+139.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 600 total, 419 hit, 181 miss (70% accuracy)  alt=56m [40-80]  dist=43m [1-91]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.0139+/-1.0134 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0091+/-0.2192 [0.1636,2.8693] | adv: 0.2082+/-0.2754 | alive=709/726 | bc_coef=0.460
+15:05:27 | Batch 0013 (Ep 00390) | R:   -663.5 (  -543.2)  Scout_R:   -99.9  Cmdr_R:  -563.7  Scout:100% Cmdr:98%  scout:[survived=120] cmdr:[survived=88 boundary=2] refills=108  NN_dec=2842/2970  fire: peak=124 final=102 supp=22 ext=24.7  72.7s
+   Cmdr reward breakdown: r_extinguish=+138.000  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+10.000  r_spread=+0.000
+   Water drops: 619 total, 414 hit, 205 miss (67% accuracy)  alt=57m [41-80]  dist=44m [1-82]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.1228+/-1.0981 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0049+/-0.2633 [0.2021,6.0051] | adv: 0.1850+/-0.6867 | alive=722/726 | bc_coef=0.457
+15:07:00 | Batch 0014 (Ep 00420) | R:   -484.9 (  -574.2)  Scout_R:   +11.3  Cmdr_R:  -496.2  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=115  NN_dec=2898/2970  fire: peak=124 final=102 supp=22 ext=24.1  75.9s
+   Cmdr reward breakdown: r_extinguish=+139.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 621 total, 419 hit, 202 miss (67% accuracy)  alt=56m [37-80]  dist=43m [3-93]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.0361+/-0.9286 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9970+/-0.1379 [0.3587,2.0135] | adv: 0.0048+/-1.1511 | alive=714/726 | bc_coef=0.453
+15:08:26 | Batch 0015 (Ep 00450) | R:   -752.2 (  -618.6)  Scout_R:   -78.1  Cmdr_R:  -674.2  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=148  NN_dec=2851/2970  fire: peak=132 final=102 supp=30 ext=23.9  67.9s
+   Cmdr reward breakdown: r_extinguish=+127.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+10.000  r_spread=+0.000
+   Water drops: 513 total, 382 hit, 131 miss (74% accuracy)  alt=56m [39-78]  dist=43m [4-91]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.0059+/-0.9944 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9965+/-0.1486 [0.0633,2.1408] | adv: -0.0712+/-1.0924 | alive=722/726 | bc_coef=0.450
+15:09:53 | Batch 0016 (Ep 00480) | R:   -480.8 (  -616.5)  Scout_R:   -40.4  Cmdr_R:  -440.3  Scout:100% Cmdr:99%  scout:[survived=120] cmdr:[survived=89 boundary=1] refills=120  NN_dec=2857/2970  fire: peak=124 final=88 supp=36 ext=25.5  68.9s
+   Cmdr reward breakdown: r_extinguish=+140.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+20.000  r_spread=+0.000
+   Water drops: 626 total, 421 hit, 205 miss (67% accuracy)  alt=54m [39-80]  dist=44m [0-102]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.0854+/-0.8351 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9823+/-0.1888 [0.1460,2.1053] | adv: 0.0252+/-0.9937 | alive=726/726 | bc_coef=0.447
+15:11:21 | Batch 0017 (Ep 00510) | R:   -588.6 (  -534.7)  Scout_R:  -118.0  Cmdr_R:  -470.5  Scout:100% Cmdr:99%  scout:[survived=120] cmdr:[survived=89 boundary=1] refills=161  NN_dec=2825/2970  fire: peak=139 final=117 supp=21 ext=31.5  70.4s
+   Cmdr reward breakdown: r_extinguish=+143.000  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 622 total, 429 hit, 193 miss (69% accuracy)  alt=55m [35-80]  dist=43m [8-101]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.0477+/-1.0553 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0083+/-0.1779 [0.2435,2.2914] | adv: 0.0623+/-0.7253 | alive=663/726 | bc_coef=0.443
+15:12:51 | Batch 0018 (Ep 00540) | R:   -753.1 (  -670.8)  Scout_R:   -59.0  Cmdr_R:  -694.2  Scout:100% Cmdr:99%  scout:[survived=120] cmdr:[survived=88 boundary=2] refills=134  NN_dec=2825/2970  fire: peak=159 final=130 supp=30 ext=24.0  71.9s
+   Cmdr reward breakdown: r_extinguish=+110.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+10.000  r_spread=+0.000
+   Water drops: 428 total, 331 hit, 97 miss (77% accuracy)  alt=57m [37-80]  dist=40m [5-101]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.1126+/-0.8944 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0067+/-0.1672 [0.3953,2.6245] | adv: -0.0116+/-1.0125 | alive=716/726 | bc_coef=0.440
+15:14:19 | Batch 0019 (Ep 00570) | R:   -751.7 (  -752.4)  Scout_R:  -115.5  Cmdr_R:  -636.1  Scout:100% Cmdr:98%  scout:[survived=120] cmdr:[survived=88 boundary=2] refills=206  NN_dec=2747/2970  fire: peak=115 final=95 supp=19 ext=25.8  70.2s
+   Cmdr reward breakdown: r_extinguish=+118.000  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 523 total, 354 hit, 169 miss (68% accuracy)  alt=59m [42-79]  dist=41m [3-89]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0125+/-1.0133 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0073+/-0.1773 [0.4866,4.2653] | adv: 0.2915+/-0.2368 | alive=669/726 | bc_coef=0.437
+15:15:46 | Batch 0020 (Ep 00600) | R:   -961.1 (  -856.4)  Scout_R:  -102.1  Cmdr_R:  -859.0  Scout:100% Cmdr:98%  scout:[survived=120] cmdr:[survived=87 boundary=3] refills=228  NN_dec=2720/2970  fire: peak=118 final=89 supp=29 ext=30.5  68.6s
+   Cmdr reward breakdown: r_extinguish=+159.000  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 704 total, 477 hit, 227 miss (68% accuracy)  alt=56m [39-79]  dist=44m [12-99]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0852+/-1.0687 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0142+/-0.1379 [0.3277,2.6428] | adv: 0.2931+/-0.4274 | alive=593/726 | bc_coef=0.433
+15:17:16 | Batch 0021 (Ep 00630) | R:   -788.4 (  -874.7)  Scout_R:   +81.9  Cmdr_R:  -870.3  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=89 boundary=1] refills=203  NN_dec=2796/2970  fire: peak=122 final=100 supp=22 ext=26.9  69.8s
+   Cmdr reward breakdown: r_extinguish=+146.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 642 total, 440 hit, 202 miss (69% accuracy)  alt=57m [41-80]  dist=44m [2-78]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0432+/-0.9997 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9965+/-0.1786 [0.2854,2.0906] | adv: -0.1184+/-1.2557 | alive=677/726 | bc_coef=0.430
+15:18:45 | Batch 0022 (Ep 00660) | R:   -522.3 (  -655.3)  Scout_R:   -60.4  Cmdr_R:  -461.8  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=172  NN_dec=2832/2970  fire: peak=120 final=85 supp=35 ext=24.2  70.7s
+   Cmdr reward breakdown: r_extinguish=+138.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+10.000  r_spread=+0.000
+   Water drops: 607 total, 415 hit, 192 miss (68% accuracy)  alt=56m [37-80]  dist=44m [9-95]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.1033+/-1.1283 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9999+/-0.1353 [0.2186,1.8902] | adv: 0.1796+/-0.2154 | alive=690/726 | bc_coef=0.427
+15:20:10 | Batch 0023 (Ep 00690) | R:   -462.0 (  -492.1)  Scout_R:   -29.6  Cmdr_R:  -432.4  Scout:100% Cmdr:99%  scout:[survived=120] cmdr:[survived=89 boundary=1] refills=158  NN_dec=2827/2970  fire: peak=117 final=90 supp=27 ext=29.5  67.5s
+   Cmdr reward breakdown: r_extinguish=+160.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 689 total, 481 hit, 208 miss (70% accuracy)  alt=56m [41-79]  dist=43m [5-100]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.0153+/-0.8555 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9926+/-0.1231 [0.4318,1.7333] | adv: 0.0722+/-0.9182 | alive=696/726 | bc_coef=0.423
+15:21:40 | Batch 0024 (Ep 00720) | R:   -608.1 (  -535.1)  Scout_R:  -137.6  Cmdr_R:  -470.5  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=211  NN_dec=2807/2970  fire: peak=139 final=108 supp=31 ext=27.5  71.8s
+   Cmdr reward breakdown: r_extinguish=+138.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 594 total, 416 hit, 178 miss (70% accuracy)  alt=56m [39-79]  dist=43m [6-85]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.1556+/-1.1672 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0093+/-0.1852 [0.3530,4.2408] | adv: -0.1297+/-1.2161 | alive=708/726 | bc_coef=0.420
+15:23:07 | Batch 0025 (Ep 00750) | R:   -718.7 (  -663.4)  Scout_R:  -155.8  Cmdr_R:  -562.9  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=242  NN_dec=2767/2970  fire: peak=123 final=95 supp=28 ext=29.4  69.4s
+   Cmdr reward breakdown: r_extinguish=+140.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 605 total, 422 hit, 183 miss (70% accuracy)  alt=57m [36-79]  dist=43m [4-84]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.1457+/-1.0645 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9875+/-0.1660 [0.2510,2.3041] | adv: 0.0503+/-0.9099 | alive=704/726 | bc_coef=0.417
+15:24:37 | Batch 0026 (Ep 00780) | R:   -848.1 (  -783.4)  Scout_R:   +71.5  Cmdr_R:  -919.6  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=224  NN_dec=2793/2970  fire: peak=130 final=109 supp=21 ext=22.7  71.8s
+   Cmdr reward breakdown: r_extinguish=+133.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 626 total, 401 hit, 225 miss (64% accuracy)  alt=58m [42-79]  dist=43m [10-91]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0926+/-1.0529 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0038+/-0.2146 [0.2063,3.3223] | adv: 0.3129+/-0.2526 | alive=690/726 | bc_coef=0.413
+15:26:09 | Batch 0027 (Ep 00810) | R:   -364.5 (  -606.3)  Scout_R:   +18.5  Cmdr_R:  -382.9  Scout:100% Cmdr:99%  scout:[survived=120] cmdr:[survived=89 boundary=1] refills=157  NN_dec=2839/2970  fire: peak=132 final=112 supp=20 ext=27.7  74.3s
+   Cmdr reward breakdown: r_extinguish=+146.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 590 total, 440 hit, 150 miss (75% accuracy)  alt=56m [38-79]  dist=43m [3-100]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0605+/-1.0476 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0032+/-0.1678 [0.0001,2.2629] | adv: 0.1468+/-0.8471 | alive=705/726 | bc_coef=0.410
+15:27:39 | Batch 0028 (Ep 00840) | R:   -435.6 (  -400.1)  Scout_R:  -149.4  Cmdr_R:  -286.2  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=137  NN_dec=2867/2970  fire: peak=124 final=95 supp=29 ext=26.4  72.2s
+   Cmdr reward breakdown: r_extinguish=+136.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 630 total, 410 hit, 220 miss (65% accuracy)  alt=54m [38-80]  dist=43m [8-89]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0676+/-1.0248 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9949+/-0.1769 [0.2461,2.3279] | adv: -0.3788+/-1.7119 | alive=719/726 | bc_coef=0.407
+15:29:09 | Batch 0029 (Ep 00870) | R:   -781.4 (  -608.5)  Scout_R:   +23.6  Cmdr_R:  -805.0  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=176  NN_dec=2844/2970  fire: peak=142 final=117 supp=25 ext=23.7  71.7s
+   Cmdr reward breakdown: r_extinguish=+140.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 601 total, 422 hit, 179 miss (70% accuracy)  alt=57m [37-79]  dist=46m [4-103]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.2306+/-0.6101 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0042+/-0.1721 [0.4510,2.2031] | adv: 0.0374+/-1.0366 | alive=658/726 | bc_coef=0.403
+15:30:37 | Batch 0030 (Ep 00900) | R:   -834.4 (  -807.9)  Scout_R:   -98.3  Cmdr_R:  -736.1  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=170  NN_dec=2835/2970  fire: peak=120 final=97 supp=24 ext=28.2  70.1s
+   Cmdr reward breakdown: r_extinguish=+137.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 558 total, 413 hit, 145 miss (74% accuracy)  alt=55m [39-80]  dist=44m [2-95]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.0211+/-1.0005 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9956+/-0.1898 [0.0600,3.1381] | adv: -0.1434+/-1.1969 | alive=691/726 | bc_coef=0.400
+   [CURRICULUM] Batch 31: phase 2 (map=(1200.0, 1200.0), waste_pen=0.0)
+15:32:10 | Batch 0031 (Ep 00930) | R:  -1116.8 (  -975.6)  Scout_R:  -400.1  Cmdr_R:  -716.7  Scout:100% Cmdr:98%  scout:[survived=119 ground_crash=1] cmdr:[survived=88 boundary=2] refills=177  NN_dec=2807/2970  fire: peak=131 final=109 supp=22 ext=22.4  72.4s
+   Cmdr reward breakdown: r_extinguish=+125.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 564 total, 377 hit, 187 miss (67% accuracy)  alt=58m [41-80]  dist=44m [6-85]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.1108+/-1.1067 | alive=29970/30000
+   [CMDR  DIAG] ratio: 0.9921+/-0.2767 [0.0169,4.3482] | adv: -0.3104+/-1.3775 | alive=684/726 | bc_coef=0.397
+15:33:43 | Batch 0032 (Ep 00960) | R:  -1049.2 ( -1083.0)  Scout_R:  -196.0  Cmdr_R:  -853.2  Scout:100% Cmdr:99%  scout:[survived=120] cmdr:[survived=89 boundary=1] refills=111  NN_dec=2879/2970  fire: peak=166 final=138 supp=28 ext=22.4  74.8s
+   Cmdr reward breakdown: r_extinguish=+119.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 528 total, 358 hit, 170 miss (68% accuracy)  alt=57m [43-80]  dist=45m [4-89]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.1254+/-0.9031 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9908+/-0.1740 [0.0747,3.1928] | adv: -0.0643+/-1.1114 | alive=726/726 | bc_coef=0.393
+15:35:16 | Batch 0033 (Ep 00990) | R:  -1212.2 ( -1130.7)  Scout_R:  -181.8  Cmdr_R: -1030.3  Scout:100% Cmdr:98%  scout:[survived=120] cmdr:[survived=88 boundary=2] refills=181  NN_dec=2811/2970  fire: peak=173 final=140 supp=33 ext=27.0  75.8s
+   Cmdr reward breakdown: r_extinguish=+133.000  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 572 total, 399 hit, 173 miss (70% accuracy)  alt=57m [34-80]  dist=44m [2-105]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0465+/-0.9414 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0054+/-0.1856 [0.1102,3.4368] | adv: 0.2713+/-0.4478 | alive=685/726 | bc_coef=0.390
+15:36:51 | Batch 0034 (Ep 01020) | R:  -1064.4 ( -1138.3)  Scout_R:  -278.6  Cmdr_R:  -785.7  Scout:100% Cmdr:99%  scout:[survived=120] cmdr:[survived=88 boundary=2] refills=194  NN_dec=2832/2970  fire: peak=161 final=127 supp=34 ext=23.5  76.3s
+   Cmdr reward breakdown: r_extinguish=+121.000  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 550 total, 363 hit, 187 miss (66% accuracy)  alt=57m [39-80]  dist=43m [7-85]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.0933+/-0.9851 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9900+/-0.1690 [0.0763,2.0642] | adv: -0.0670+/-1.1332 | alive=674/726 | bc_coef=0.387
+15:38:25 | Batch 0035 (Ep 01050) | R:  -1181.2 ( -1122.8)  Scout_R:  -369.1  Cmdr_R:  -812.1  Scout:100% Cmdr:97%  scout:[survived=120] cmdr:[survived=86 boundary=4] refills=222  NN_dec=2726/2970  fire: peak=164 final=138 supp=26 ext=23.2  76.6s
+   Cmdr reward breakdown: r_extinguish=+122.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 542 total, 368 hit, 174 miss (68% accuracy)  alt=57m [41-79]  dist=45m [3-84]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0538+/-1.0062 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9951+/-0.2791 [0.0663,4.0153] | adv: -0.0057+/-0.9583 | alive=666/726 | bc_coef=0.383
+15:40:00 | Batch 0036 (Ep 01080) | R:   -973.3 ( -1077.3)  Scout_R:  -281.8  Cmdr_R:  -691.5  Scout:100% Cmdr:98%  scout:[survived=120] cmdr:[survived=88 boundary=2] refills=161  NN_dec=2826/2970  fire: peak=186 final=157 supp=29 ext=23.4  77.1s
+   Cmdr reward breakdown: r_extinguish=+129.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+10.000  r_spread=+0.000
+   Water drops: 550 total, 389 hit, 161 miss (71% accuracy)  alt=54m [37-80]  dist=40m [1-87]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.0737+/-0.8966 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0070+/-0.3012 [0.0035,5.9994] | adv: -0.0304+/-1.1868 | alive=682/726 | bc_coef=0.380
+15:41:34 | Batch 0037 (Ep 01110) | R:  -1157.0 ( -1065.2)  Scout_R:  -208.8  Cmdr_R:  -948.3  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=188  NN_dec=2864/2970  fire: peak=142 final=103 supp=39 ext=25.5  76.2s
+   Cmdr reward breakdown: r_extinguish=+139.000  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 621 total, 417 hit, 204 miss (67% accuracy)  alt=55m [40-80]  dist=42m [2-79]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.1067+/-1.0225 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0094+/-0.2071 [0.0481,2.4693] | adv: -0.1594+/-1.2047 | alive=712/726 | bc_coef=0.377
+15:43:08 | Batch 0038 (Ep 01140) | R:   -614.0 (  -885.5)  Scout_R:  -100.1  Cmdr_R:  -513.9  Scout:100% Cmdr:99%  scout:[survived=120] cmdr:[survived=89 boundary=1] refills=170  NN_dec=2823/2970  fire: peak=138 final=106 supp=32 ext=27.2  76.3s
+   Cmdr reward breakdown: r_extinguish=+125.000  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+10.000  r_spread=+0.000
+   Water drops: 630 total, 375 hit, 255 miss (60% accuracy)  alt=57m [37-80]  dist=42m [3-82]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.1701+/-1.0545 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0111+/-0.1617 [0.4381,3.1146] | adv: -0.0049+/-0.8279 | alive=690/726 | bc_coef=0.373
+15:44:42 | Batch 0039 (Ep 01170) | R:   -842.3 (  -728.2)  Scout_R:  -358.5  Cmdr_R:  -483.9  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=89 boundary=1] refills=179  NN_dec=2847/2970  fire: peak=130 final=105 supp=25 ext=29.9  76.0s
+   Cmdr reward breakdown: r_extinguish=+146.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 611 total, 440 hit, 171 miss (72% accuracy)  alt=55m [34-80]  dist=45m [6-86]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0282+/-1.0335 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9986+/-0.1676 [0.0468,1.6981] | adv: 0.0718+/-0.7458 | alive=684/726 | bc_coef=0.370
+15:46:17 | Batch 0040 (Ep 01200) | R:   -857.4 (  -849.9)  Scout_R:   -93.6  Cmdr_R:  -763.9  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=184  NN_dec=2862/2970  fire: peak=131 final=96 supp=35 ext=25.9  76.2s
+   Cmdr reward breakdown: r_extinguish=+132.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+10.000  r_spread=+0.000
+   Water drops: 650 total, 398 hit, 252 miss (61% accuracy)  alt=56m [38-80]  dist=46m [7-92]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.1415+/-0.7591 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0104+/-0.1788 [0.2837,2.2765] | adv: 0.3377+/-0.2172 | alive=682/726 | bc_coef=0.367
+15:47:51 | Batch 0041 (Ep 01230) | R:  -1567.1 ( -1212.3)  Scout_R:  -600.7  Cmdr_R:  -966.4  Scout:100% Cmdr:96%  scout:[survived=120] cmdr:[survived=86 boundary=4] refills=134  NN_dec=2780/2970  fire: peak=165 final=144 supp=21 ext=19.4  72.9s
+   Cmdr reward breakdown: r_extinguish=+110.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 447 total, 332 hit, 115 miss (74% accuracy)  alt=57m [29-80]  dist=45m [1-94]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0800+/-1.0514 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0015+/-0.1305 [0.0650,1.7840] | adv: -0.2568+/-1.1687 | alive=648/726 | bc_coef=0.363
+15:49:25 | Batch 0042 (Ep 01260) | R:  -1062.0 ( -1314.6)  Scout_R:  -197.8  Cmdr_R:  -864.2  Scout:100% Cmdr:96%  scout:[survived=120] cmdr:[survived=84 boundary=6] refills=121  NN_dec=2780/2970  fire: peak=148 final=119 supp=29 ext=25.5  76.2s
+   Cmdr reward breakdown: r_extinguish=+123.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 560 total, 371 hit, 189 miss (66% accuracy)  alt=57m [36-79]  dist=45m [5-96]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.0017+/-1.1411 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0021+/-0.2523 [0.2097,3.0014] | adv: -0.1657+/-1.2461 | alive=651/726 | bc_coef=0.360
+15:50:56 | Batch 0043 (Ep 01290) | R:   -998.0 ( -1030.0)  Scout_R:  -440.1  Cmdr_R:  -557.8  Scout:100% Cmdr:98%  scout:[survived=120] cmdr:[survived=88 boundary=2] refills=203  NN_dec=2820/2970  fire: peak=141 final=108 supp=33 ext=27.9  73.5s
+   Cmdr reward breakdown: r_extinguish=+131.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 623 total, 395 hit, 228 miss (63% accuracy)  alt=57m [34-79]  dist=42m [0-99]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.1916+/-1.1793 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0095+/-0.1998 [0.2377,2.9833] | adv: -0.0784+/-0.9997 | alive=685/726 | bc_coef=0.357
+15:52:34 | Batch 0044 (Ep 01320) | R:   -710.6 (  -854.3)  Scout_R:  -253.1  Cmdr_R:  -457.5  Scout:100% Cmdr:99%  scout:[survived=120] cmdr:[survived=89 boundary=1] refills=163  NN_dec=2857/2970  fire: peak=149 final=117 supp=32 ext=24.8  79.6s
+   Cmdr reward breakdown: r_extinguish=+137.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 612 total, 412 hit, 200 miss (67% accuracy)  alt=56m [31-80]  dist=44m [3-103]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0564+/-1.0144 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9987+/-0.1897 [0.1188,1.9993] | adv: -0.0579+/-1.1235 | alive=711/726 | bc_coef=0.353
+15:54:12 | Batch 0045 (Ep 01350) | R:   -572.8 (  -641.7)  Scout_R:   +54.9  Cmdr_R:  -627.7  Scout:100% Cmdr:98%  scout:[survived=120] cmdr:[survived=88 boundary=2] refills=234  NN_dec=2774/2970  fire: peak=149 final=123 supp=25 ext=25.0  79.3s
+   Cmdr reward breakdown: r_extinguish=+144.000  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 745 total, 432 hit, 313 miss (58% accuracy)  alt=56m [38-80]  dist=44m [4-83]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0943+/-1.1175 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0096+/-0.2879 [0.1178,7.5738] | adv: -0.1260+/-1.2440 | alive=683/726 | bc_coef=0.350
+15:55:39 | Batch 0046 (Ep 01380) | R:   -994.5 (  -783.7)  Scout_R:  -584.9  Cmdr_R:  -409.6  Scout:100% Cmdr:98%  scout:[survived=120] cmdr:[survived=87 boundary=3] refills=217  NN_dec=2748/2970  fire: peak=141 final=119 supp=23 ext=24.1  69.2s
+   Cmdr reward breakdown: r_extinguish=+130.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 591 total, 391 hit, 200 miss (66% accuracy)  alt=57m [28-79]  dist=44m [3-101]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.2111+/-0.8429 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0184+/-0.3176 [0.1086,7.2627] | adv: -0.0993+/-1.3221 | alive=674/726 | bc_coef=0.347
+15:57:09 | Batch 0047 (Ep 01410) | R:   -699.2 (  -846.8)  Scout_R:  -213.3  Cmdr_R:  -485.9  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=156  NN_dec=2883/2970  fire: peak=137 final=112 supp=25 ext=28.7  72.4s
+   Cmdr reward breakdown: r_extinguish=+137.000  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 630 total, 411 hit, 219 miss (65% accuracy)  alt=55m [30-80]  dist=42m [6-100]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.1440+/-0.8859 | alive=30000/30000
+   [CMDR  DIAG] ratio: 0.9948+/-0.1577 [0.1843,1.9844] | adv: 0.1440+/-0.8419 | alive=713/726 | bc_coef=0.343
+15:58:43 | Batch 0048 (Ep 01440) | R:   -420.8 (  -560.0)  Scout_R:  -145.0  Cmdr_R:  -275.8  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=161  NN_dec=2870/2970  fire: peak=107 final=78 supp=29 ext=28.4  75.3s
+   Cmdr reward breakdown: r_extinguish=+142.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+10.000  r_spread=+0.000
+   Water drops: 605 total, 428 hit, 177 miss (71% accuracy)  alt=57m [38-80]  dist=43m [5-71]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0590+/-0.9406 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0098+/-0.2227 [0.2419,5.1909] | adv: -0.1929+/-1.4974 | alive=696/726 | bc_coef=0.340
+16:00:16 | Batch 0049 (Ep 01470) | R:  -1178.7 (  -799.7)  Scout_R:  -153.8  Cmdr_R: -1024.9  Scout:100% Cmdr:97%  scout:[survived=120] cmdr:[survived=87 boundary=3] refills=152  NN_dec=2814/2970  fire: peak=149 final=124 supp=25 ext=25.6  74.7s
+   Cmdr reward breakdown: r_extinguish=+138.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 690 total, 416 hit, 274 miss (60% accuracy)  alt=57m [30-80]  dist=44m [2-102]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.0662+/-0.8676 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0089+/-0.1678 [0.0043,2.4125] | adv: -0.0500+/-0.9940 | alive=709/726 | bc_coef=0.337
+16:01:53 | Batch 0050 (Ep 01500) | R:  -1211.0 ( -1194.9)  Scout_R:  -133.4  Cmdr_R: -1077.7  Scout:100% Cmdr:98%  scout:[survived=120] cmdr:[survived=88 boundary=2] refills=175  NN_dec=2859/2970  fire: peak=174 final=156 supp=18 ext=18.4  79.9s
+   Cmdr reward breakdown: r_extinguish=+111.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 518 total, 335 hit, 183 miss (65% accuracy)  alt=58m [39-80]  dist=43m [3-79]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.1173+/-0.8611 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0079+/-0.1603 [0.2039,2.6709] | adv: 0.1899+/-0.6923 | alive=668/726 | bc_coef=0.333
+16:03:24 | Batch 0051 (Ep 01530) | R:  -1114.6 ( -1162.8)  Scout_R:  -506.7  Cmdr_R:  -607.8  Scout:100% Cmdr:95%  scout:[survived=120] cmdr:[survived=84 boundary=6] refills=148  NN_dec=2735/2970  fire: peak=150 final=125 supp=25 ext=27.1  70.6s
+   Cmdr reward breakdown: r_extinguish=+124.000  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 537 total, 372 hit, 165 miss (69% accuracy)  alt=58m [40-80]  dist=42m [3-108]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.2420+/-0.7674 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0169+/-0.1646 [0.2037,2.5562] | adv: 0.1329+/-0.7022 | alive=670/726 | bc_coef=0.330
+16:04:57 | Batch 0052 (Ep 01560) | R:  -1249.9 ( -1182.2)  Scout_R:  -322.6  Cmdr_R:  -927.4  Scout:100% Cmdr:95%  scout:[survived=120] cmdr:[survived=84 boundary=6] refills=214  NN_dec=2684/2970  fire: peak=172 final=130 supp=43 ext=29.1  74.7s
+   Cmdr reward breakdown: r_extinguish=+147.000  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+15.000  r_spread=+0.000
+   Water drops: 624 total, 441 hit, 183 miss (71% accuracy)  alt=58m [39-80]  dist=44m [4-97]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0275+/-0.9388 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0022+/-0.1376 [0.3605,1.9938] | adv: -0.0234+/-0.9832 | alive=682/726 | bc_coef=0.327
+16:06:38 | Batch 0053 (Ep 01590) | R:  -1347.6 ( -1298.8)  Scout_R:  -446.0  Cmdr_R:  -901.6  Scout:100% Cmdr:99%  scout:[survived=120] cmdr:[survived=88 boundary=2] refills=107  NN_dec=2886/2970  fire: peak=162 final=145 supp=17 ext=19.3  82.7s
+   Cmdr reward breakdown: r_extinguish=+87.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 442 total, 263 hit, 179 miss (60% accuracy)  alt=57m [38-80]  dist=46m [4-101]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.0855+/-0.9417 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0074+/-0.1192 [0.5663,1.7982] | adv: -0.0792+/-1.1843 | alive=698/726 | bc_coef=0.323
+16:08:09 | Batch 0054 (Ep 01620) | R:   -786.7 ( -1067.1)  Scout_R:  -254.1  Cmdr_R:  -532.6  Scout:100% Cmdr:100%  scout:[survived=120] cmdr:[survived=90] refills=204  NN_dec=2819/2970  fire: peak=148 final=110 supp=38 ext=27.4  73.8s
+   Cmdr reward breakdown: r_extinguish=+138.667  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+15.000  r_spread=+0.000
+   Water drops: 621 total, 416 hit, 205 miss (67% accuracy)  alt=56m [36-80]  dist=46m [3-94]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: -0.1088+/-1.1145 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0032+/-0.1721 [0.2832,2.0704] | adv: 0.2385+/-0.4169 | alive=686/726 | bc_coef=0.320
+16:09:44 | Batch 0055 (Ep 01650) | R:   -830.8 (  -808.7)  Scout_R:  -220.4  Cmdr_R:  -610.4  Scout:100% Cmdr:98%  scout:[survived=119 ceiling=1] cmdr:[survived=87 boundary=3] refills=211  NN_dec=2783/2970  fire: peak=139 final=114 supp=25 ext=22.5  76.8s
+   Cmdr reward breakdown: r_extinguish=+137.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+5.000  r_spread=+0.000
+   Water drops: 668 total, 412 hit, 256 miss (62% accuracy)  alt=57m [40-80]  dist=43m [7-116]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.1400+/-0.8209 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0181+/-0.1765 [0.1001,2.3860] | adv: -0.0577+/-1.1783 | alive=687/726 | bc_coef=0.317
+16:11:13 | Batch 0056 (Ep 01680) | R:  -1186.5 ( -1008.6)  Scout_R:  -186.3  Cmdr_R: -1000.2  Scout:100% Cmdr:97%  scout:[survived=120] cmdr:[survived=85 boundary=5] refills=147  NN_dec=2793/2970  fire: peak=161 final=140 supp=21 ext=21.3  71.2s
+   Cmdr reward breakdown: r_extinguish=+116.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 494 total, 349 hit, 145 miss (71% accuracy)  alt=59m [41-80]  dist=46m [4-82]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.1218+/-0.8978 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0107+/-0.1936 [0.2668,2.4654] | adv: -0.0466+/-1.0412 | alive=664/726 | bc_coef=0.313
+16:12:47 | Batch 0057 (Ep 01710) | R:   -799.2 (  -992.8)  Scout_R:    +0.7  Cmdr_R:  -799.9  Scout:100% Cmdr:97%  scout:[survived=120] cmdr:[survived=87 boundary=3] refills=193  NN_dec=2801/2970  fire: peak=156 final=120 supp=36 ext=25.1  75.9s
+   Cmdr reward breakdown: r_extinguish=+133.333  r_water_waste=+0.000  r_water_near=+0.000  r_fire_out=+0.000  r_spread=+0.000
+   Water drops: 654 total, 400 hit, 254 miss (61% accuracy)  alt=55m [32-80]  dist=44m [3-85]
+   [SCOUT DIAG] ratio: 1.0000+/-0.0000 [1.0000,1.0000] | adv: 0.0183+/-0.9175 | alive=30000/30000
+   [CMDR  DIAG] ratio: 1.0087+/-0.1514 [0.2725,2.4958] | adv: -0.0943+/-1.1428 | alive=709/726 | bc_coef=0.310
